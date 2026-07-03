@@ -82,6 +82,18 @@ const ChapterCard = styled('div', {
     border: '1px solid rgba(255, 255, 255, 0.08)'
 });
 
+// Chapters list container — flex column with gap between chapter collapsibles.
+// Bottom padding ensures that when a chapter near the bottom is expanded in
+// scrolling mode, the next chapter's toggle header remains visible on screen.
+// Without this padding, the scroll container clips the last visible toggle,
+// making it impossible to expand the next chapter without scrolling past it.
+const ChapterListContainer = styled('div', {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    paddingBottom: 80
+});
+
 export const SectionStoryContent: React.FC = React.memo(() => {
     const { store, setStore } = useStoryStore();
     const { selected } = store;
@@ -347,7 +359,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                             {selected.isProcessing ? 'Waiting for the first chapter…' : 'No chapters yet.'}
                         </div>
                     )}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <ChapterListContainer>
                         {data.chapters.map((ch, i) => (
                             // Each chapter is itself collapsible so the user can
                             // fold away long expanded chapters to skim the list.
@@ -383,7 +395,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 </ChapterCard>
                             </Collapsible>
                         ))}
-                    </div>
+                    </ChapterListContainer>
                 </Collapsible>
             </div>
 
