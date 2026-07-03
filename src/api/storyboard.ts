@@ -13,6 +13,11 @@
 //       404 if the storyId dir doesn't exist yet (no POST issued / generation
 //       hasn't started creating files). See generation-get-story-data.ts:19-24.
 //
+//   - GET /v1/storyboard/generations/list
+//       returns: { stories: StoryMeta[] }
+//       Each entry includes full metadata from story.json (storyId, storyline,
+//       chapterCount, createdAt). See generation-list-stories.ts.
+//
 // `pollStoryData` repeatedly hits GET until a stop condition is met:
 //   - chapter count reaches the requested chapterCount, OR
 //   - the response is a 404 (treated as "not started yet", keep polling), OR
@@ -23,6 +28,17 @@
 // selecting a different story cancels the active poll loop.
 
 import type { StoryData } from '../context';
+
+// Story metadata returned by GET /v1/storyboard/generations/list.
+// Matches the server's StoryMeta type in generation-list-stories.ts.
+// Each entry corresponds to a directory under temporary/database/storyboard/
+// and includes the metadata stored in story.json by generation-create-new-story.
+export type StoryMeta = {
+    storyId: string;
+    storyline: string;
+    chapterCount: number;
+    createdAt: string;
+};
 
 // Result of a single GET poll attempt. `status` distinguishes terminal 200
 // (story complete-ish) from transient 404 (still booting up) from hard errors.
@@ -95,15 +111,18 @@ export async function fetchStoryData(
     return { status: 'data', data };
 }
 
-// Fetch the list of all story IDs via GET .../list.
+// Fetch the list of all stories via GET .../list.
 //
-// The server returns { stories: string[] } where each entry is a directory name
-// under temporary/database/storyboard/ (see generation-get-story-data.ts list
-// branch). The list never includes chapter/plotlines data — callers issue a
-// second GET with a specific storyId for that.
+// The server returns { stories: StoryMeta[] } where each entry contains the
+// full story metadata (storyId, storyline, chapterCount, createdAt) from
+// story.json (see generation-list-stories.ts). Stories are sorted by
+// createdAt descending (newest first) on the server side.
+//
+// The list never includes chapter/plotlines content — callers issue a second
+// GET with a specific storyId for that.
 //
 // Throws on network failure or non-200 so the caller can surface a load error.
-export async function fetchStoryList(baseUrl: string): Promise<{ stories: string[] }> {
+export async function fetchStoryList(baseUrl: string): Promise<{ stories: StoryMeta[] }> {
     // URL-encode 'list' for safety even though it has no special chars — keeps
     // the helper consistent with fetchStoryData.
     const url = `${baseUrl}/${encodeURIComponent('list')}`;
@@ -120,9 +139,9 @@ export async function fetchStoryList(baseUrl: string): Promise<{ stories: string
         throw new Error(message);
     }
 
-    // The server always returns { stories: string[] } (may be empty when no
-    // story directories exist yet — see generation-get-story-data.ts list branch).
-    const data = (await response.json()) as { stories: string[] };
+    // The server always returns { stories: StoryMeta[] } (may be empty when no
+    // story directories exist yet — see generation-list-stories.ts).
+    const data = (await response.json()) as { stories: StoryMeta[] };
     return { stories: Array.isArray(data.stories) ? data.stories : [] };
 }
 

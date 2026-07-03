@@ -47,12 +47,10 @@ export type StoryEntry = {
     isProcessing: boolean; // true while polling for new chapters
     error: string; // populated if create or fetch failed
     // True for entries that came from the server's GET /list endpoint (BootstrapLayer
-    // or Refresh). Used by SectionStoryContent's polling effect: remote stories
-    // should fetch & hydrate on selection even though we don't know their
-    // chapterCount upfront (the list response only carries storyId — see
-    // storyboard-generations.yml StoryListResponse). Locally-added entries
-    // (Add button) have isRemote = false and don't poll until the user POSTs a
-    // storyline + chapterCount (chapterCount transitions to > 0).
+    // or Refresh). The list endpoint now returns full StoryMeta objects (storyId,
+    // storyline, chapterCount, createdAt) so remote entries are seeded with the
+    // server's chapterCount and storyline. Locally-added entries (Add button /
+    // SectionStoryInput) have isRemote = false.
     isRemote: boolean;
 };
 

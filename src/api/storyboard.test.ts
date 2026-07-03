@@ -4,11 +4,14 @@
 //   - createNewStory: success path (200 + { storyId }) and error path (400 with
 //     { error }) matching the server's validation responses.
 //   - fetchStoryData: 200 data, 404 not-found, and other-error branches.
+//   - fetchStoryList: 200 with StoryMeta[] (new shape), 200 with empty array,
+//     and error branches.
 //   - pollStoryData: terminates when chapters reach expectedChapterCount, stops
 //     cleanly when shouldStop returns true, and surfaces a hard error.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createNewStory, fetchStoryData, pollStoryData } from './storyboard';
+import { createNewStory, fetchStoryData, fetchStoryList, pollStoryData } from './storyboard';
+import type { StoryMeta } from './storyboard';
 
 const BASE_URL = 'http://test.local/v1/storyboard/generations';
 
@@ -126,6 +129,78 @@ describe('fetchStoryData', () => {
         const result = await fetchStoryData(BASE_URL, 'story-1');
 
         expect(result).toEqual({ status: 'error', error: 'boom' });
+    });
+});
+
+describe('fetchStoryList', () => {
+    beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+    afterEach(() => vi.unstubAllGlobals());
+
+    // Server now returns { stories: StoryMeta[] } with full metadata per story
+    // (see generation-list-stories.ts). Each entry has storyId, storyline,
+    // chapterCount, and createdAt.
+    const makeStoryMeta = (overrides: Partial<StoryMeta> = {}): StoryMeta => ({
+        storyId: 'story-abc',
+        storyline: 'A sci-fi adventure about Mars.',
+        chapterCount: 5,
+        createdAt: '2026-07-03T12:00:00Z',
+        ...overrides
+    });
+
+    it('returns { stories: StoryMeta[] } on 200 with story metadata', async () => {
+        const metas: StoryMeta[] = [
+            makeStoryMeta({ storyId: 'story-1', storyline: 'First story', chapterCount: 3, createdAt: '2026-07-03T12:00:00Z' }),
+            makeStoryMeta({ storyId: 'story-2', storyline: 'Second story', chapterCount: 7, createdAt: '2026-07-02T10:00:00Z' })
+        ];
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { stories: metas })
+        );
+
+        const result = await fetchStoryList(BASE_URL);
+
+        expect(result).toEqual({ stories: metas });
+        // URL should be BASE_URL/list (URL-encoded)
+        expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/list`);
+        expect((fetch as any).mock.calls[0][1]).toEqual({ method: 'GET' });
+    });
+
+    it('returns { stories: [] } when server returns an empty list', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { stories: [] })
+        );
+
+        const result = await fetchStoryList(BASE_URL);
+
+        expect(result).toEqual({ stories: [] });
+    });
+
+    it('returns { stories: [] } when stories field is missing from response', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {})
+        );
+
+        const result = await fetchStoryList(BASE_URL);
+
+        expect(result).toEqual({ stories: [] });
+    });
+
+    it('throws an Error containing the server message on 500', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(500, { error: 'server on fire' })
+        );
+
+        await expect(fetchStoryList(BASE_URL)).rejects.toThrow('server on fire');
+    });
+
+    it('falls back to a status-based message when the server body is not JSON', async () => {
+        const badResponse = {
+            ok: false,
+            status: 502,
+            json: async () => { throw new SyntaxError('not json'); }
+        } as any;
+        (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
+
+        await expect(fetchStoryList(BASE_URL)).rejects.toThrow('Failed to list stories (HTTP 502)');
     });
 });
 

@@ -121,13 +121,15 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 const { stories } = await fetchStoryList(baseUrl);
                 if (!stories || stories.length === 0) return;
 
-                // Build entries from the server list, same shape as BootstrapLayer.
-                const entries = stories.map((sid, i) => ({
+                // Build entries from the server list using full StoryMeta
+                // (storyId, storyline, chapterCount, createdAt). Server already
+                // sorts by createdAt descending.
+                const entries = stories.map((meta, i) => ({
                     id: -(Date.now() + i + 1),
-                    storyId: sid,
-                    title: sid.slice(0, 8),
-                    storyline: '',
-                    chapterCount: 0,
+                    storyId: meta.storyId,
+                    title: meta.storyId.slice(0, 8),
+                    storyline: meta.storyline,
+                    chapterCount: meta.chapterCount,
                     data: null,
                     isProcessing: false,
                     error: '',

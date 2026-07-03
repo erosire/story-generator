@@ -122,11 +122,11 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     // chapterCount, current chapter count, isRemote, or config changes.
     //
     // Two ways to start polling:
-    //   1. chapterCount > 0 (fresh POST — known target count). Terminate when
-    //      chapters.length reaches chapterCount.
-    //   2. isRemote === true (entry came from GET /list — unknown target). Pass
-    //      expectedChapterCount=0 so the loop terminates via poll-stability
-    //      (two consecutive identical polls — see api/storyboard.ts).
+    //   1. chapterCount > 0 (fresh POST or remote entry with known target).
+    //      Terminate when chapters.length reaches chapterCount.
+    //   2. isRemote === true with chapterCount === 0 (legacy remote entry from
+    //      an old list response that only carried storyId). Pass
+    //      expectedChapterCount=0 so the loop terminates via poll-stability.
     React.useEffect(() => {
         if (!selected || !selected.storyId) {
             return;
@@ -270,8 +270,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
     // Pending-submit hint only applies to locally-added entries that have NOT
     // been POSTed yet (chapterCount === 0 && !isRemote). Remote entries from
-    // the /list endpoint poll on selection regardless of chapterCount, so they
-    // never show this hint — they fall through to the content render below.
+    // the /list endpoint now carry chapterCount from story.json, so they always
+    // have chapterCount > 0 and never show this hint.
     if (!selected.isRemote && selected.chapterCount <= 0) {
         return (
             <PendingSubmitHint data-testid="content-pending-submit">

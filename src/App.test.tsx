@@ -220,13 +220,18 @@ describe('StoryGeneratorApp', () => {
         expect(postCalls).toEqual([]);
     });
 
-    // Bootstrap: GET /list returns existing story IDs on mount → seeded as sidebar items.
+    // Bootstrap: GET /list returns existing story metadata on mount → seeded as sidebar items.
     it('loads existing stories from the /list endpoint on mount and selects the first', async () => {
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
                 if (url.endsWith('/list')) {
                     return Promise.resolve(
-                        mockResponse(200, { stories: ['aaaa-1111', 'bbbb-2222'] })
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'aaaa-1111', storyline: 'First story', chapterCount: 3, createdAt: '2026-07-03T12:00:00Z' },
+                                { storyId: 'bbbb-2222', storyline: 'Second story', chapterCount: 5, createdAt: '2026-07-02T10:00:00Z' }
+                            ]
+                        })
                     );
                 }
                 return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
@@ -255,7 +260,13 @@ describe('StoryGeneratorApp', () => {
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
                 if (url.endsWith('/list')) {
-                    return Promise.resolve(mockResponse(200, { stories: ['remote-uuid-1'] }));
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'remote-uuid-1', storyline: 'Remote story', chapterCount: 1, createdAt: '2026-07-03T12:00:00Z' }
+                            ]
+                        })
+                    );
                 }
                 return Promise.resolve(
                     mockResponse(200, {
@@ -285,7 +296,7 @@ describe('StoryGeneratorApp', () => {
     // Auto-refresh picks up new stories that appear on the server after mount.
     it('auto-refreshes the sidebar to pick up new stories from the server', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true });
-        let listResponse = { stories: ['first-uuid'] };
+        let listResponse = { stories: [{ storyId: 'first-uuid', storyline: 'First', chapterCount: 2, createdAt: '2026-07-03T12:00:00Z' }] };
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
                 if (url.endsWith('/list')) {
@@ -302,7 +313,12 @@ describe('StoryGeneratorApp', () => {
         await waitFor(() => expect(screen.getByTestId('story-tab-first-uuid')).toBeDefined());
 
         // Simulate a new story appearing on the server.
-        listResponse = { stories: ['first-uuid', 'second-uuid'] };
+        listResponse = {
+            stories: [
+                { storyId: 'first-uuid', storyline: 'First', chapterCount: 2, createdAt: '2026-07-03T12:00:00Z' },
+                { storyId: 'second-uuid', storyline: 'Second', chapterCount: 4, createdAt: '2026-07-03T13:00:00Z' }
+            ]
+        };
 
         // Trigger auto-refresh by advancing timers past REFRESH_INTERVAL_MS (30s).
         await act(async () => {

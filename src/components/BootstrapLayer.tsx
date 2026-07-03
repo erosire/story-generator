@@ -1,5 +1,5 @@
 // Bootstrap layer: fetches the list of all existing stories on mount and seeds
-// the store with one entry per story ID.
+// the store with one entry per story.
 //
 // Mirrors library/workflow/lightning-agent/components/PersistenceLayer.tsx
 // (a hidden component mounted inside <ContextProvider> whose sole job is to
@@ -8,54 +8,36 @@
 // Behavior:
 //   - On mount, calls fetchStoryList(config.baseUrl) once.
 //   - If the list is non-empty, hydrates store.records with one StoryEntry per
-//     story ID and selects the first one (so the user immediately sees the
-//     latest story's content via SectionStoryContent's polling effect, which
-//     kicks in once chapterCount > 0 — but for a *remote* story we don't know
-//     chapterCount up-front; see note below on chapterCount seeding).
+//     story using the full StoryMeta from the server (storyId, storyline,
+//     chapterCount, createdAt). Selects the first entry so the user immediately
+//     sees the latest story's content.
 //   - On error, sets a loadWarning on store.config (read by the dashboard
 //     header so the user can see the backend is unreachable).
 //   - Renders null — purely a side-effect component.
-//
-// NOTE on chapterCount for remotely-listed stories:
-//   The "list" endpoint returns only story IDs (see storyboard-generations.yml
-//   StoryListResponse) — no chapter count. For a remote story we don't have a
-//   target chapter count to compare against, so we seed each entry with
-//   chapterCount = 0 and rely on the SectionStoryInput form to allow re-typing
-//   / re-triggering generation. The SectionStoryContent polling effect requires
-//   chapterCount > 0 before it starts polling (see SectionStoryContent.tsx).
-//
-//   To give the user visibility into the remote story's chapters on first load
-//   WITHOUT a chapter target, we also seed the entry with chapterCount = -1 as
-//   a sentinel meaning "remote — poll once to hydrate then stop". SectionStoryContent
-//   special-cases this sentinel (see its effect guard) so it does a single fetch
-//   cycle, storing whatever chapters/plotlines the server currently has, without
-//   looping on a count target.
-//
-//   -> Decision: keep it simple. Seed chapterCount = 0 (matches the
-//   SectionStoryContent "pending submit" empty state). The sidebar auto-refreshes
-//   periodically to pick up new stories, so there's no need for a manual Refresh
-//   button or a sentinel-based single-fetch mechanism.
 
 import React from 'react';
 import { useStoryStore } from '../context';
-import { fetchStoryList } from '../api';
+import { fetchStoryList, type StoryMeta } from '../api';
 
-// Build a StoryEntry from a bare storyId. We give each seeded entry a unique
-// client-side `id` (descending negative timestamps so they never collide with
-// the Date.now() positive ids used by freshly-added empty stories).
-const makeEntryFromStoryId = (storyId: string, index: number) => ({
+// Build a StoryEntry from a StoryMeta object returned by GET /list.
+// The list endpoint now returns full metadata (storyId, storyline, chapterCount,
+// createdAt) so we can seed the entry with the server's values. We give each
+// seeded entry a unique client-side `id` (descending negative timestamps so they
+// never collide with the Date.now() positive ids used by freshly-added empty stories).
+const makeEntryFromStoryMeta = (meta: StoryMeta, index: number) => ({
     id: -(Date.now() + index + 1),
-    storyId,
+    storyId: meta.storyId,
     // Title = first 8 chars of the storyId (matches AddNewButton's convention
     // in SectionStoryTabs.tsx but trimmed to 8 chars for the chip width).
-    title: storyId.slice(0, 8),
-    storyline: '',
-    chapterCount: 0,
+    title: meta.storyId.slice(0, 8),
+    storyline: meta.storyline,
+    chapterCount: meta.chapterCount,
     data: null,
     isProcessing: false,
     error: '',
-    // Marked remote so SectionStoryContent polls to hydrate on selection
-    // despite chapterCount being unknown from the /list response.
+    // Marked remote so SectionStoryContent polls to hydrate on selection.
+    // Now that the list returns chapterCount, the polling uses the known target
+    // instead of stability-based termination.
     isRemote: true
 });
 
@@ -82,14 +64,10 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                     return;
                 }
 
-                // Sort stories newest-first? The server's list branch sorts
-                // ascending; for a typical user expectation we reverse to show
-                // the most-recently-created story first in the tab strip, then
-                // select it. (We reverse here since server returns names sort()d
-                // ascending — UUIDs sort lexically, which roughly correlates with
-                // creation order, so reversal gives "newest first".)
-                const ordered = [...stories];
-                const entries = ordered.map((sid, i) => makeEntryFromStoryId(sid, i));
+                // Server returns stories sorted by createdAt descending (newest
+                // first). Build one StoryEntry per StoryMeta using the full
+                // metadata (storyline, chapterCount, etc.).
+                const entries = stories.map((meta, i) => makeEntryFromStoryMeta(meta, i));
 
                 setStore((prev) => {
                     // Avoid clobbering any records that were pre-seeded via
