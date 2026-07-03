@@ -17,6 +17,7 @@
 import React from 'react';
 import { styled } from '../../styles';
 import { useStoryStore } from '../../context';
+import { fetchStoryList } from '../../api';
 
 // Tab chip. Shows the storyId-derived title; flags in-progress generation with
 // a small spinner glyph and a word-count badge once data arrives.
@@ -123,7 +124,10 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
             chapterCount: 0,
             data: null,
             isProcessing: false,
-            error: ''
+            error: '',
+            // Locally added — don't fetch on selection. The user must POST a
+            // storyline via SectionStoryInput before polling kicks in.
+            isRemote: false
         };
 
         setStore((prev) => ({
@@ -133,8 +137,80 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
         }));
     };
 
+    // Refresh the record list from the server's /list endpoint. Used by the
+    // Refresh button to pick up stories that other sessions/devices created in
+    // this dashboard's absence, or to recover after a BootstrapLayer failure.
+    // We preserve selected by storyId so the active story stays active after
+    // the reload; entries that no longer exist on the server are removed.
+    const [isRefreshing, setIsRefreshing] = React.useState(false);
+    const refreshStories = async () => {
+        setIsRefreshing(true);
+        try {
+            const { stories } = await fetchStoryList(store.config.baseUrl);
+            // Preserve ordering/styling of BootstrapLayer: derivatives are
+            // negative ids so they don't collide with new Date.now() ids.
+            const entries = stories.map((sid, i) => ({
+                id: -(Date.now() + i + 1),
+                storyId: sid,
+                title: sid.slice(0, 8),
+                storyline: '',
+                chapterCount: 0,
+                data: null,
+                isProcessing: false,
+                error: '',
+                // Refresh entries come from the server's /list endpoint — same
+                // as BootstrapLayer, mark them remote so the polling effect
+                // hydrates their data on selection.
+                isRemote: true
+            }));
+            setStore((prev) => {
+                // Build a lookup by storyId for previously-loaded data. We want
+                // to preserve any cached chapter data / isProcessing flags the
+                // user picked up by selecting entries during this session.
+                const prevByStoryId = new Map(prev.records.map((r) => [r.storyId, r]));
+                const merged = entries.map((e) => {
+                    const cached = prevByStoryId.get(e.storyId);
+                    return cached ?? e;
+                });
+                // Re-select the previously-selected entry by storyId; if it's now
+                // gone from the server list, fall back to the first entry (or null).
+                let selected = prev.selected;
+                if (prev.selected) {
+                    selected = merged.find((m) => m.storyId === prev.selected!.storyId) ?? (merged.length > 0 ? merged[0] : null);
+                } else if (merged.length > 0) {
+                    selected = merged[0];
+                }
+                return { ...prev, records: merged, selected, loadWarning: undefined };
+            });
+        } catch (err: any) {
+            setStore((prev) => ({ ...prev, loadWarning: err?.message ?? 'Failed to refresh story list' }));
+        } finally {
+            setIsRefreshing(false);
+        }
+    };
+
     return (
         <>
+            {/* A small inline warning if BootstrapLayer failed to load —
+                shown before the tab row so the user knows the backend is
+                unreachable but can still use the dashboard. */}
+            {store.loadWarning && (
+                <span
+                    data-testid="load-warning"
+                    title={store.loadWarning}
+                    style={{
+                        fontSize: 11,
+                        color: '#ff9b6b',
+                        background: 'rgba(255, 107, 107, 0.08)',
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        whiteSpace: 'nowrap',
+                        flex: '0 0 auto'
+                    }}
+                >
+                    ⚠ {store.loadWarning}
+                </span>
+            )}
             {records.map((entry) => {
                 const isSelected = selected?.id === entry.id;
                 // Chip label: title + (chapter count badge once data exists).
@@ -172,6 +248,18 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
             })}
             <AddButton onClick={addStory} aria-label="Add new story" data-testid="add-story-button">
                 +
+            </AddButton>
+            {/* Refresh icon button re-fetches the /list endpoint. Visible whether
+                or not records exist so the user can recover from a BootstrapLayer
+                load failure without reloading the page. */}
+            <AddButton
+                onClick={refreshStories}
+                aria-label="Refresh story list"
+                data-testid="refresh-stories-button"
+                disabled={isRefreshing}
+                style={{ borderStyle: 'solid' }}
+            >
+                {isRefreshing ? '…' : '⟳'}
             </AddButton>
         </>
     );

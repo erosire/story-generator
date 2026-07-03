@@ -95,10 +95,48 @@ export async function fetchStoryData(
     return { status: 'data', data };
 }
 
+// Fetch the list of all story IDs via GET .../list.
+//
+// The server returns { stories: string[] } where each entry is a directory name
+// under temporary/database/storyboard/ (see generation-get-story-data.ts list
+// branch). The list never includes chapter/plotlines data — callers issue a
+// second GET with a specific storyId for that.
+//
+// Throws on network failure or non-200 so the caller can surface a load error.
+export async function fetchStoryList(baseUrl: string): Promise<{ stories: string[] }> {
+    // URL-encode 'list' for safety even though it has no special chars — keeps
+    // the helper consistent with fetchStoryData.
+    const url = `${baseUrl}/${encodeURIComponent('list')}`;
+    const response = await fetch(url, { method: 'GET' });
+
+    if (!response.ok) {
+        let message = `Failed to list stories (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    // The server always returns { stories: string[] } (may be empty when no
+    // story directories exist yet — see generation-get-story-data.ts list branch).
+    const data = (await response.json()) as { stories: string[] };
+    return { stories: Array.isArray(data.stories) ? data.stories : [] };
+}
+
 // Poll the GET endpoint in a loop until a termination condition is met.
 //
 // Termination:
-//   - chapters.length reaches expectedChapterCount (generation finished), OR
+//   - When `expectedChapterCount` is a positive number: terminate once
+//     `data.chapters.length >= expectedChapterCount` (target known — fresh POST).
+//   - When `expectedChapterCount` is 0/omitted (remote story, count unknown):
+//     terminate after the data has been stable across `stablePolls` consecutive
+//     polls (i.e. plotlines AND chapter count both unchanged). The server writes
+//     plotpoint.md first then adds chapter-NNN.md files one at a time
+//     (generation-create-new-story.ts:74 then :181), so stability implies the
+//     background generation has finished for an already-existing story too.
 //   - PollResult is 'error' (hard failure — we give up), OR
 //   - shouldStop() returns true (caller cancelled: unmount, selection changed).
 //
@@ -114,17 +152,40 @@ export type PollFinalResult =
     | { status: 'error'; error: string }
     | { status: 'stopped' };
 
+// Number of consecutive stable polls required to declare a remote story "done"
+// when we don't have an expected chapter count. 2 means: poll N, poll N+1 with
+// identical data → done. Tuned so the user sees the final state confirmed by a
+// second poll rather than guessing from a single unchanged round.
+const REMOTE_STABLE_POLLS = 2;
+
 export async function pollStoryData(params: {
     baseUrl: string;
     storyId: string;
-    expectedChapterCount: number;
+    // Target chapter count for fresh-POST stories. Pass 0 (or omit) for a remote
+    // story whose target count is unknown — termination then uses poll-stability.
+    expectedChapterCount?: number;
     pollIntervalMs: number;
     shouldStop: () => boolean;
     onData: (data: StoryData) => void;
 }): Promise<PollFinalResult> {
-    const { baseUrl, storyId, expectedChapterCount, pollIntervalMs, shouldStop, onData } = params;
+    const { baseUrl, storyId, pollIntervalMs, shouldStop, onData } = params;
+    const expectedChapterCount = params.expectedChapterCount ?? 0;
+    const hasTarget = expectedChapterCount > 0;
 
     let last: StoryData = { plotlines: '', chapters: [] };
+
+    // Stable-poll tracking for the no-target (remote) mode. We count how many
+    // consecutive polls returned data identical to the previous one. Reset to 0
+    // whenever the data changes (so a chapter appearing between polls re-arms
+    // the counter and we wait for another stable round before declaring done).
+    let stableCount = 0;
+    let lastSignature = '';
+
+    // Signature of a StoryData used for equality comparison in remote stable mode.
+    // We track plotlines text + chapter count (chapter *content* could legitimately
+    // be the same across polls since chapters are written once and never edited,
+    // so count is sufficient and cheaper than hashing all content).
+    const signatureOf = (data: StoryData) => `${data.plotlines.length}|${data.chapters.length}`;
 
     // Loop until completion, hard error, or external cancellation.
     while (true) {
@@ -142,14 +203,32 @@ export async function pollStoryData(params: {
             last = result.data;
             onData(result.data);
 
-            // Completion check: once the server has written all requested chapters,
-            // we stop polling. Note: plotlines can be written before any chapter
-            // (generation-create-new-story.ts:74), so we gate on chapter count only.
-            if (result.data.chapters.length >= expectedChapterCount) {
-                return { status: 'data', data: result.data };
+            if (hasTarget) {
+                // Completion check: once the server has written all requested chapters,
+                // we stop polling. Note: plotlines can be written before any chapter
+                // (generation-create-new-story.ts:74), so we gate on chapter count only.
+                if (result.data.chapters.length >= expectedChapterCount) {
+                    return { status: 'data', data: result.data };
+                }
+            } else {
+                // No target — use stability. Compare signature to the previous poll;
+                // match increments the counter, mismatch resets it (and stores the
+                // new signature as the comparison baseline).
+                const sig = signatureOf(result.data);
+                if (sig === lastSignature) {
+                    stableCount++;
+                } else {
+                    stableCount = 1;
+                    lastSignature = sig;
+                }
+                if (stableCount >= REMOTE_STABLE_POLLS) {
+                    return { status: 'data', data: result.data };
+                }
             }
         }
-        // 'not-found' means the dir doesn't exist yet — keep polling.
+        // 'not-found' means the dir doesn't exist yet — keep polling. This also
+        // applies to a remote storyId that the user selected before the server's
+        // background generation created its dir (eg. race between list + create).
 
         // Wait before the next round. Cancellation check after the wait guards
         // against posting setState on an unmounted component.

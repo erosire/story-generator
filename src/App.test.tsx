@@ -24,10 +24,26 @@ const mockResponse = (status: number, body: unknown) =>
     }) as any;
 
 describe('StoryGeneratorApp', () => {
-    beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+    // Default fetch mock: GET /list returns an empty story list. Individual
+    // tests override specific calls as needed. Setting a sane default avoids
+    // BootstrapLayer catch-paths and the act() warnings that come from
+    // an unresolved promise firing setState after the test completes.
+    beforeEach(() => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn((url: string, init?: any) => {
+                // Default: respond to GET /list with an empty list. Tests that
+                // need other behaviour install their own mockImplementation.
+                if (!init || init.method === 'GET') {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                return Promise.resolve(mockResponse(200, {}));
+            })
+        );
+    });
     afterEach(() => vi.unstubAllGlobals());
 
-    it('renders the empty state before any story is added', () => {
+    it('renders the empty state before any story is added', async () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
         // Empty state — matches the hardcoded "Select one" in SectionStoryContent.
@@ -36,10 +52,12 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('add-story-button')).toBeDefined();
     });
 
-    it('adds a story tab and selects it when the Add button is clicked', () => {
+    it('adds a story tab and selects it when the Add button is clicked', async () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
-        fireEvent.click(screen.getByTestId('add-story-button'));
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('add-story-button'));
+        });
 
         // A pending-submit hint should replace the empty state because the entry
         // was created locally with chapterCount 0 (no POST yet).
@@ -139,19 +157,166 @@ describe('StoryGeneratorApp', () => {
         });
 
         expect(screen.getByTestId('input-error').textContent).toBe('storyline is required');
-        // No fetch should have been attempted — validation is client-side.
-        expect(globalThis.fetch as any).not.toHaveBeenCalled();
+        // No POST should have been attempted — client-side validation rejects the
+        // empty storyline before any server call. (A GET /list from the
+        // BootstrapLayer may have fired on mount — that's unrelated to the submit.)
+        const postCalls = (globalThis.fetch as any).mock.calls.filter(
+            ([, init]: any[]) => init?.method === 'POST'
+        );
+        expect(postCalls).toEqual([]);
     });
 
-    it('removes a story tab when the ✕ glyph is clicked', () => {
+    it('removes a story tab when the ✕ glyph is clicked', async () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
-        fireEvent.click(screen.getByTestId('add-story-button'));
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('add-story-button'));
+        });
         const tab = screen.getAllByRole('button').find((b) => b.dataset.testid?.startsWith('story-tab-'));
         // Click the remove glyph inside the tab.
-        fireEvent.click(tab!.querySelector('[aria-label="Remove story tab"]')!);
+        await act(async () => {
+            fireEvent.click(tab!.querySelector('[aria-label="Remove story tab"]')!);
+        });
 
         // Back to the empty state — Selected removed → no selected → empty state.
         expect(screen.getByTestId('content-empty').textContent).toBe('Select one');
+    });
+
+    // Bootstrap: GET /list returns existing story IDs on mount → seeded as tabs.
+    it('loads existing stories from the /list endpoint on mount and selects the first', async () => {
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url.endsWith('/list')) {
+                    return Promise.resolve(
+                        mockResponse(200, { stories: ['aaaa-1111', 'bbbb-2222'] })
+                    );
+                }
+                // Specific storyId GETs return empty data so the polling loop
+                // terminates quickly via stability (two identical polls).
+                return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Wait for both tabs to be seeded by BootstrapLayer.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-aaaa-1111')).toBeDefined();
+            expect(screen.getByTestId('story-tab-bbbb-2222')).toBeDefined();
+        });
+
+        // The first loaded story is auto-selected — its content renders the
+        // plotlines collapsible. Since the mock returns empty plotlines for
+        // specific storyIds, the empty-plotlines fallback ("No plotlines yet.")
+        // is shown (matches SectionStoryContent's empty-plotlines branch).
+        await waitFor(() => {
+            expect(screen.getByTestId('plotlines-collapsible-body').textContent).toContain('No plotlines yet.');
+        });
+    });
+
+    // Selecting a remote UUID triggers polling that hydrates its data.
+    // Verify the chapters actually appear after multiple stable polls.
+    it('polls the selected remote story until chapters are stable', async () => {
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url.endsWith('/list')) {
+                    return Promise.resolve(mockResponse(200, { stories: ['remote-uuid-1'] }));
+                }
+                // The specific remote-uuid-1 GET returns a stable 1-chapter story.
+                return Promise.resolve(
+                    mockResponse(200, {
+                        plotlines: '> plot',
+                        chapters: [{ length: 5, content: '## Ch1\n\nbody' }]
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // After bootstrap, the remote story tab appears and is selected. The
+        // polling effect fires GETs for remote-uuid-1 and onData populates
+        // the content area.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-remote-uuid-1')).toBeDefined();
+            expect(screen.getByTestId('plotlines').textContent).toBe('> plot');
+            expect(screen.getByTestId('chapter-0-content').textContent).toBe('## Ch1\n\nbody');
+        });
+
+        // After two stable polls (identical data), isProcessing flips false so
+        // the tab chip's ⏳ badge stops appearing.
+        await waitFor(() => {
+            const tab = screen.getByTestId('story-tab-remote-uuid-1');
+            expect(tab.textContent).not.toContain('⏳');
+        });
+    });
+
+    // Refresh button re-queries /list and merges new entries while preserving
+    // the currently-selected story (by storyId).
+    it('Refresh button re-fetches the /list endpoint and keeps the current selection', async () => {
+        let listResponse = { stories: ['first-uuid'] };
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url.endsWith('/list')) {
+                    return Promise.resolve(mockResponse(200, listResponse));
+                }
+                return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Wait for the initial bootstrap to load first-uuid.
+        await waitFor(() => expect(screen.getByTestId('story-tab-first-uuid')).toBeDefined());
+
+        // Simulate a new story appearing on the server.
+        listResponse = { stories: ['first-uuid', 'second-uuid'] };
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('refresh-stories-button'));
+        });
+
+        // After the refresh resolves, second-uuid should appear as a new tab,
+        // AND first-uuid (the currently-selected story) should still be present.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-first-uuid')).toBeDefined();
+            expect(screen.getByTestId('story-tab-second-uuid')).toBeDefined();
+        });
+
+        // Confirm the selection pointer is still on first-uuid (aria-pressed=true
+        // on its tab).
+        expect(screen.getByTestId('story-tab-first-uuid').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('story-tab-second-uuid').getAttribute('aria-pressed')).toBe('false');
+    });
+
+    // BootstrapLayer failure (server down) sets a non-blocking loadWarning that
+    // the user can see — and the dashboard still renders (Add button available).
+    it('shows a load warning when the initial /list fetch fails, but the dashboard is still usable', async () => {
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url.endsWith('/list')) {
+                    // Server returns 500 with { error } — fetchStoryList throws.
+                    return Promise.resolve(mockResponse(500, { error: 'server on fire' }));
+                }
+                return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // The warning banner appears in the header.
+        await waitFor(() => {
+            const warning = screen.getByTestId('load-warning');
+            expect(warning.textContent).toContain('server on fire');
+        });
+
+        // The empty state is still shown — bootstrap failure does not crash.
+        expect(screen.getByTestId('content-empty').textContent).toBe('Select one');
+        // Add button is available — user can still create a new story locally.
+        expect(screen.getByTestId('add-story-button')).toBeDefined();
     });
 });

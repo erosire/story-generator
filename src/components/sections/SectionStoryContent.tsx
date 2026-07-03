@@ -126,22 +126,38 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         [setStore]
     );
 
-    // Polling effect. Runs whenever the selected entry's id OR chapterCount changes.
-    // Uses selected's chapterCount (the target) and selected.data.chapters.length
-    // (current progress) to drive termination.
+    // Polling effect. Runs whenever the selected entry's id, storyId,
+    // chapterCount, current chapter count, isRemote, or config changes.
+    //
+    // Two ways to start polling:
+    //   1. chapterCount > 0 (fresh POST — known target count). Terminate when
+    //      chapters.length reaches chapterCount.
+    //   2. isRemote === true (entry came from GET /list — unknown target). Pass
+    //      expectedChapterCount=0 so the loop terminates via poll-stability
+    //      (two consecutive identical polls — see api/storyboard.ts).
     React.useEffect(() => {
-        // Don't poll until the user has submitted a storyline (chapterCount > 0).
-        if (!selected || !selected.storyId || selected.chapterCount <= 0) {
+        if (!selected || !selected.storyId) {
             return;
         }
 
-        // If we already have all requested chapters, no need to start polling.
-        if (selected.data && selected.data.chapters.length >= selected.chapterCount) {
+        // Poll only when the entry is in a pollable state:
+        //   - remote (always pollable on selection), OR
+        //   - has a target chapterCount > 0 (fresh POST).
+        const pollable = selected.isRemote || selected.chapterCount > 0;
+        if (!pollable) {
+            return;
+        }
+
+        // If we already have all requested chapters and the target is known,
+        // no need to start polling. (Remote mode has no fixed target — we always
+        // re-poll on selection to refresh, since the story could have new chapters
+        // since the last fetch. The poll loop self-terminates via stability.)
+        if (selected.chapterCount > 0 && selected.data && selected.data.chapters.length >= selected.chapterCount) {
             return;
         }
 
         const entryId = selected.id;
-        const { storyId, chapterCount } = selected;
+        const { storyId, chapterCount, isRemote } = selected;
         const baseUrl = store.config.baseUrl;
         const pollIntervalMs = store.config.pollIntervalMs;
 
@@ -185,7 +201,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         pollStoryData({
             baseUrl,
             storyId,
-            expectedChapterCount: chapterCount,
+            // Pass the known target only when chapterCount > 0. For remote
+            // entries pass 0 → loop terminates via poll-stability instead.
+            expectedChapterCount: chapterCount > 0 ? chapterCount : 0,
             pollIntervalMs,
             shouldStop,
             onData
@@ -237,13 +255,15 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             }
         };
         // Intentionally depend on selected.id, storyId, chapterCount, current
-        // chapter count, and config. We rebuild the effect only when these
-        // destabilize so the loop's shouldStop closure reflects the right entry.
+        // chapter count, isRemote, and config. We rebuild the effect only when
+        // these destabilize so the loop's shouldStop closure reflects the
+        // right entry.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         selected?.id,
         selected?.storyId,
         selected?.chapterCount,
+        selected?.isRemote,
         selected?.data?.chapters.length,
         store.config.baseUrl,
         store.config.pollIntervalMs
@@ -256,7 +276,11 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         );
     }
 
-    if (selected.chapterCount <= 0) {
+    // Pending-submit hint only applies to locally-added entries that have NOT
+    // been POSTed yet (chapterCount === 0 && !isRemote). Remote entries from
+    // the /list endpoint poll on selection regardless of chapterCount, so they
+    // never show this hint — they fall through to the content render below.
+    if (!selected.isRemote && selected.chapterCount <= 0) {
         return (
             <PendingSubmitHint data-testid="content-pending-submit">
                 Enter a storyline and chapter count in the field below, then click

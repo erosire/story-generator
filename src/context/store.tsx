@@ -46,6 +46,14 @@ export type StoryEntry = {
     data: StoryData | null;
     isProcessing: boolean; // true while polling for new chapters
     error: string; // populated if create or fetch failed
+    // True for entries that came from the server's GET /list endpoint (BootstrapLayer
+    // or Refresh). Used by SectionStoryContent's polling effect: remote stories
+    // should fetch & hydrate on selection even though we don't know their
+    // chapterCount upfront (the list response only carries storyId — see
+    // storyboard-generations.yml StoryListResponse). Locally-added entries
+    // (Add button) have isRemote = false and don't poll until the user POSTs a
+    // storyline + chapterCount (chapterCount transitions to > 0).
+    isRemote: boolean;
 };
 
 // The full store shape. `selected` is `StoryEntry | null` (null = nothing selected).
@@ -56,6 +64,11 @@ export type StoryStore = {
         baseUrl: string; // e.g. 'http://127.0.0.1:5000/v1/storyboard/generations'
         pollIntervalMs: number; // how often to re-poll while isProcessing
     };
+    // Optional non-blocking banner set by BootstrapLayer when the initial
+    // fetchStoryList fails (eg. server unreachable). The dashboard header reads
+    // this and shows a small inline warning. Optional because legacy tests /
+    // consumers that don't trigger the bootstrap won't set it.
+    loadWarning?: string;
 };
 
 type StoryStoreContextValue = {

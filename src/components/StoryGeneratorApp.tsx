@@ -13,6 +13,7 @@ import React from 'react';
 import { styled } from '../styles';
 import { StoryStoreProvider } from '../context';
 import { StoryGeneratorDashboard } from './StoryGeneratorDashboard';
+import { BootstrapLayer } from './BootstrapLayer';
 import { SectionStoryTabs, SectionStoryContent, SectionStoryInput } from './sections';
 
 // Full-bleed container that forces the dashboard to fill the viewport.
@@ -49,6 +50,12 @@ export const StoryGeneratorApp: React.FC<StoryGeneratorAppProps> = React.memo(
     ({ configOverrides, initialStore }) => {
         return (
             <StoryStoreProvider configOverrides={configOverrides} initialStore={initialStore}>
+                {/* BootstrapLayer sits inside the provider so it can call
+                    useStoryStore to seed the records from the server's
+                    /list endpoint on mount. Renders nothing — same pattern
+                    as lightning-agent's PersistenceLayer
+                    (library/workflow/lightning-agent/LightningAgentDashboard.tsx:67). */}
+                <BootstrapLayer />
                 <FullScreen>
                     <DarkThemeWrapper>
                         <StoryGeneratorDashboard

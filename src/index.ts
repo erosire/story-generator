@@ -5,5 +5,5 @@
 export { App } from './App';
 export { StoryGeneratorApp } from './components/StoryGeneratorApp';
 export { StoryStoreProvider, useStoryStore } from './context';
-export { createNewStory, fetchStoryData, pollStoryData } from './api';
+export { createNewStory, fetchStoryData, fetchStoryList, pollStoryData } from './api';
 export type { StoryData, Chapter, StoryEntry, StoryStore } from './context';
