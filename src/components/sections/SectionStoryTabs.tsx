@@ -172,7 +172,10 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     No stories yet. Create one below.
                 </EmptyMessage>
             )}
-            {records.map((entry) => {
+            {/* Sort records by storyId descending so the newest story appears
+                at the top. DateTime-format storyIds (YYYYMMDD-HHMMSS) sort
+                correctly as strings in descending order. */}
+            {[...records].sort((a, b) => b.storyId.localeCompare(a.storyId)).map((entry) => {
                 const isSelected = selected?.id === entry.id;
                 const chapterBadge = entry.data && entry.data.chapters.length > 0
                     ? `${entry.data.chapters.length}ch`

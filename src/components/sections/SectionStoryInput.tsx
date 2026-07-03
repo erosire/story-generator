@@ -144,20 +144,23 @@ export const SectionStoryInput: React.FC = React.memo(() => {
         // entry as not processing so the tab doesn't show a stuck spinner.
         let entryId: number | null = null;
         try {
-            // Generate a new storyId for the new story entry. Same logic as
-            // the previous addStory function in SectionStoryTabs.
+            // Generate a storyId in DateTime format: YYYYMMDD-HHMMSS
+            // e.g. "20260703-162233" → 03 July 2026, 4:22:33pm
             entryId = Date.now();
+            const now = new Date();
+            const pad = (n: number) => String(n).padStart(2, '0');
             const storyId =
-                typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-                    ? crypto.randomUUID()
-                    : `story-${entryId}-${Math.random().toString(36).slice(2, 10)}`;
+                `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+                `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 
             // Create the entry with processing state and add to store.
             // The entry is created before the POST so the tab appears immediately.
             const entry = {
                 id: entryId,
                 storyId,
-                title: storyId.slice(0, 8),
+                // Title shows a human-readable version of the DateTime storyId.
+                // e.g. "20260703 4:22pm"
+                title: `${storyId.slice(0, 8)} ${now.getHours()}:${pad(now.getMinutes())}${now.getHours() >= 12 ? 'pm' : 'am'}`,
                 storyline: storyline.trim(),
                 chapterCount,
                 data: null,
@@ -224,10 +227,12 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 styles via React.createElement(Tag, { style, ...rest }) so a
                 consumer `style` prop overwrites the static styles entirely,
                 stripping background/color/border and falling back to browser
-                defaults (black on white). */}
-            <div style={{ minHeight: isFocused ? 60 : 36 }}>
+                defaults (black on white).
+                When focused, minHeight = 10 rows (~200px with 14px font + padding). */}
+            <div style={{ minHeight: isFocused ? 200 : 36 }}>
                 <StorylineTextarea
                     data-testid="storyline-input"
+                    rows={isFocused ? 10 : 1}
                     placeholder="Storyline — e.g. A sci-fi adventure about a crew discovering an ancient alien artifact on Mars."
                     value={storyline}
                     onChange={(e) => setStoryline(e.target.value)}

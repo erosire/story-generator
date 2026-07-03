@@ -105,39 +105,60 @@ export type StoryGeneratorDashboardProps = {
 };
 
 export const StoryGeneratorDashboard: React.FC<StoryGeneratorDashboardProps> = React.memo(
-    ({ headerControls, sidebar, content, footer, sidebarOpen, onOverlayClick }) => (
-        <DashboardShell>
-            <DashboardHeader>
-                {headerControls}
-            </DashboardHeader>
-            <DashboardBody>
-                {/* Sidebar width is dynamic — controlled via inline style since
-                    the vendored styled() helper doesn't support function values. */}
-                <DashboardSidebarPanel
-                    data-testid="sidebar-panel"
-                    style={{
-                        width: sidebarOpen ? 200 : 0,
-                        minWidth: sidebarOpen ? 200 : 0,
-                        maxWidth: sidebarOpen ? 200 : 0,
-                        borderRight: sidebarOpen ? '1px solid rgba(255, 255, 255, 0.12)' : 'none'
-                    }}
-                >
-                    {sidebar}
-                </DashboardSidebarPanel>
-                <DashboardContent>
-                    {/* Overlay covers the content area when the sidebar is open.
-                        Clicking it collapses the sidebar — standard mobile drawer
-                        pattern. Only rendered when open to avoid unnecessary DOM. */}
-                    {sidebarOpen && onOverlayClick && (
-                        <SidebarOverlay
-                            data-testid="sidebar-overlay"
-                            onClick={onOverlayClick}
-                        />
-                    )}
-                    {content}
-                </DashboardContent>
-            </DashboardBody>
-            <DashboardFooter>{footer}</DashboardFooter>
-        </DashboardShell>
-    )
+    ({ headerControls, sidebar, content, footer, sidebarOpen, onOverlayClick }) => {
+        // Track whether the viewport is mobile (<768px). The overlay only appears
+        // on mobile where the sidebar overlaps content — on desktop the sidebar
+        // takes fixed space and the user closes it via the toggle button.
+        const [isMobile, setIsMobile] = React.useState(() => {
+            if (typeof window !== 'undefined' && window.matchMedia) {
+                return window.matchMedia('(max-width: 767px)').matches;
+            }
+            return false;
+        });
+
+        React.useEffect(() => {
+            if (typeof window === 'undefined' || !window.matchMedia) return;
+            const mql = window.matchMedia('(max-width: 767px)');
+            const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+            mql.addEventListener('change', handler);
+            return () => mql.removeEventListener('change', handler);
+        }, []);
+
+        return (
+            <DashboardShell>
+                <DashboardHeader>
+                    {headerControls}
+                </DashboardHeader>
+                <DashboardBody>
+                    {/* Sidebar width is dynamic — controlled via inline style since
+                        the vendored styled() helper doesn't support function values. */}
+                    <DashboardSidebarPanel
+                        data-testid="sidebar-panel"
+                        style={{
+                            width: sidebarOpen ? 200 : 0,
+                            minWidth: sidebarOpen ? 200 : 0,
+                            maxWidth: sidebarOpen ? 200 : 0,
+                            borderRight: sidebarOpen ? '1px solid rgba(255, 255, 255, 0.12)' : 'none'
+                        }}
+                    >
+                        {sidebar}
+                    </DashboardSidebarPanel>
+                    <DashboardContent>
+                        {/* Overlay covers the content area when the sidebar is open
+                            on mobile — clicking it collapses the sidebar (standard
+                            drawer pattern). On desktop the sidebar takes fixed space
+                            and no overlay is needed. */}
+                        {sidebarOpen && isMobile && onOverlayClick && (
+                            <SidebarOverlay
+                                data-testid="sidebar-overlay"
+                                onClick={onOverlayClick}
+                            />
+                        )}
+                        {content}
+                    </DashboardContent>
+                </DashboardBody>
+                <DashboardFooter>{footer}</DashboardFooter>
+            </DashboardShell>
+        );
+    }
 );
