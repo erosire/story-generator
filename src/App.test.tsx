@@ -62,8 +62,11 @@ describe('StoryGeneratorApp', () => {
         // A pending-submit hint should replace the empty state because the entry
         // was created locally with chapterCount 0 (no POST yet).
         expect(screen.getByTestId('content-pending-submit')).toBeDefined();
-        // The storyline textarea should now be visible.
+        // The storyline textarea should now be visible (in minimal/collapsed state).
         expect(screen.getByTestId('storyline-input')).toBeDefined();
+        // Controls (generate button, chapter count) are hidden when unfocused.
+        expect(screen.queryByTestId('generate-button')).toBeNull();
+        expect(screen.queryByTestId('chapter-count-input')).toBeNull();
     });
 
     it('POSTs the storyline + chapterCount to the server on Generate and starts polling', async () => {
@@ -98,6 +101,14 @@ describe('StoryGeneratorApp', () => {
         const tabButton = screen.getAllByRole('button').find((b) => b.dataset.testid?.startsWith('story-tab-'))!;
         const storyId = (tabButton.dataset.testid ?? '').replace('story-tab-', '');
         expect(storyId.length).toBeGreaterThan(0);
+
+        // Focus the textarea to reveal the generate button and chapter count.
+        fireEvent.focus(screen.getByTestId('storyline-input'));
+        // Controls should now be visible after focus.
+        await waitFor(() => {
+            expect(screen.getByTestId('generate-button')).toBeDefined();
+            expect(screen.getByTestId('chapter-count-input')).toBeDefined();
+        });
 
         fireEvent.change(screen.getByTestId('storyline-input'), {
             target: { value: 'A sci-fi adventure on Mars.' }
@@ -152,6 +163,11 @@ describe('StoryGeneratorApp', () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
         fireEvent.click(screen.getByTestId('add-story-button'));
+        // Focus the textarea to reveal the controls.
+        fireEvent.focus(screen.getByTestId('storyline-input'));
+        await waitFor(() => {
+            expect(screen.getByTestId('generate-button')).toBeDefined();
+        });
         // Leave storyline blank, set chapter count to 1, click Generate.
         fireEvent.change(screen.getByTestId('chapter-count-input'), {
             target: { value: '1' }
