@@ -1,0 +1,10 @@
+node_modules
+dist
+lib
+app
+build
+keys
+coverage
+temporary/
+.turbo
+storybook-static
