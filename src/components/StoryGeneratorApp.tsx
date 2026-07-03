@@ -1,13 +1,19 @@
 // Main dashboard component for the story generator.
 //
-// Mirrors library/workflow/lightning-agent/LightningAgentDashboard.tsx:
+// Composes the two-column layout:
 //   <ContextProvider>
-//     <FullScreen><DarkThemeWrapper><Dashboard/></DarkThemeWrapper></FullScreen>
+//     <BootstrapLayer />
+//     <FullScreen><DarkThemeWrapper>
+//       <Dashboard
+//         headerControls={toggle icon + title}
+//         sidebar={<SectionStoryTabs />}
+//         content={<SectionStoryContent />}
+//         footer={<SectionStoryInput />}
+//       />
+//     </DarkThemeWrapper></FullScreen>
 //   </ContextProvider>
 //
-// We don't reuse the lightning-agent FullScreen (depends on @react/headless) —
-// we vendor a minimal full-screen + dark-theme wrapper here because the
-// distribution package only declares react/react-dom as deps (see package.json).
+// The sidebar is toggled via a hamburger icon (☰) in the header. Default open.
 
 import React from 'react';
 import { styled } from '../styles';
@@ -25,9 +31,7 @@ const FullScreen = styled('div', {
     overflow: 'hidden'
 });
 
-// Dark theme wrapper. Adds CSS custom properties consumed by descendant
-// styled elements (none of the lightning-agent's MUI overrides apply here
-// since this dashboard doesn't use MUI — see the styled helper in styles/styled.tsx).
+// Dark theme wrapper.
 const DarkThemeWrapper = styled('div', {
     width: '100%',
     height: '100%',
@@ -39,6 +43,33 @@ const DarkThemeWrapper = styled('div', {
     fontFamily: 'system-ui, -apple-system, sans-serif'
 });
 
+// Toggle button — hamburger icon that opens/closes the sidebar.
+const ToggleButton = styled('button', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 32,
+    height: 32,
+    flex: '0 0 auto',
+    borderRadius: 6,
+    border: '1px solid rgba(255, 255, 255, 0.15)',
+    backgroundColor: 'transparent',
+    color: '#e0e0e0',
+    cursor: 'pointer',
+    fontSize: 16,
+    lineHeight: 1,
+    padding: 0
+});
+
+// App title text in the header.
+const HeaderTitle = styled('span', {
+    fontSize: 14,
+    fontWeight: 600,
+    color: '#c0c0c0',
+    whiteSpace: 'nowrap' as const,
+    userSelect: 'none' as const
+});
+
 // Composed dashboard. Accepts optional store overrides (used by tests and by
 // future callers that want to point at a different storyboard base URL).
 export type StoryGeneratorAppProps = {
@@ -48,18 +79,29 @@ export type StoryGeneratorAppProps = {
 
 export const StoryGeneratorApp: React.FC<StoryGeneratorAppProps> = React.memo(
     ({ configOverrides, initialStore }) => {
+        // Sidebar open/close state. Default open so the user sees the story list.
+        const [sidebarOpen, setSidebarOpen] = React.useState(true);
+
         return (
             <StoryStoreProvider configOverrides={configOverrides} initialStore={initialStore}>
-                {/* BootstrapLayer sits inside the provider so it can call
-                    useStoryStore to seed the records from the server's
-                    /list endpoint on mount. Renders nothing — same pattern
-                    as lightning-agent's PersistenceLayer
-                    (library/workflow/lightning-agent/LightningAgentDashboard.tsx:67). */}
                 <BootstrapLayer />
                 <FullScreen>
                     <DarkThemeWrapper>
                         <StoryGeneratorDashboard
-                            header={<SectionStoryTabs />}
+                            sidebarOpen={sidebarOpen}
+                            headerControls={
+                                <>
+                                    <ToggleButton
+                                        onClick={() => setSidebarOpen((prev) => !prev)}
+                                        aria-label="Toggle story sidebar"
+                                        data-testid="sidebar-toggle"
+                                    >
+                                        ☰
+                                    </ToggleButton>
+                                    <HeaderTitle>Story Generator</HeaderTitle>
+                                </>
+                            }
+                            sidebar={<SectionStoryTabs />}
                             content={<SectionStoryContent />}
                             footer={<SectionStoryInput />}
                         />

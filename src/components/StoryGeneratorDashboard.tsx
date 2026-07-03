@@ -1,21 +1,25 @@
-// One-column dashboard layout for the story generator.
-//
-// Mirrors packages/react/headless/components/dashboard/OneColumnDashboard.tsx
-// (header / scrollable content / footer stacked vertically into a 100vh column).
-//
-// We don't use the upstream `oneColumnDashboard` prototypeComponent because the
-// distribution package doesn't depend on @presource/react — see src/styles/styled.tsx.
+// Two-column dashboard layout for the story generator.
 //
 // Layout:
-//   - full-height flex column
-//   - header: natural height (story tabs row)
-//   - content: flex 1, scrollable (plotlines + chapters)
-//   - footer: natural height (storyline input form)
+//   ┌──────────────────────────────────────┐
+//   │ [☰] Story Generator                  │  ← header (minimal: toggle + title)
+//   ├──────────┬───────────────────────────┤
+//   │ Stories  │                           │
+//   │ ──────── │     Content area          │
+//   │ Story 1  │     (plotlines, chapters) │
+//   │ Story 2  │                           │
+//   │          │                           │
+//   ├──────────┴───────────────────────────┤
+//   │ [Storyline input...] [Generate]      │  ← footer
+//   └──────────────────────────────────────┘
+//
+// The sidebar (left column) is collapsible — toggled by a button in the header.
+// When collapsed, the main content area fills the full width.
 
 import React from 'react';
 import { styled } from '../styles';
 
-// Outer container — fills its parent (which is the dark-themed FullScreen wrapper).
+// Outer container — fills its parent (the dark-themed FullScreen wrapper).
 export const DashboardShell = styled('div', {
     display: 'flex',
     flexDirection: 'column',
@@ -24,21 +28,41 @@ export const DashboardShell = styled('div', {
     overflow: 'hidden'
 });
 
-// Header row — pinned at the top, no scroll. Used by SectionStoryTabs.
+// Header row — pinned at the top, minimal. Contains the sidebar toggle icon
+// and an optional title. No story tabs here anymore.
 export const DashboardHeader = styled('div', {
     display: 'flex',
     flexDirection: 'row',
     alignItems: 'center',
     flex: '0 0 auto',
-    padding: '8px 12px',
+    padding: '6px 12px',
     borderBottom: '1px solid rgba(255, 255, 255, 0.12)',
     gap: 8,
-    overflowX: 'auto',
-    overflowY: 'hidden',
-    minHeight: 48
+    minHeight: 40
 });
 
-// Scrollable content region between header and footer.
+// Middle row: sidebar + main content, side by side.
+export const DashboardBody = styled('div', {
+    display: 'flex',
+    flexDirection: 'row',
+    flex: '1 1 auto',
+    overflow: 'hidden'
+});
+
+// Sidebar panel — fixed width when open, zero when collapsed.
+// CSS transition on width gives a smooth slide animation.
+// Width is controlled via inline style (the vendored styled() helper doesn't
+// support function values — see src/styles/styled.tsx:15).
+const DashboardSidebarPanel = styled('div', {
+    flex: '0 0 auto',
+    borderRight: '1px solid rgba(255, 255, 255, 0.12)',
+    overflow: 'hidden',
+    transition: 'width 0.15s ease, min-width 0.15s ease, max-width 0.15s ease',
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    boxSizing: 'border-box' as const
+});
+
+// Main content column — fills remaining width after sidebar.
 export const DashboardContent = styled('div', {
     flex: '1 1 auto',
     overflowY: 'auto',
@@ -55,18 +79,38 @@ export const DashboardFooter = styled('div', {
     gap: 8
 });
 
-// Composed dashboard. Accepts the three ReactNode slots.
+// Composed dashboard. Accepts slots for header controls, sidebar content,
+// main content, and footer.
 export type StoryGeneratorDashboardProps = {
-    header: React.ReactNode;
+    headerControls: React.ReactNode;
+    sidebar: React.ReactNode;
     content: React.ReactNode;
     footer: React.ReactNode;
+    sidebarOpen: boolean;
 };
 
 export const StoryGeneratorDashboard: React.FC<StoryGeneratorDashboardProps> = React.memo(
-    ({ header, content, footer }) => (
+    ({ headerControls, sidebar, content, footer, sidebarOpen }) => (
         <DashboardShell>
-            <DashboardHeader>{header}</DashboardHeader>
-            <DashboardContent>{content}</DashboardContent>
+            <DashboardHeader>
+                {headerControls}
+            </DashboardHeader>
+            <DashboardBody>
+                {/* Sidebar width is dynamic — controlled via inline style since
+                    the vendored styled() helper doesn't support function values. */}
+                <DashboardSidebarPanel
+                    data-testid="sidebar-panel"
+                    style={{
+                        width: sidebarOpen ? 200 : 0,
+                        minWidth: sidebarOpen ? 200 : 0,
+                        maxWidth: sidebarOpen ? 200 : 0,
+                        borderRight: sidebarOpen ? '1px solid rgba(255, 255, 255, 0.12)' : 'none'
+                    }}
+                >
+                    {sidebar}
+                </DashboardSidebarPanel>
+                <DashboardContent>{content}</DashboardContent>
+            </DashboardBody>
             <DashboardFooter>{footer}</DashboardFooter>
         </DashboardShell>
     )

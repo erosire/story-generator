@@ -32,10 +32,9 @@
 //   looping on a count target.
 //
 //   -> Decision: keep it simple. Seed chapterCount = 0 (matches the
-//   SectionStoryContent "pending submit" empty state) and provide a Refresh
-//   affordance in the tabs for explicit re-poll. The complexity of a sentinel
-//   wasn't requested; the user asked for listing existing stories in the
-//   header, not auto-fetching every story's contents at startup.
+//   SectionStoryContent "pending submit" empty state). The sidebar auto-refreshes
+//   periodically to pick up new stories, so there's no need for a manual Refresh
+//   button or a sentinel-based single-fetch mechanism.
 
 import React from 'react';
 import { useStoryStore } from '../context';
@@ -78,7 +77,7 @@ export const BootstrapLayer: React.FC = React.memo(() => {
         fetchStoryList(baseUrl)
             .then(({ stories }) => {
                 // No stories → leave store.records empty (the user can still
-                // click Add to create one locally, then POST via the form).
+                // type a storyline and click Generate to create one locally).
                 if (!stories || stories.length === 0) {
                     return;
                 }

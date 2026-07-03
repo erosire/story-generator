@@ -46,7 +46,7 @@ const EmptyState = styled('div', {
 });
 
 // Hint shown when a story is selected but its generation hasn't been triggered
-// (i.e. the user only clicked "+ Add" but hasn't submitted a storyline yet).
+// (i.e. the user hasn't submitted a storyline via the Generate button yet).
 const PendingSubmitHint = styled('div', {
     color: '#a0a0a0',
     padding: 24

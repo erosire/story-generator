@@ -1,225 +1,228 @@
-// Header section: horizontal scrollable list of story tabs (one per created story).
+// Sidebar section: vertical list of all stories in order.
 //
-// Mirrors library/workflow/lightning-agent/components/SectionScrollableTab.tsx:
-//   - reads records from the reactive store
-//   - each tab is a chip: label = story title (derived from storyId), with an
-//     isProcessing indicator if the story is still being generated
-//   - clicking a tab selects it (store.selected = entry)
-//   - each tab has a remove (x) button that drops it from records
+// Replaces the previous horizontal tab bar. Each item shows the story title,
+// a chapter-count badge, and a processing indicator. Clicking an item selects
+// it (store.selected = entry) so the content area displays that story.
 //
-// Stories are created via the Generate button in SectionStoryInput, which
-// generates a new storyId locally and POSTs to the server. There is no
-// separate "Add" button — clicking Generate both creates the story entry
-// and triggers generation.
+// No remove button — the list is read-only. No manual refresh button — the
+// sidebar auto-refreshes periodically by polling GET /list to pick up stories
+// created by other sessions/devices.
+//
+// Auto-refresh behavior:
+//   - On mount, fetches /list once (via BootstrapLayer) to seed the store.
+//   - A useEffect runs every REFRESH_INTERVAL_MS (30s) to re-fetch /list
+//     and merge new entries while preserving the current selection and any
+//     locally-cached chapter data.
+//   - Errors surface as a non-blocking loadWarning (same as BootstrapLayer).
 
 import React from 'react';
 import { styled } from '../../styles';
 import { useStoryStore } from '../../context';
 import { fetchStoryList } from '../../api';
 
-// Tab chip. Shows the storyId-derived title; flags in-progress generation with
-// a small spinner glyph and a word-count badge once data arrives.
-const TabChip = styled('button', {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '4px 10px',
-    borderRadius: 16,
-    fontSize: 13,
-    border: '1px solid rgba(255, 255, 255, 0.18)',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    color: '#e0e0e0',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-    flex: '0 0 auto'
+// How often to auto-refresh the story list from the server (30 seconds).
+// Short enough to pick up new stories quickly, long enough to avoid hammering.
+const REFRESH_INTERVAL_MS = 30_000;
+
+// Sidebar container — fills its parent's height, scrollable if stories overflow.
+const SidebarContainer = styled('div', {
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    padding: '8px 0',
+    boxSizing: 'border-box'
 });
 
-// Selected variant — visually distinct from unselected chips.
-// Uses a permissive prop type so arbitrary `data-*` attrs (e.g. test ids) pass.
-type TabChipSelectedProps = { children?: React.ReactNode } & {
-    [key: string]: unknown;
-} & React.HTMLAttributes<HTMLButtonElement>;
-const TabChipSelected: React.FC<TabChipSelectedProps> = (props) => (
-        // The override is applied after the base style via the spread (lower in
-        // the cascade wins in plain objects), giving the selected chip a solid bg.
-        <TabChip {...props} style={{ ...props.style, backgroundColor: '#3a6ea5', borderColor: '#5a9fe0' }}>
-            {props.children}
-        </TabChip>
-    );
+// Section label at the top of the sidebar.
+const SectionLabel = styled('div', {
+    padding: '4px 12px',
+    fontSize: 11,
+    fontWeight: 600,
+    color: '#808080',
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5
+});
 
-// Remove (x) glyph — uses plain text since this package has no icon set.
-const RemoveGlyph: React.FC<{ onClick: (e: React.MouseEvent) => void }> = ({ onClick }) => (
-    // Stop propagation so the click doesn't also reselect the tab.
-    <span
-        role="button"
-        aria-label="Remove story tab"
-        onClick={(e) => {
-            e.stopPropagation();
-            onClick(e);
-        }}
-        style={{ opacity: 0.6, fontWeight: 'bold', padding: '0 2px' }}
-    >
-        ✕
-    </span>
-);
-
-// "Add" button — a square icon-like button appended after the chip row.
-const AddButton = styled('button', {
-    display: 'inline-flex',
+// Individual story item in the list.
+const StoryItem = styled('button', {
+    display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    width: 32,
-    height: 32,
-    flex: '0 0 auto',
-    borderRadius: 16,
-    border: '1px dashed rgba(255, 255, 255, 0.25)',
+    gap: 8,
+    width: '100%',
+    padding: '8px 12px',
+    border: 'none',
     backgroundColor: 'transparent',
     color: '#e0e0e0',
     cursor: 'pointer',
-    fontSize: 18
+    textAlign: 'left' as const,
+    fontSize: 13,
+    lineHeight: 1.4,
+    boxSizing: 'border-box' as const,
+    transition: 'background-color 0.1s ease'
+});
+
+// Selected variant — highlighted background.
+type StoryItemSelectedProps = { children?: React.ReactNode } & {
+    [key: string]: unknown;
+} & React.HTMLAttributes<HTMLButtonElement>;
+const StoryItemSelected: React.FC<StoryItemSelectedProps> = (props) => (
+    <StoryItem
+        {...props}
+        style={{
+            ...props.style,
+            backgroundColor: 'rgba(58, 110, 165, 0.35)',
+            color: '#ffffff'
+        }}
+    >
+        {props.children}
+    </StoryItem>
+);
+
+// Title text — truncated if too long.
+const StoryTitle = styled('span', {
+    flex: '1 1 auto',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const
+});
+
+// Badge for chapter count or processing status.
+const Badge = styled('span', {
+    flex: '0 0 auto',
+    fontSize: 11,
+    color: '#a0a0a0',
+    background: 'rgba(255, 255, 255, 0.06)',
+    padding: '1px 5px',
+    borderRadius: 3
+});
+
+// Empty-state message when no stories exist.
+const EmptyMessage = styled('div', {
+    padding: '16px 12px',
+    color: '#6b6b6b',
+    fontSize: 13,
+    fontStyle: 'italic'
 });
 
 export const SectionStoryTabs: React.FC = React.memo(() => {
     const { store, setStore } = useStoryStore();
     const { records, selected } = store;
 
-    // Remove a story from records (and clear selection if it was the active one).
-    const removeStory = (id: number) => {
-        setStore((prev) => {
-            const filtered = prev.records.filter((e) => e.id !== id);
-            // If the removed entry was selected, fall back to the last remaining
-            // entry (or null if none left) — mirrors SectionScrollableTab.tsx:40-46.
-            const nextSelected =
-                prev.selected?.id === id
-                    ? filtered.length > 0
-                        ? filtered[filtered.length - 1]
-                        : null
-                    : prev.selected;
-            return { ...prev, records: filtered, selected: nextSelected };
-        });
-    };
+    // Auto-refresh: periodically fetch /list to pick up new stories.
+    // Uses the same merge logic as the old manual Refresh button — preserve
+    // the current selection by storyId and keep any locally-cached chapter data.
+    React.useEffect(() => {
+        const baseUrl = store.config.baseUrl;
 
-    // Refresh the record list from the server's /list endpoint. Used by the
-    // Refresh button to pick up stories that other sessions/devices created in
-    // this dashboard's absence, or to recover after a BootstrapLayer failure.
-    // We preserve selected by storyId so the active story stays active after
-    // the reload; entries that no longer exist on the server are removed.
-    const [isRefreshing, setIsRefreshing] = React.useState(false);
-    const refreshStories = async () => {
-        setIsRefreshing(true);
-        try {
-            const { stories } = await fetchStoryList(store.config.baseUrl);
-            // Preserve ordering/styling of BootstrapLayer: derivatives are
-            // negative ids so they don't collide with new Date.now() ids.
-            const entries = stories.map((sid, i) => ({
-                id: -(Date.now() + i + 1),
-                storyId: sid,
-                title: sid.slice(0, 8),
-                storyline: '',
-                chapterCount: 0,
-                data: null,
-                isProcessing: false,
-                error: '',
-                // Refresh entries come from the server's /list endpoint — same
-                // as BootstrapLayer, mark them remote so the polling effect
-                // hydrates their data on selection.
-                isRemote: true
-            }));
-            setStore((prev) => {
-                // Build a lookup by storyId for previously-loaded data. We want
-                // to preserve any cached chapter data / isProcessing flags the
-                // user picked up by selecting entries during this session.
-                const prevByStoryId = new Map(prev.records.map((r) => [r.storyId, r]));
-                const merged = entries.map((e) => {
-                    const cached = prevByStoryId.get(e.storyId);
-                    return cached ?? e;
+        const refresh = async () => {
+            try {
+                const { stories } = await fetchStoryList(baseUrl);
+                if (!stories || stories.length === 0) return;
+
+                // Build entries from the server list, same shape as BootstrapLayer.
+                const entries = stories.map((sid, i) => ({
+                    id: -(Date.now() + i + 1),
+                    storyId: sid,
+                    title: sid.slice(0, 8),
+                    storyline: '',
+                    chapterCount: 0,
+                    data: null,
+                    isProcessing: false,
+                    error: '',
+                    isRemote: true
+                }));
+
+                setStore((prev) => {
+                    // Merge: keep cached data for stories we already know about.
+                    const prevByStoryId = new Map(prev.records.map((r) => [r.storyId, r]));
+                    const merged = entries.map((e) => prevByStoryId.get(e.storyId) ?? e);
+
+                    // Preserve current selection by storyId.
+                    let selected = prev.selected;
+                    if (prev.selected) {
+                        selected = merged.find((m) => m.storyId === prev.selected!.storyId) ?? (merged.length > 0 ? merged[0] : null);
+                    } else if (merged.length > 0) {
+                        selected = merged[0];
+                    }
+                    return { ...prev, records: merged, selected, loadWarning: undefined };
                 });
-                // Re-select the previously-selected entry by storyId; if it's now
-                // gone from the server list, fall back to the first entry (or null).
-                let selected = prev.selected;
-                if (prev.selected) {
-                    selected = merged.find((m) => m.storyId === prev.selected!.storyId) ?? (merged.length > 0 ? merged[0] : null);
-                } else if (merged.length > 0) {
-                    selected = merged[0];
-                }
-                return { ...prev, records: merged, selected, loadWarning: undefined };
-            });
-        } catch (err: any) {
-            setStore((prev) => ({ ...prev, loadWarning: err?.message ?? 'Failed to refresh story list' }));
-        } finally {
-            setIsRefreshing(false);
-        }
-    };
+            } catch {
+                // Silently ignore refresh errors — the UI already shows whatever
+                // records were last loaded. Only the initial bootstrap sets
+                // loadWarning since that's the user's first impression.
+            }
+        };
+
+        // Set up the interval. Run once immediately (the BootstrapLayer handles
+        // the initial mount fetch, so we skip the immediate call here to avoid
+        // a double-fetch — the interval fires after REFRESH_INTERVAL_MS).
+        const intervalId = setInterval(refresh, REFRESH_INTERVAL_MS);
+        return () => clearInterval(intervalId);
+        // Re-subscribe if the baseUrl changes (unlikely in practice, but correct).
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [store.config.baseUrl, setStore]);
 
     return (
-        <>
-            {/* A small inline warning if BootstrapLayer failed to load —
-                shown before the tab row so the user knows the backend is
-                unreachable but can still use the dashboard. */}
+        <SidebarContainer data-testid="sidebar">
+            <SectionLabel>Stories</SectionLabel>
+            {records.length === 0 && (
+                <EmptyMessage data-testid="sidebar-empty">
+                    No stories yet. Create one below.
+                </EmptyMessage>
+            )}
+            {records.map((entry) => {
+                const isSelected = selected?.id === entry.id;
+                const chapterBadge = entry.data && entry.data.chapters.length > 0
+                    ? `${entry.data.chapters.length}ch`
+                    : '';
+                const processingBadge = entry.isProcessing ? '⏳' : '';
+
+                const itemProps = {
+                    onClick: () => setStore((prev) => ({ ...prev, selected: entry })),
+                    'data-testid': `story-tab-${entry.storyId}`,
+                    'aria-pressed': isSelected
+                };
+
+                return (
+                    <React.Fragment key={entry.id}>
+                        {isSelected ? (
+                            <StoryItemSelected {...itemProps}>
+                                <StoryTitle>{entry.title}</StoryTitle>
+                                {chapterBadge && <Badge>{chapterBadge}</Badge>}
+                                {processingBadge && <Badge>{processingBadge}</Badge>}
+                            </StoryItemSelected>
+                        ) : (
+                            <StoryItem {...itemProps}>
+                                <StoryTitle>{entry.title}</StoryTitle>
+                                {chapterBadge && <Badge>{chapterBadge}</Badge>}
+                                {processingBadge && <Badge>{processingBadge}</Badge>}
+                            </StoryItem>
+                        )}
+                    </React.Fragment>
+                );
+            })}
+            {/* Load warning — shown if BootstrapLayer or auto-refresh failed. */}
             {store.loadWarning && (
-                <span
+                <div
                     data-testid="load-warning"
                     title={store.loadWarning}
                     style={{
                         fontSize: 11,
                         color: '#ff9b6b',
                         background: 'rgba(255, 107, 107, 0.08)',
-                        padding: '2px 6px',
+                        padding: '4px 8px',
+                        margin: '8px 8px 0',
                         borderRadius: 4,
                         whiteSpace: 'nowrap',
-                        flex: '0 0 auto'
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
                     }}
                 >
                     ⚠ {store.loadWarning}
-                </span>
+                </div>
             )}
-            {records.map((entry) => {
-                const isSelected = selected?.id === entry.id;
-                // Chip label: title + (chapter count badge once data exists).
-                const chapterBadge = entry.data && entry.data.chapters.length > 0
-                    ? ` · ${entry.data.chapters.length}ch`
-                    : '';
-                const processingBadge = entry.isProcessing ? ' ⏳' : '';
-
-                // chipProps loose-typed so kebab-case data-* / aria-* attrs pass TS.
-                const chipProps: { onClick: () => void; 'data-testid': string; 'aria-pressed': boolean } = {
-                    onClick: () =>
-                        setStore((prev) => ({ ...prev, selected: entry })),
-                    'data-testid': `story-tab-${entry.storyId}`,
-                    'aria-pressed': isSelected
-                };
-
-                return (
-                    // key by entry.id (stable across store updates) — storyId is
-                    // generated at creation so it's also stable, but id (timestamp)
-                    // is enough.
-                    <React.Fragment key={entry.id}>
-                        {isSelected ? (
-                            <TabChipSelected {...chipProps}>
-                                <span>{entry.title}{chapterBadge}{processingBadge}</span>
-                                <RemoveGlyph onClick={() => removeStory(entry.id)} />
-                            </TabChipSelected>
-                        ) : (
-                            <TabChip {...chipProps}>
-                                <span>{entry.title}{chapterBadge}{processingBadge}</span>
-                                <RemoveGlyph onClick={() => removeStory(entry.id)} />
-                            </TabChip>
-                        )}
-                    </React.Fragment>
-                );
-            })}
-            {/* Refresh icon button re-fetches the /list endpoint. Visible whether
-                or not records exist so the user can recover from a BootstrapLayer
-                load failure without reloading the page. */}
-            <AddButton
-                onClick={refreshStories}
-                aria-label="Refresh story list"
-                data-testid="refresh-stories-button"
-                disabled={isRefreshing}
-                style={{ borderStyle: 'solid' }}
-            >
-                {isRefreshing ? '…' : '⟳'}
-            </AddButton>
-        </>
+        </SidebarContainer>
     );
 });
