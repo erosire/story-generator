@@ -5,7 +5,7 @@
     "type": "module",
     "main": "src/main.tsx",
     "scripts": {
-        "dev": "vite",
+        "dev": "vite --host",
         "build": "vite build",
         "preview": "vite preview",
         "test": "vitest run",
