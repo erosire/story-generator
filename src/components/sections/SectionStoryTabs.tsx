@@ -1,5 +1,4 @@
-// Header section: horizontal scrollable list of story tabs (one per created story)
-// plus an "Add" button to create a new (empty) story entry.
+// Header section: horizontal scrollable list of story tabs (one per created story).
 //
 // Mirrors library/workflow/lightning-agent/components/SectionScrollableTab.tsx:
 //   - reads records from the reactive store
@@ -8,11 +7,10 @@
 //   - clicking a tab selects it (store.selected = entry)
 //   - each tab has a remove (x) button that drops it from records
 //
-// Unlike lightning-agent, we don't create the network resource on "Add" — the
-// empty entry is created locally and only POSTed to the server when the user
-// submits a storyline from SectionStoryInput. This separates "intend to create
-// a story" from "trigger generation", matching the storyboard POST API which
-// requires the storyline + chapterCount body to start generating.
+// Stories are created via the Generate button in SectionStoryInput, which
+// generates a new storyId locally and POSTs to the server. There is no
+// separate "Add" button — clicking Generate both creates the story entry
+// and triggers generation.
 
 import React from 'react';
 import { styled } from '../../styles';
@@ -99,42 +97,6 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     : prev.selected;
             return { ...prev, records: filtered, selected: nextSelected };
         });
-    };
-
-    // Add a new *empty* entry. storyId is generated client-side as a UUID-like
-    // string (crypto.randomUUID when available, falling back to a timestamp+random
-    // blob). The actual POST to the server happens later, in SectionStoryInput,
-    // when the user supplies the storyline + chapterCount.
-    const addStory = () => {
-        const id = Date.now();
-        // crypto.randomUUID is available in modern browsers and jsdom (node 19+).
-        // Fall back to a deterministic-ish id for older test runners.
-        const storyId =
-            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-                ? crypto.randomUUID()
-                : `story-${id}-${Math.random().toString(36).slice(2, 10)}`;
-
-        const entry = {
-            id,
-            storyId,
-            // Title holds a placeholder until generation produces plotlines; once
-            // data arrives SectionStoryContent/SectionStoryTabs can re-derive it.
-            title: storyId.slice(0, 8),
-            storyline: '',
-            chapterCount: 0,
-            data: null,
-            isProcessing: false,
-            error: '',
-            // Locally added — don't fetch on selection. The user must POST a
-            // storyline via SectionStoryInput before polling kicks in.
-            isRemote: false
-        };
-
-        setStore((prev) => ({
-            ...prev,
-            records: [...prev.records, entry],
-            selected: entry
-        }));
     };
 
     // Refresh the record list from the server's /list endpoint. Used by the
@@ -246,9 +208,6 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     </React.Fragment>
                 );
             })}
-            <AddButton onClick={addStory} aria-label="Add new story" data-testid="add-story-button">
-                +
-            </AddButton>
             {/* Refresh icon button re-fetches the /list endpoint. Visible whether
                 or not records exist so the user can recover from a BootstrapLayer
                 load failure without reloading the page. */}

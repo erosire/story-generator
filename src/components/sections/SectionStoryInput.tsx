@@ -1,25 +1,17 @@
 // Footer section: storyline + chapterCount input form.
 //
-// On submit it POSTs to /v1/storyboard/generations/:storyId with the entered
-// storyline + chapterCount (matching the server's expected body — see
-// generation-create-new-story.ts:219). The storyId comes from the currently
-// selected entry (created locally by SectionStoryTabs → Add button).
+// On submit it creates a new story entry locally (generating a fresh storyId),
+// adds it to the store, selects it, and POSTs to /v1/storyboard/generations/:storyId
+// with the entered storyline + chapterCount (matching the server's expected body —
+// see generation-create-new-story.ts:219).
 //
-// After a successful POST we:
-//   1. Persist the storyline + chapterCount on the selected entry so the
-//      content section starts polling.
-//   2. Mark isProcessing = true so the tab chip shows the spinner.
+// After a successful POST the form is cleared and collapsed so the user can
+// immediately start the next story. The new story tab appears in SectionStoryTabs
+// and the content section starts polling for generation progress.
 //
-// Server behavior note: POST returns the storyId immediately and kicks off the
-// background generation fire-and-forget (generation-create-new-story.ts:236).
-// So a 200 here means "request accepted", not "generation complete" — the
-// polling loop in SectionStoryContent picks up from there.
-//
-// Focus-driven visibility: the generate button + chapter count row are only
-// visible when the input area is focused (textarea or chapter input). When
-// unfocused, the section collapses to a minimal footprint — a single-line
-// textarea bar that expands on focus. This keeps the footer unobtrusive
-// while still being immediately accessible.
+// The input area is always visible (no selected story required) — the user types
+// a storyline, optionally adjusts the chapter count, and clicks Generate to create
+// a story. This replaces the previous "Add button → fill form → Generate" flow.
 
 import React from 'react';
 import { styled } from '../../styles';
@@ -133,10 +125,6 @@ export const SectionStoryInput: React.FC = React.memo(() => {
         }
     }, []);
 
-    // No selected story → render nothing (the header will show the Add button).
-    // Mirrors SectionUserInput.tsx:14 (`if (!store.selected.hasOwnProperty('memory')) return null;`).
-    if (!selected) return null;
-
     // Validation: storyline must be non-empty; chapterCount must be a positive int.
     // Matches server-side validation in generation-create-new-story.ts:222-233.
     const onSubmit = async () => {
@@ -152,56 +140,70 @@ export const SectionStoryInput: React.FC = React.memo(() => {
         }
 
         setIsSubmitting(true);
+        // Capture entryId for error handling — if POST fails, we mark the
+        // entry as not processing so the tab doesn't show a stuck spinner.
+        let entryId: number | null = null;
         try {
+            // Generate a new storyId for the new story entry. Same logic as
+            // the previous addStory function in SectionStoryTabs.
+            entryId = Date.now();
+            const storyId =
+                typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                    ? crypto.randomUUID()
+                    : `story-${entryId}-${Math.random().toString(36).slice(2, 10)}`;
+
+            // Create the entry with processing state and add to store.
+            // The entry is created before the POST so the tab appears immediately.
+            const entry = {
+                id: entryId,
+                storyId,
+                title: storyId.slice(0, 8),
+                storyline: storyline.trim(),
+                chapterCount,
+                data: null,
+                isProcessing: true,
+                error: '',
+                isRemote: false
+            };
+
+            setStore((prev) => ({
+                ...prev,
+                records: [...prev.records, entry],
+                selected: entry
+            }));
+
             // POST to the server. The server validates and returns { storyId }.
-            await createNewStory(store.config.baseUrl, selected.storyId, {
+            await createNewStory(store.config.baseUrl, storyId, {
                 storyline: storyline.trim(),
                 chapterCount
             });
 
-            // On success, persist storyline + chapterCount on the selected entry
-            // so SectionStoryContent's effect picks up the change (chapterCount
-            // becoming > 0 is the trigger that starts the polling loop).
-            const entryId = selected.id;
-            setStore((prev) => ({
-                ...prev,
-                records: prev.records.map((e) =>
-                    e.id === entryId
-                        ? {
-                              ...e,
-                              storyline: storyline.trim(),
-                              chapterCount,
-                              isProcessing: true,
-                              error: ''
-                          }
-                        : e
-                ),
-                selected:
-                    prev.selected?.id === entryId
-                        ? (prev.records
-                              .map((e) =>
-                                  e.id === entryId
-                                      ? {
-                                            ...e,
-                                            storyline: storyline.trim(),
-                                            chapterCount,
-                                            isProcessing: true,
-                                            error: ''
-                                        }
-                                      : e
-                              )
-                              .find((e) => e.id === entryId) ?? prev.selected)
-                        : prev.selected
-            }));
-
-            // Clear the storyline textarea post-submit so the user can immediately
-            // start the next one (chapterCount is preserved as a convenience).
+            // Clear the form on success so the user can immediately start
+            // the next story (chapterCount is preserved as a convenience).
             setStoryline('');
+            setChapterCount(3);
             // Collapse back to minimal footprint after successful submit.
             setIsFocused(false);
         } catch (err: any) {
             // Surface the server's error message (createNewStory already parses it).
             setError(err?.message ?? 'Failed to create story');
+            // Mark the entry as not processing on failure so the tab doesn't
+            // show a stuck spinner. The entry remains in the store so the user
+            // can see it and potentially retry.
+            if (entryId !== null) {
+                setStore((prev) => ({
+                    ...prev,
+                    records: prev.records.map((e) =>
+                        e.id === entryId
+                            ? { ...e, isProcessing: false, error: err?.message ?? 'Failed to create story' }
+                            : e
+                    ),
+                    selected:
+                        prev.selected?.id === entryId
+                            ? { ...prev.selected, isProcessing: false, error: err?.message ?? 'Failed to create story' }
+                            : prev.selected
+                }));
+            }
         } finally {
             setIsSubmitting(false);
         }
@@ -250,10 +252,10 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                         />
                         <GenerateButton
                             onClick={onSubmit}
-                            disabled={isSubmitting || selected.isProcessing}
+                            disabled={isSubmitting}
                             data-testid="generate-button"
                         >
-                            {selected.isProcessing || isSubmitting ? 'Generating…' : 'Generate'}
+                            {isSubmitting ? 'Generating…' : 'Generate'}
                         </GenerateButton>
                     </ControlRow>
                     {error && <ErrorLine data-testid="input-error">{error}</ErrorLine>}

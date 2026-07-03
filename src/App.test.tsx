@@ -1,9 +1,8 @@
 // Tests for the Story Generator dashboard.
 //
 // Covers the integrated UI behaviour:
-//   - initial empty state ("Select one")
-//   - Add button creates a tab and selects it
-//   - submitting a storyline POSTs to the server and flips the entry to processing
+//   - initial empty state ("Select one") with input area visible
+//   - Generate creates a new story tab and POSTs to the server
 //   - a 404 right after POST keeps polling until the first 200 with chapters
 //
 // fetch is mocked globally. Poll interval is overridden via configOverrides to a
@@ -43,30 +42,60 @@ describe('StoryGeneratorApp', () => {
     });
     afterEach(() => vi.unstubAllGlobals());
 
-    it('renders the empty state before any story is added', async () => {
+    it('renders the empty state and input area before any story is created', async () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
         // Empty state — matches the hardcoded "Select one" in SectionStoryContent.
         expect(screen.getByTestId('content-empty').textContent).toBe('Select one');
-        // The Add button should be present so the user can get started.
-        expect(screen.getByTestId('add-story-button')).toBeDefined();
+        // Input area is always visible — user can type a storyline and click Generate.
+        expect(screen.getByTestId('storyline-input')).toBeDefined();
     });
 
-    it('adds a story tab and selects it when the Add button is clicked', async () => {
-        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
-
-        await act(async () => {
-            fireEvent.click(screen.getByTestId('add-story-button'));
+    it('creates a new story tab when Generate is clicked with valid input', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'POST') {
+                const storyId = String(url.split('/').pop() ?? '');
+                return Promise.resolve(mockResponse(200, { storyId }));
+            }
+            return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
         });
 
-        // A pending-submit hint should replace the empty state because the entry
-        // was created locally with chapterCount 0 (no POST yet).
-        expect(screen.getByTestId('content-pending-submit')).toBeDefined();
-        // The storyline textarea should now be visible (in minimal/collapsed state).
-        expect(screen.getByTestId('storyline-input')).toBeDefined();
-        // Controls (generate button, chapter count) are hidden when unfocused.
-        expect(screen.queryByTestId('generate-button')).toBeNull();
-        expect(screen.queryByTestId('chapter-count-input')).toBeNull();
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Input area is visible — focus to reveal controls.
+        fireEvent.focus(screen.getByTestId('storyline-input'));
+        await waitFor(() => {
+            expect(screen.getByTestId('generate-button')).toBeDefined();
+            expect(screen.getByTestId('chapter-count-input')).toBeDefined();
+        });
+
+        fireEvent.change(screen.getByTestId('storyline-input'), {
+            target: { value: 'A test story' }
+        });
+        fireEvent.change(screen.getByTestId('chapter-count-input'), {
+            target: { value: '3' }
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('generate-button'));
+        });
+
+        // A new tab should have been created and selected by Generate.
+        await waitFor(() => {
+            const tabs = screen.getAllByRole('button').filter((b) => b.dataset.testid?.startsWith('story-tab-'));
+            expect(tabs.length).toBe(1);
+            expect(tabs[0].getAttribute('aria-pressed')).toBe('true');
+        });
+
+        // The POST should have been made.
+        await waitFor(() => {
+            const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
+            expect(postCall).toBeDefined();
+            expect(JSON.parse(postCall![1].body)).toEqual({
+                storyline: 'A test story',
+                chapterCount: 3
+            });
+        });
     });
 
     it('POSTs the storyline + chapterCount to the server on Generate and starts polling', async () => {
@@ -96,12 +125,6 @@ describe('StoryGeneratorApp', () => {
 
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
-        // Add a story, fill the form, submit.
-        fireEvent.click(screen.getByTestId('add-story-button'));
-        const tabButton = screen.getAllByRole('button').find((b) => b.dataset.testid?.startsWith('story-tab-'))!;
-        const storyId = (tabButton.dataset.testid ?? '').replace('story-tab-', '');
-        expect(storyId.length).toBeGreaterThan(0);
-
         // Focus the textarea to reveal the generate button and chapter count.
         fireEvent.focus(screen.getByTestId('storyline-input'));
         // Controls should now be visible after focus.
@@ -119,6 +142,15 @@ describe('StoryGeneratorApp', () => {
         await act(async () => {
             fireEvent.click(screen.getByTestId('generate-button'));
         });
+
+        // Generate creates a new tab — wait for it to appear.
+        await waitFor(() => {
+            const tabButton = screen.getAllByRole('button').find((b) => b.dataset.testid?.startsWith('story-tab-'));
+            expect(tabButton).toBeDefined();
+        });
+        const tabButton = screen.getAllByRole('button').find((b) => b.dataset.testid?.startsWith('story-tab-'))!;
+        const storyId = (tabButton.dataset.testid ?? '').replace('story-tab-', '');
+        expect(storyId.length).toBeGreaterThan(0);
 
         // The POST should have been made.
         await waitFor(() => {
@@ -162,7 +194,6 @@ describe('StoryGeneratorApp', () => {
     it('shows an inline validation error when storyline is empty on submit', async () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
-        fireEvent.click(screen.getByTestId('add-story-button'));
         // Focus the textarea to reveal the controls.
         fireEvent.focus(screen.getByTestId('storyline-input'));
         await waitFor(() => {
@@ -187,12 +218,36 @@ describe('StoryGeneratorApp', () => {
     });
 
     it('removes a story tab when the ✕ glyph is clicked', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'POST') {
+                const storyId = String(url.split('/').pop() ?? '');
+                return Promise.resolve(mockResponse(200, { storyId }));
+            }
+            return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
+        });
+
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
+        // Create a story via Generate.
+        fireEvent.focus(screen.getByTestId('storyline-input'));
+        await waitFor(() => {
+            expect(screen.getByTestId('generate-button')).toBeDefined();
+        });
+        fireEvent.change(screen.getByTestId('storyline-input'), {
+            target: { value: 'A test story' }
+        });
         await act(async () => {
-            fireEvent.click(screen.getByTestId('add-story-button'));
+            fireEvent.click(screen.getByTestId('generate-button'));
+        });
+
+        // Wait for the tab to appear.
+        await waitFor(() => {
+            const tab = screen.getAllByRole('button').find((b) => b.dataset.testid?.startsWith('story-tab-'));
+            expect(tab).toBeDefined();
         });
         const tab = screen.getAllByRole('button').find((b) => b.dataset.testid?.startsWith('story-tab-'));
+
         // Click the remove glyph inside the tab.
         await act(async () => {
             fireEvent.click(tab!.querySelector('[aria-label="Remove story tab"]')!);
@@ -315,7 +370,7 @@ describe('StoryGeneratorApp', () => {
     });
 
     // BootstrapLayer failure (server down) sets a non-blocking loadWarning that
-    // the user can see — and the dashboard still renders (Add button available).
+    // the user can see — and the dashboard still renders (input area available).
     it('shows a load warning when the initial /list fetch fails, but the dashboard is still usable', async () => {
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
@@ -338,7 +393,7 @@ describe('StoryGeneratorApp', () => {
 
         // The empty state is still shown — bootstrap failure does not crash.
         expect(screen.getByTestId('content-empty').textContent).toBe('Select one');
-        // Add button is available — user can still create a new story locally.
-        expect(screen.getByTestId('add-story-button')).toBeDefined();
+        // Input area is still available — user can create a new story via Generate.
+        expect(screen.getByTestId('storyline-input')).toBeDefined();
     });
 });
