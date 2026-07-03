@@ -63,10 +63,24 @@ const DashboardSidebarPanel = styled('div', {
 });
 
 // Main content column — fills remaining width after sidebar.
+// Uses position:relative so the overlay can be positioned absolutely over it.
 export const DashboardContent = styled('div', {
     flex: '1 1 auto',
     overflowY: 'auto',
-    overflowX: 'hidden'
+    overflowX: 'hidden',
+    position: 'relative' as const
+});
+
+// Semi-transparent overlay that covers the content area when the sidebar is open.
+// Clicking it collapses the sidebar — standard mobile drawer pattern.
+// Only visible when the sidebar is open; sits inside DashboardContent via
+// absolute positioning so it doesn't affect the flex layout.
+const SidebarOverlay = styled('div', {
+    position: 'absolute' as const,
+    inset: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    zIndex: 10,
+    cursor: 'pointer'
 });
 
 // Footer row — pinned at the bottom. Used by SectionStoryInput.
@@ -87,10 +101,11 @@ export type StoryGeneratorDashboardProps = {
     content: React.ReactNode;
     footer: React.ReactNode;
     sidebarOpen: boolean;
+    onOverlayClick?: () => void;
 };
 
 export const StoryGeneratorDashboard: React.FC<StoryGeneratorDashboardProps> = React.memo(
-    ({ headerControls, sidebar, content, footer, sidebarOpen }) => (
+    ({ headerControls, sidebar, content, footer, sidebarOpen, onOverlayClick }) => (
         <DashboardShell>
             <DashboardHeader>
                 {headerControls}
@@ -109,7 +124,18 @@ export const StoryGeneratorDashboard: React.FC<StoryGeneratorDashboardProps> = R
                 >
                     {sidebar}
                 </DashboardSidebarPanel>
-                <DashboardContent>{content}</DashboardContent>
+                <DashboardContent>
+                    {/* Overlay covers the content area when the sidebar is open.
+                        Clicking it collapses the sidebar — standard mobile drawer
+                        pattern. Only rendered when open to avoid unnecessary DOM. */}
+                    {sidebarOpen && onOverlayClick && (
+                        <SidebarOverlay
+                            data-testid="sidebar-overlay"
+                            onClick={onOverlayClick}
+                        />
+                    )}
+                    {content}
+                </DashboardContent>
             </DashboardBody>
             <DashboardFooter>{footer}</DashboardFooter>
         </DashboardShell>

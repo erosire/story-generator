@@ -13,7 +13,8 @@
 //     </DarkThemeWrapper></FullScreen>
 //   </ContextProvider>
 //
-// The sidebar is toggled via a hamburger icon (☰) in the header. Default open.
+// The sidebar is toggled via a hamburger icon (☰) in the header.
+// Default open on desktop (≥768px), default closed on mobile (<768px).
 
 import React from 'react';
 import { styled } from '../styles';
@@ -79,8 +80,19 @@ export type StoryGeneratorAppProps = {
 
 export const StoryGeneratorApp: React.FC<StoryGeneratorAppProps> = React.memo(
     ({ configOverrides, initialStore }) => {
-        // Sidebar open/close state. Default open so the user sees the story list.
-        const [sidebarOpen, setSidebarOpen] = React.useState(true);
+        // Sidebar open/close state. Default open on desktop (≥768px),
+        // default closed on mobile (<768px). Uses matchMedia for an accurate
+        // initial check without layout shift — the 768px breakpoint matches
+        // common tablet/mobile boundaries.
+        const [sidebarOpen, setSidebarOpen] = React.useState(() => {
+            if (typeof window !== 'undefined' && window.matchMedia) {
+                return window.matchMedia('(min-width: 768px)').matches;
+            }
+            // SSR / test fallback: assume desktop.
+            return true;
+        });
+
+        const closeSidebar = React.useCallback(() => setSidebarOpen(false), []);
 
         return (
             <StoryStoreProvider configOverrides={configOverrides} initialStore={initialStore}>
@@ -89,6 +101,7 @@ export const StoryGeneratorApp: React.FC<StoryGeneratorAppProps> = React.memo(
                     <DarkThemeWrapper>
                         <StoryGeneratorDashboard
                             sidebarOpen={sidebarOpen}
+                            onOverlayClick={closeSidebar}
                             headerControls={
                                 <>
                                     <ToggleButton
