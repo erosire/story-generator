@@ -121,8 +121,10 @@ describe('StoryGeneratorApp', () => {
         });
 
         // After polling completes, three chapters should be rendered.
+        // Plotlines and chapters are now rendered as markdown (react-markdown),
+        // so textContent includes surrounding whitespace from block elements.
         await waitFor(() => {
-            expect(screen.getByTestId('plotlines').textContent).toBe('> plotlines');
+            expect(screen.getByTestId('plotlines').textContent).toContain('plotlines');
             expect(screen.queryByTestId('chapter-2')).toBeDefined();
         });
 
@@ -141,7 +143,9 @@ describe('StoryGeneratorApp', () => {
         // Collapsing chapter-2 should remove its body region from the DOM.
         fireEvent.click(screen.getByTestId('chapter-2-toggle'));
         expect(screen.queryByTestId('chapter-2-body')).toBeNull();
-        expect(screen.getByTestId('plotlines').textContent).toBe('> plotlines');
+        // Plotlines are now rendered as markdown — blockquote text content
+        // includes surrounding whitespace from block elements.
+        expect(screen.getByTestId('plotlines').textContent).toContain('plotlines');
     });
 
     it('shows an inline validation error when storyline is empty on submit', async () => {
@@ -238,11 +242,13 @@ describe('StoryGeneratorApp', () => {
 
         // After bootstrap, the remote story tab appears and is selected. The
         // polling effect fires GETs for remote-uuid-1 and onData populates
-        // the content area.
+        // the content area. Plotlines and chapters are now rendered as markdown
+        // (react-markdown), so textContent includes surrounding whitespace
+        // from block elements — usetoContain to match the meaningful text.
         await waitFor(() => {
             expect(screen.getByTestId('story-tab-remote-uuid-1')).toBeDefined();
-            expect(screen.getByTestId('plotlines').textContent).toBe('> plot');
-            expect(screen.getByTestId('chapter-0-content').textContent).toBe('## Ch1\n\nbody');
+            expect(screen.getByTestId('plotlines').textContent).toContain('plot');
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('Ch1');
         });
 
         // After two stable polls (identical data), isProcessing flips false so

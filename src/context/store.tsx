@@ -61,7 +61,7 @@ export type StoryStore = {
     records: StoryEntry[];
     selected: StoryEntry | null;
     config: {
-        baseUrl: string; // e.g. 'http://127.0.0.1:5000/v1/storyboard/generations'
+        baseUrl: string; // e.g. 'http://192.168.8.128:5000/v1/storyboard/generations'
         pollIntervalMs: number; // how often to re-poll while isProcessing
     };
     // Optional non-blocking banner set by BootstrapLayer when the initial
@@ -83,7 +83,7 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // Default to the same base the runtime service tests use
     // (runtime/service/endpoints/storyboard/generations/generation-get-story-data.test.ts:4-5).
     // Override via config in production by wrapping with a different provider value.
-    baseUrl: 'http://127.0.0.1:5000/v1/storyboard/generations',
+        baseUrl: 'http://192.168.8.128:5000/v1/storyboard/generations',
     // Poll every 3s. The generation-create-new-story handler writes plotpoint.md
     // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
     // so 3s gives a smooth progressive reveal without hammering the server.

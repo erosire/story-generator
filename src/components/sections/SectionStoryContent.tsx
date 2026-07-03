@@ -28,6 +28,7 @@ import { styled } from '../../styles';
 import { useStoryStore } from '../../context';
 import { pollStoryData } from '../../api';
 import { Collapsible } from '../Collapsible';
+import { MarkdownContent } from '../MarkdownContent';
 
 // Empty-state placeholder shown when no story is selected.
 const EmptyState = styled('div', {
@@ -61,29 +62,20 @@ const ContentColumn = styled('div', {
     boxSizing: 'border-box'
 });
 
-// Plotlines block heading + content.
+// Plotlines block wrapper — now delegates markdown rendering to MarkdownContent.
+// Retains the container styling (background, border, padding) for visual
+// consistency while the content inside is rendered as rich markdown.
 const PlotBlock = styled('div', {
-    whiteSpace: 'pre-wrap',
-    fontFamily: 'ui-monospace, "Cascadia Code", "Source Code Pro", monospace',
-    fontSize: 13,
-    lineHeight: 1.5,
-    color: '#cfd2d4',
     background: 'rgba(255, 255, 255, 0.03)',
     padding: 12,
     borderRadius: 6,
     border: '1px solid rgba(255, 255, 255, 0.08)'
 });
 
-// Each chapter is rendered as preformatted text (server already returns `## Title\n\nbody`
-// markdown — see generation-get-story-data.ts:39). We preserve whitespace and
-// render monospace so the markdown source is visible and the word-count badge
-// is meaningful. Rendered inside a Collapsible body.
+// Chapter card wrapper — now delegates markdown rendering to MarkdownContent.
+// The server returns chapter content as markdown (## Title\n\nbody), so we
+// render it through react-markdown for proper formatting.
 const ChapterCard = styled('div', {
-    whiteSpace: 'pre-wrap',
-    fontFamily: 'ui-monospace, "Cascadia Code", "Source Code Pro", monospace',
-    fontSize: 13,
-    lineHeight: 1.6,
-    color: '#d8dade',
     background: 'rgba(255, 255, 255, 0.03)',
     padding: 16,
     borderRadius: 6,
@@ -314,7 +306,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                     data-testid="plotlines-collapsible"
                 >
                     {data.plotlines ? (
-                        <PlotBlock data-testid="plotlines">{data.plotlines}</PlotBlock>
+                        <PlotBlock data-testid="plotlines">
+                            <MarkdownContent>{data.plotlines}</MarkdownContent>
+                        </PlotBlock>
                     ) : (
                         <PlotBlock style={{ color: '#6b6b6b', fontStyle: 'italic' }}>
                             {selected.isProcessing ? 'Waiting for plotpoint.md…' : 'No plotlines yet.'}
@@ -385,7 +379,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 }
                             >
                                 <ChapterCard data-testid={`chapter-${i}-content`}>
-                                    {ch.content}
+                                    <MarkdownContent>{ch.content}</MarkdownContent>
                                 </ChapterCard>
                             </Collapsible>
                         ))}
