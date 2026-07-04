@@ -181,13 +181,13 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
         // onData fires on every successful GET; updates the store entry in place
         // so the UI progressively reveals plotlines then chapters.
-        const onData = (data: { plotlines: string; chapters: { length: number; content: string }[] }) => {
+        const onData = (data: { plotlines: string; chapters: { length: number; content: string }[]; payloads?: any[] }) => {
             // Use the functional form so we don't depend on the closure's stale
             // store snapshot.
             setStore((prev) => {
                 const records = prev.records.map((e) =>
                     e.id === entryId
-                        ? { ...e, data: { plotlines: data.plotlines, chapters: data.chapters } }
+                        ? { ...e, data: { plotlines: data.plotlines, chapters: data.chapters, payloads: data.payloads ?? [] } }
                         : e
                 );
                 // Keep `selected` pointing at the updated record if relevant.
@@ -299,7 +299,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         );
     }
 
-    const data = selected.data ?? { plotlines: '', chapters: [] };
+    const data = selected.data ?? { plotlines: '', chapters: [], payloads: [] };
 
     return (
         <ContentColumn data-testid="content-story">

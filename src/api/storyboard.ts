@@ -191,7 +191,7 @@ export async function pollStoryData(params: {
     const expectedChapterCount = params.expectedChapterCount ?? 0;
     const hasTarget = expectedChapterCount > 0;
 
-    let last: StoryData = { plotlines: '', chapters: [] };
+    let last: StoryData = { plotlines: '', chapters: [], payloads: [] };
 
     // Stable-poll tracking for the no-target (remote) mode. We count how many
     // consecutive polls returned data identical to the previous one. Reset to 0

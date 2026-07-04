@@ -22,11 +22,45 @@ export type Chapter = {
     content: string; // raw markdown (## Title\n\nbody)
 };
 
+// Shape of a chapter expansion payload (chapter-XXX.json) returned by GET.
+// Contains everything needed to re-trigger the chapter expansion independently:
+// plotpoints, context snapshot, model config, and the full expanded result.
+// See storyboard-generations.yml ChapterPayload schema.
+export type ChapterPayload = {
+    storyId: string;
+    storyline: string;
+    chapterCount: number;
+    chapterNumber: string;
+    chapterIndex: number;
+    title: string;
+    plotpoints: string[];
+    context: {
+        appending: string[];
+        request: string;
+    };
+    config: {
+        model: string;
+        endpoint: string;
+        systemInstructions: string;
+        openingMessage: string;
+    };
+    expansion: {
+        minWords: number;
+        wordCount: number;
+    };
+    result: {
+        title: string;
+        content: string;
+    };
+};
+
 // Shape of the story data returned by the GET endpoint.
 // plotlines is the raw text of plotpoint.md; chapters is sorted list of chapter files.
+// payloads is the sorted list of chapter-XXX.json expansion payloads.
 export type StoryData = {
     plotlines: string;
     chapters: Chapter[];
+    payloads: ChapterPayload[];
 };
 
 // A single story session in the dashboard.

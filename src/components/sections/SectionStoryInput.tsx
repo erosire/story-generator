@@ -105,11 +105,12 @@ export const SectionStoryInput: React.FC = React.memo(() => {
     const [isFocused, setIsFocused] = React.useState(false);
     const containerRef = React.useRef<HTMLDivElement>(null);
 
-    // Reset the form whenever the user selects a different story so they don't
-    // accidentally submit a previous story's storyline to a new storyId.
+    // Populate the form with the selected story's storyline and chapterCount
+    // so the user can hit "Generate" to create a new story with the same prompt.
+    // Falls back to empty storyline / default 3 chapters when nothing is selected.
     React.useEffect(() => {
-        setStoryline('');
-        setChapterCount(3);
+        setStoryline(selected?.storyline ?? '');
+        setChapterCount(selected?.chapterCount ?? 3);
         setError('');
     }, [selected?.id]);
 
@@ -181,11 +182,9 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 chapterCount
             });
 
-            // Clear the form on success so the user can immediately start
-            // the next story (chapterCount is preserved as a convenience).
-            setStoryline('');
-            setChapterCount(3);
             // Collapse back to minimal footprint after successful submit.
+            // The form will be re-populated by the useEffect when the new
+            // story is selected (since it carries the same storyline).
             setIsFocused(false);
         } catch (err: any) {
             // Surface the server's error message (createNewStory already parses it).
