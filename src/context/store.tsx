@@ -14,6 +14,7 @@
 // pattern (read + mutate triggers re-render).
 
 import React, { createContext, useContext, useState, useCallback } from 'react';
+import { deleteStory as deleteStoryApi } from '../api';
 
 // Shape of a chapter as returned by GET /v1/storyboard/generations/:storyId
 // (see runtime/service/endpoints/storyboard/generations/generation-get-story-data.ts:35)
@@ -111,6 +112,8 @@ type StoryStoreContextValue = {
     // (mutating a returned proxy triggers a re-render); here we use a controlled
     // setState so React re-renders on every update.
     setStore: (updater: (prev: StoryStore) => StoryStore) => void;
+    // Delete a story by storyId. Calls DELETE API then removes the entry from the store.
+    deleteStory: (storyId: string) => Promise<void>;
 };
 
 const DEFAULT_CONFIG: StoryStore['config'] = {
@@ -145,8 +148,22 @@ export const StoryStoreProvider: React.FC<{
         []
     );
 
+    // Delete a story: call DELETE API, then remove from local store.
+    const deleteStory = useCallback(
+        async (storyId: string) => {
+            await deleteStoryApi(store.config.baseUrl, storyId);
+            setStore((prev) => ({
+                ...prev,
+                records: prev.records.filter((r) => r.storyId !== storyId),
+                // Clear selection if the deleted story was selected
+                selected: prev.selected?.storyId === storyId ? null : prev.selected
+            }));
+        },
+        [store.config.baseUrl, setStore]
+    );
+
     return (
-        <StoryStoreContext.Provider value={{ store, setStore }}>
+        <StoryStoreContext.Provider value={{ store, setStore, deleteStory }}>
             {children}
         </StoryStoreContext.Provider>
     );

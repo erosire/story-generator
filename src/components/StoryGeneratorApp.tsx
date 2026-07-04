@@ -18,7 +18,7 @@
 
 import React from 'react';
 import { styled } from '../styles';
-import { StoryStoreProvider } from '../context';
+import { StoryStoreProvider, useStoryStore } from '../context';
 import { StoryGeneratorDashboard } from './StoryGeneratorDashboard';
 import { BootstrapLayer } from './BootstrapLayer';
 import { SectionStoryTabs, SectionStoryContent, SectionStoryInput } from './sections';
@@ -71,12 +71,80 @@ const HeaderTitle = styled('span', {
     userSelect: 'none' as const
 });
 
+// Delete button — appears in the header top right when a story is selected.
+const DeleteButton = styled('button', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 28,
+    padding: '0 10px',
+    borderRadius: 6,
+    border: '1px solid rgba(255, 80, 80, 0.4)',
+    backgroundColor: 'transparent',
+    color: '#ff6b6b',
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 500,
+    lineHeight: 1,
+    marginLeft: 'auto',
+    transition: 'background-color 0.15s ease, border-color 0.15s ease',
+    '&:hover': {
+        backgroundColor: 'rgba(255, 80, 80, 0.15)',
+        borderColor: 'rgba(255, 80, 80, 0.6)'
+    }
+});
+
 // Composed dashboard. Accepts optional store overrides (used by tests and by
 // future callers that want to point at a different storyboard base URL).
 export type StoryGeneratorAppProps = {
     configOverrides?: { baseUrl?: string; pollIntervalMs?: number };
     initialStore?: React.ComponentProps<typeof StoryStoreProvider>['initialStore'];
 };
+
+// Inner header controls that access the store (must be inside StoryStoreProvider).
+const HeaderControls: React.FC<{
+    sidebarOpen: boolean;
+    onToggleSidebar: () => void;
+}> = React.memo(({ sidebarOpen, onToggleSidebar }) => {
+    const { store, deleteStory } = useStoryStore();
+    const { selected } = store;
+    const [deleting, setDeleting] = React.useState(false);
+
+    const handleDelete = React.useCallback(async () => {
+        if (!selected || deleting) return;
+        if (!window.confirm(`Delete story "${selected.title}"? This cannot be undone.`)) return;
+        setDeleting(true);
+        try {
+            await deleteStory(selected.storyId);
+        } catch (err) {
+            console.error('Failed to delete story:', err);
+        } finally {
+            setDeleting(false);
+        }
+    }, [selected, deleting, deleteStory]);
+
+    return (
+        <>
+            <ToggleButton
+                onClick={onToggleSidebar}
+                aria-label="Toggle story sidebar"
+                data-testid="sidebar-toggle"
+            >
+                ☰
+            </ToggleButton>
+            <HeaderTitle>Story Generator</HeaderTitle>
+            {selected && (
+                <DeleteButton
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    data-testid="delete-story-button"
+                >
+                    {deleting ? 'Deleting...' : 'Delete'}
+                </DeleteButton>
+            )}
+        </>
+    );
+});
 
 export const StoryGeneratorApp: React.FC<StoryGeneratorAppProps> = React.memo(
     ({ configOverrides, initialStore }) => {
@@ -92,7 +160,7 @@ export const StoryGeneratorApp: React.FC<StoryGeneratorAppProps> = React.memo(
             return true;
         });
 
-        const closeSidebar = React.useCallback(() => setSidebarOpen(false), []);
+        const toggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
 
         return (
             <StoryStoreProvider configOverrides={configOverrides} initialStore={initialStore}>
@@ -101,18 +169,12 @@ export const StoryGeneratorApp: React.FC<StoryGeneratorAppProps> = React.memo(
                     <DarkThemeWrapper>
                         <StoryGeneratorDashboard
                             sidebarOpen={sidebarOpen}
-                            onOverlayClick={closeSidebar}
+                            onOverlayClick={toggleSidebar}
                             headerControls={
-                                <>
-                                    <ToggleButton
-                                        onClick={() => setSidebarOpen((prev) => !prev)}
-                                        aria-label="Toggle story sidebar"
-                                        data-testid="sidebar-toggle"
-                                    >
-                                        ☰
-                                    </ToggleButton>
-                                    <HeaderTitle>Story Generator</HeaderTitle>
-                                </>
+                                <HeaderControls
+                                    sidebarOpen={sidebarOpen}
+                                    onToggleSidebar={toggleSidebar}
+                                />
                             }
                             sidebar={<SectionStoryTabs />}
                             content={<SectionStoryContent />}

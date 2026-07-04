@@ -260,3 +260,26 @@ export async function pollStoryData(params: {
 export function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// Delete a story via DELETE. Server removes the entire story folder and returns
+// { success: true, storyId }. Throws on network failure or non-200 response.
+export async function deleteStory(
+    baseUrl: string,
+    storyId: string
+): Promise<{ success: boolean; storyId: string }> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    const response = await fetch(url, { method: 'DELETE' });
+
+    if (!response.ok) {
+        let message = `Failed to delete story (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as { success: boolean; storyId: string };
+}
