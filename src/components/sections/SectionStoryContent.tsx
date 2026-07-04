@@ -181,7 +181,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
         // onData fires on every successful GET; updates the store entry in place
         // so the UI progressively reveals plotlines then chapters.
-        const onData = (data: { plotlines: string; chapters: { length: number; content: string }[]; payloads?: any[] }) => {
+        const onData = (data: { plotlines: string; chapters: { length: number; content: string; generationTimeMs?: number }[]; payloads?: any[] }) => {
             // Use the functional form so we don't depend on the closure's stale
             // store snapshot.
             setStore((prev) => {
@@ -383,10 +383,20 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                             color: '#a0a0a0',
                                             background: 'rgba(255,255,255,0.05)',
                                             padding: '2px 6px',
-                                            borderRadius: 4
+                                            borderRadius: 4,
+                                            display: 'inline-flex',
+                                            gap: 6,
+                                            alignItems: 'center'
                                         }}
                                     >
-                                        {ch.length} words
+                                        <span>{ch.length} words</span>
+                                        {typeof ch.generationTimeMs === 'number' && ch.generationTimeMs > 0 && (
+                                            <span style={{ color: '#7a9ec2' }}>
+                                                {ch.generationTimeMs >= 60000
+                                                    ? `${(ch.generationTimeMs / 60000).toFixed(1)}m`
+                                                    : `${(ch.generationTimeMs / 1000).toFixed(1)}s`}
+                                            </span>
+                                        )}
                                     </span>
                                 }
                             >

@@ -20,6 +20,7 @@ import React, { createContext, useContext, useState, useCallback } from 'react';
 export type Chapter = {
     length: number; // word count
     content: string; // raw markdown (## Title\n\nbody)
+    generationTimeMs?: number; // time in ms the LLM took to generate this chapter
 };
 
 // Shape of a chapter expansion payload (chapter-XXX.json) returned by GET.
@@ -48,6 +49,7 @@ export type ChapterPayload = {
         minWords: number;
         wordCount: number;
     };
+    generationTimeMs?: number; // time in ms the LLM took to generate this chapter
     result: {
         title: string;
         content: string;
