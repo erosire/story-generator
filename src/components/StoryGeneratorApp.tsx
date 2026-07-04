@@ -87,11 +87,7 @@ const DeleteButton = styled('button', {
     fontWeight: 500,
     lineHeight: 1,
     marginLeft: 'auto',
-    transition: 'background-color 0.15s ease, border-color 0.15s ease',
-    '&:hover': {
-        backgroundColor: 'rgba(255, 80, 80, 0.15)',
-        borderColor: 'rgba(255, 80, 80, 0.6)'
-    }
+    transition: 'background-color 0.15s ease, border-color 0.15s ease'
 });
 
 // Composed dashboard. Accepts optional store overrides (used by tests and by
