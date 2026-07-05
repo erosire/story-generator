@@ -27,6 +27,7 @@ export type Chapter = {
     title: string; // chapter title from the LLM
     plotpoints: string[]; // plotpoints for this chapter
     expanded: boolean; // true if chapter-XXX.md exists (chapter has been expanded)
+    canReExpand: boolean; // true if chapter-XXX.json exists (LLM context available for re-expansion)
     content?: string; // raw markdown (## Title\n\nbody) — only when expanded
     length?: number; // word count — only when expanded
     generationTimeMs?: number; // time in ms the LLM took to generate — only when expanded

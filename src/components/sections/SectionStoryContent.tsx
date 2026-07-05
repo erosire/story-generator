@@ -29,7 +29,7 @@
 import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
-import { pollStoryData } from '../../api';
+import { pollStoryData, updateChapter, fetchStoryData } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 
@@ -110,6 +110,42 @@ const PendingExpansion = styled('div', {
     fontStyle: 'italic',
     padding: '8px 0'
 });
+
+// Re-expand button — shown at the end of each expanded chapter that has a stored
+// chapter-XXX.json payload. Uses an accent tinted background so it reads as a
+// secondary action. Disabled while a re-expand is in flight or the story is
+// actively processing. Cannot use styled() for & pseudo-selectors, so this is
+// a plain component with conditional inline styles.
+const ReExpandButton: React.FC<{
+    disabled?: boolean;
+    onClick?: () => void;
+    'data-testid'?: string;
+    children: React.ReactNode;
+}> = ({ disabled, onClick, children, ...rest }) => (
+    <button
+        onClick={onClick}
+        disabled={disabled}
+        data-testid={rest['data-testid']}
+        style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '6px 14px',
+            fontSize: 12,
+            fontWeight: 500,
+            color: disabled ? theme.textFaint : theme.accent,
+            background: disabled ? theme.surface1 : theme.accentSoft,
+            border: `1px solid ${disabled ? theme.border : theme.accent}`,
+            borderRadius: 999,
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            marginTop: 12,
+            opacity: disabled ? 0.5 : 1,
+            transition: `background-color ${theme.transition}, opacity ${theme.transition}`
+        }}
+    >
+        {children}
+    </button>
+);
 
 // Chapters list container — flex column with gap between chapter collapsibles.
 const ChapterListContainer = styled('div', {
@@ -242,6 +278,106 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         },
         [setStore]
     );
+
+    // ── Re-expand chapter state ──────────────────────────────────────────
+    // Tracks which chapter (by display index + original generationTimeMs) is
+    // currently being re-expanded. The polling effect below watches this and
+    // polls GET until the chapter's generationTimeMs changes, indicating the
+    // server has finished background re-expansion.
+    const [reExpandState, setReExpandState] = React.useState<{
+        chapterIndex: number; // 0-based index of the chapter being re-expanded
+        previousGenerationTimeMs?: number; // snapshot before re-expand started
+    } | null>(null);
+
+    // Fire a re-expand PATCH and kick off the completion poller.
+    const handleReExpand = React.useCallback(
+        async (chapterIndex: number, previousGenerationTimeMs?: number) => {
+            if (!selected?.storyId) return;
+            try {
+                await updateChapter(store.config.baseUrl, selected.storyId, chapterIndex);
+                // Mark as processing so the tab chip shows the badge.
+                setStore((prev) => ({
+                    ...prev,
+                    records: prev.records.map((e) =>
+                        e.id === selected.id ? { ...e, isProcessing: true, error: '' } : e
+                    )
+                }));
+                setReExpandState({ chapterIndex, previousGenerationTimeMs });
+            } catch (err: any) {
+                setStore((prev) => ({
+                    ...prev,
+                    records: prev.records.map((e) =>
+                        e.id === selected.id
+                            ? { ...e, isProcessing: false, error: err.message || 'Re-expand failed' }
+                            : e
+                    )
+                }));
+            }
+        },
+        [selected, store.config.baseUrl, setStore]
+    );
+
+    // Poll for re-expand completion. Runs while reExpandState is set. On each
+    // tick it fetches story data and checks whether the target chapter's
+    // generationTimeMs has changed (indicating the background job finished).
+    React.useEffect(() => {
+        if (!reExpandState || !selected?.storyId) return;
+
+        const baseUrl = store.config.baseUrl;
+        const storyId = selected.storyId;
+        const entryId = selected.id;
+        const targetIndex = reExpandState.chapterIndex;
+        const prevMs = reExpandState.previousGenerationTimeMs;
+        const intervalMs = store.config.pollIntervalMs;
+
+        let cancelled = false;
+
+        const poll = async () => {
+            while (!cancelled) {
+                await new Promise((r) => setTimeout(r, intervalMs));
+                if (cancelled) break;
+
+                const result = await fetchStoryData(baseUrl, storyId);
+                if (cancelled) break;
+
+                if (result.status === 'data') {
+                    const chapter = result.data.chapters[targetIndex];
+                    // Consider it done when the chapter is expanded AND its
+                    // generationTimeMs differs from the pre-reexpand snapshot.
+                    // Fall back to "done" if we somehow lost the snapshot.
+                    const changed =
+                        chapter &&
+                        chapter.expanded &&
+                        (prevMs === undefined || chapter.generationTimeMs !== prevMs);
+
+                    if (changed) {
+                        setStore((prev) => ({
+                            ...prev,
+                            records: prev.records.map((e) =>
+                                e.id === entryId
+                                    ? { ...e, data: result.data, isProcessing: false }
+                                    : e
+                            ),
+                            selected:
+                                prev.selected?.id === entryId
+                                    ? { ...prev.selected, data: result.data, isProcessing: false }
+                                    : prev.selected
+                        }));
+                        setReExpandState(null);
+                        break;
+                    }
+                }
+                // If the chapter disappeared or isn't expanded yet, keep polling.
+            }
+        };
+
+        poll();
+
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [reExpandState, selected?.storyId, store.config.baseUrl, store.config.pollIntervalMs]);
 
     // Polling effect.
     React.useEffect(() => {
@@ -416,6 +552,26 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 <PendingExpansion data-testid={`chapter-${i}-pending`}>
                                     This chapter has not been expanded yet.
                                 </PendingExpansion>
+                            )}
+
+                            {/* Re-expand button — only for chapters with a stored
+                                chapter-XXX.json payload (canReExpand). The JSON
+                                file holds the LLM conversation context needed to
+                                regenerate the chapter content via PATCH. */}
+                            {ch.expanded && ch.canReExpand && (
+                                <ReExpandButton
+                                    onClick={() =>
+                                        handleReExpand(ch.chapterIndex, ch.generationTimeMs)
+                                    }
+                                    disabled={
+                                        reExpandState !== null || selected.isProcessing
+                                    }
+                                    data-testid={`chapter-${i}-reexpand`}
+                                >
+                                    {reExpandState?.chapterIndex === ch.chapterIndex
+                                        ? 'Re-expanding…'
+                                        : 'Re-expand Chapter'}
+                                </ReExpandButton>
                             )}
                         </ChapterCard>
                     </Collapsible>
