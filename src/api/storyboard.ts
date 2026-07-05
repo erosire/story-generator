@@ -59,16 +59,24 @@ export type PollResult =
 
 // Create a new story via POST. Server returns the storyId immediately and
 // kicks off background generation. Throws on network failure or non-200 response.
+//
+// When `forkFrom` is provided, the server forks an existing story instead of
+// creating from scratch. It copies plotlines and pre-fork chapters from the
+// source story, then re-expands from chapterIndex onwards.
 export async function createNewStory(
     baseUrl: string,
     storyId: string,
-    body: { storyline: string; chapterCount: number }
+    body: { storyline: string; chapterCount: number },
+    forkFrom?: { sourceStoryId: string; chapterIndex: number }
 ): Promise<{ storyId: string }> {
     const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    const payload = forkFrom
+        ? { forkFrom }
+        : body;
     const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(payload)
     });
 
     if (!response.ok) {

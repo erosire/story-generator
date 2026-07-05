@@ -29,7 +29,7 @@
 import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
-import { pollStoryData, updateChapter, fetchStoryData } from '../../api';
+import { pollStoryData, updateChapter, fetchStoryData, createNewStory } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 
@@ -111,42 +111,109 @@ const PendingExpansion = styled('div', {
     padding: '8px 0'
 });
 
-// Expand / Re-expand button — shown at the end of each chapter that has a stored
-// chapter-XXX.json payload (canReExpand). For pending chapters (expanded=false),
-// this allows recovering from a crashed generation. For expanded chapters, it
-// allows re-generating with a fresh LLM call. Uses an accent tinted background
-// so it reads as a secondary action. Disabled while a re-expand is in flight or
-// the story is actively processing. Cannot use styled() for & pseudo-selectors,
-// so this is a plain component with conditional inline styles.
-const ReExpandButton: React.FC<{
+// Chapter action icon button — compact square button for per-chapter actions
+// (re-expand, fork). Uses a fixed-size square with centered icon glyph.
+// Disabled state dims and blocks interaction.
+const ChapterActionButton: React.FC<{
     disabled?: boolean;
     onClick?: () => void;
     'data-testid'?: string;
+    title?: string;
     children: React.ReactNode;
 }> = ({ disabled, onClick, children, ...rest }) => (
     <button
         onClick={onClick}
         disabled={disabled}
         data-testid={rest['data-testid']}
+        title={rest['title']}
         style={{
             display: 'inline-flex',
             alignItems: 'center',
-            gap: 6,
-            padding: '6px 14px',
-            fontSize: 12,
-            fontWeight: 500,
-            color: disabled ? theme.textFaint : theme.accent,
-            background: disabled ? theme.surface1 : theme.accentSoft,
-            border: `1px solid ${disabled ? theme.border : theme.accent}`,
-            borderRadius: 999,
+            justifyContent: 'center',
+            width: 30,
+            height: 30,
+            padding: 0,
+            color: disabled ? theme.textFaint : theme.textMuted,
+            background: 'transparent',
+            border: `1px solid ${disabled ? 'transparent' : theme.border}`,
+            borderRadius: theme.radiusMd,
             cursor: disabled ? 'not-allowed' : 'pointer',
-            marginTop: 12,
-            opacity: disabled ? 0.5 : 1,
-            transition: `background-color ${theme.transition}, opacity ${theme.transition}`
+            opacity: disabled ? 0.4 : 1,
+            transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
+        }}
+        onMouseEnter={(e) => {
+            if (!disabled) {
+                e.currentTarget.style.background = theme.surface3;
+                e.currentTarget.style.color = theme.accent;
+                e.currentTarget.style.borderColor = theme.accent;
+            }
+        }}
+        onMouseLeave={(e) => {
+            if (!disabled) {
+                e.currentTarget.style.background = 'transparent';
+                e.currentTarget.style.color = theme.textMuted;
+                e.currentTarget.style.borderColor = theme.border;
+            }
         }}
     >
         {children}
     </button>
+);
+
+// Row that holds per-chapter action buttons, right-aligned.
+const ChapterActions = styled('div', {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    marginTop: 12
+});
+
+// Inline SVG refresh icon — circular arrow used for the re-expand action.
+// Keeps the package icon-free (matches the dashboard convention of inline glyphs).
+const RefreshIcon: React.FC = () => (
+    <svg
+        width={14}
+        height={14}
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: 'block' }}
+    >
+        <path
+            d="M13.5 8a5.5 5.5 0 0 1-9.88 3.07"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            strokeLinecap="round"
+        />
+        <path
+            d="M2.5 8a5.5 5.5 0 0 1 9.88-3.07"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            strokeLinecap="round"
+        />
+        <path d="M13.5 4v3.5H10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+);
+
+// Inline SVG fork icon — branch symbol used for the fork action.
+// Keeps the package icon-free (matches the dashboard convention of inline glyphs).
+const ForkIcon: React.FC = () => (
+    <svg
+        width={14}
+        height={14}
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: 'block' }}
+    >
+        {/* Main stem from top to bottom */}
+        <path d="M5 2v12" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        {/* Branch forking right and curving down */}
+        <path d="M5 6c0-3 6-3 6 0v4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        {/* Dot at the branch tip */}
+        <circle cx={11} cy={10} r={1.2} fill="currentColor" />
+    </svg>
 );
 
 // Chapters list container — flex column with gap between chapter collapsibles.
@@ -381,6 +448,54 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [reExpandState, selected?.storyId, store.config.baseUrl, store.config.pollIntervalMs]);
 
+    // ── Fork story ──────────────────────────────────────────────────────────
+    // Fork creates a new story by copying the source story's plotlines and
+    // all chapters before the fork point, then re-expanding from the fork
+    // chapter onwards. The new story is added to the store and selected.
+    const handleFork = React.useCallback(
+        async (chapterIndex: number) => {
+            if (!selected?.storyId) return;
+
+            const newStoryId = `fork-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const newTitle = `fork-${selected.storyId.slice(0, 8)}`;
+
+            try {
+                const result = await createNewStory(
+                    store.config.baseUrl,
+                    newStoryId,
+                    {} as any, // storyline/chapterCount not needed for fork
+                    { sourceStoryId: selected.storyId, chapterIndex }
+                );
+
+                // Add the new forked story to the store and select it.
+                setStore((prev) => {
+                    const newEntry = {
+                        id: Date.now(),
+                        storyId: result.storyId,
+                        title: newTitle,
+                        storyline: selected.storyline,
+                        chapterCount: selected.chapterCount,
+                        data: null,
+                        isProcessing: true,
+                        error: '',
+                        isRemote: false
+                    };
+                    return {
+                        ...prev,
+                        records: [...prev.records, newEntry],
+                        selected: newEntry
+                    };
+                });
+            } catch (err: any) {
+                setStore((prev) => ({
+                    ...prev,
+                    loadWarning: err.message || 'Fork failed'
+                }));
+            }
+        },
+        [selected, store.config.baseUrl, setStore]
+    );
+
     // Polling effect.
     React.useEffect(() => {
         if (!selected || !selected.storyId) {
@@ -556,32 +671,41 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 </PendingExpansion>
                             )}
 
-                            {/* Expand / Re-expand button — shown when a stored
-                                chapter-XXX.json payload exists (canReExpand). The
-                                JSON file holds the LLM conversation context needed
-                                to generate or regenerate the chapter via PATCH.
-                                For pending chapters (expanded=false) this lets the
-                                user recover from a crashed generation. For expanded
-                                chapters it allows re-generating with a fresh LLM
-                                call. */}
+                            {/* Per-chapter action buttons — right-aligned row.
+                                Re-expand: refresh icon. Fork: branch icon. */}
                             {ch.canReExpand && (
-                                <ReExpandButton
-                                    onClick={() =>
-                                        handleReExpand(ch.chapterIndex, ch.generationTimeMs)
-                                    }
-                                    disabled={
-                                        reExpandState !== null || selected.isProcessing
-                                    }
-                                    data-testid={`chapter-${i}-reexpand`}
-                                >
-                                    {reExpandState?.chapterIndex === ch.chapterIndex
-                                        ? ch.expanded
-                                            ? 'Re-expanding…'
-                                            : 'Expanding…'
-                                        : ch.expanded
-                                            ? 'Re-expand Chapter'
-                                            : 'Expand Chapter'}
-                                </ReExpandButton>
+                                <ChapterActions>
+                                    <ChapterActionButton
+                                        onClick={() =>
+                                            handleReExpand(ch.chapterIndex, ch.generationTimeMs)
+                                        }
+                                        disabled={
+                                            reExpandState !== null || selected.isProcessing
+                                        }
+                                        title={
+                                            reExpandState?.chapterIndex === ch.chapterIndex
+                                                ? ch.expanded
+                                                    ? 'Re-expanding…'
+                                                    : 'Expanding…'
+                                                : ch.expanded
+                                                    ? 'Re-expand Chapter'
+                                                    : 'Expand Chapter'
+                                        }
+                                        data-testid={`chapter-${i}-reexpand`}
+                                    >
+                                        <RefreshIcon />
+                                    </ChapterActionButton>
+                                    <ChapterActionButton
+                                        onClick={() => handleFork(ch.chapterIndex)}
+                                        disabled={
+                                            reExpandState !== null || selected.isProcessing
+                                        }
+                                        title="Fork from this chapter"
+                                        data-testid={`chapter-${i}-fork`}
+                                    >
+                                        <ForkIcon />
+                                    </ChapterActionButton>
+                                </ChapterActions>
                             )}
                         </ChapterCard>
                     </Collapsible>
