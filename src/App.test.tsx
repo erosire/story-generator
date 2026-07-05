@@ -194,16 +194,19 @@ describe('StoryGeneratorApp', () => {
 
         // The latest chapter (chapter 2) should be expanded by default
         expect(screen.getByTestId('chapter-2-toggle').getAttribute('aria-expanded')).toBe('true');
-        // Expanded chapter should show plotpoints and content
-        expect(screen.getByTestId('chapter-2-plotpoints')).toBeDefined();
+        // Expanded chapter shows content
         expect(screen.getByTestId('chapter-2-content')).toBeDefined();
+        // Plotpoints Collapsible exists but is collapsed (since chapter is expanded)
+        expect(screen.getByTestId('chapter-2-plotpoints')).toBeDefined();
+        expect(screen.getByTestId('chapter-2-plotpoints-toggle').getAttribute('aria-expanded')).toBe('false');
 
-        // Expand chapter 1 to verify its plotpoints are shown
+        // Expand chapter 1 to verify its content is shown
         fireEvent.click(screen.getByTestId('chapter-1-toggle'));
         await waitFor(() => {
-            expect(screen.getByTestId('chapter-1-plotpoints')).toBeDefined();
             expect(screen.getByTestId('chapter-1-content')).toBeDefined();
         });
+        // Chapter 1 is expanded, so its plotpoints Collapsible is collapsed by default
+        expect(screen.getByTestId('chapter-1-plotpoints-toggle').getAttribute('aria-expanded')).toBe('false');
 
         // Toggle chapter 2 to collapse it
         fireEvent.click(screen.getByTestId('chapter-2-toggle'));
@@ -304,7 +307,8 @@ describe('StoryGeneratorApp', () => {
         await waitFor(() => {
             expect(screen.getByTestId('story-tab-remote-uuid-1')).toBeDefined();
             expect(screen.getByTestId('chapter-0-content').textContent).toContain('Ch1');
-            expect(screen.getByTestId('chapter-0-plotpoints').textContent).toContain('plot');
+            // Plotpoints Collapsible exists (chapter is expanded, so plotpoints are collapsed)
+            expect(screen.getByTestId('chapter-0-plotpoints')).toBeDefined();
         });
 
         // After two stable polls, isProcessing flips false so the badge stops.

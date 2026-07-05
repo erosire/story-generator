@@ -53,33 +53,46 @@ const PendingSubmitHint = styled('div', {
 const ContentColumn = styled('div', {
     display: 'flex',
     flexDirection: 'column',
-    padding: 24,
-    gap: 24,
+    padding: '12px 8px',
+    gap: 16,
     height: '100%',
     boxSizing: 'border-box'
 });
 
-// Chapter card wrapper — renders expanded chapter content via MarkdownContent.
+// Chapter card wrapper — always rendered as a border box containing plotpoints and content.
 const ChapterCard = styled('div', {
     background: 'rgba(255, 255, 255, 0.03)',
-    padding: 16,
+    padding: 12,
     borderRadius: 6,
     border: '1px solid rgba(255, 255, 255, 0.08)'
 });
 
-// Plotpoints list wrapper — renders the bullet list of plotpoints for a chapter.
-const PlotpointsBlock = styled('div', {
-    background: 'rgba(255, 255, 255, 0.03)',
-    padding: 12,
-    borderRadius: 6,
-    border: '1px solid rgba(255, 255, 255, 0.08)',
+// Plotpoints toggle button — right-aligned, button-like appearance.
+const PlotpointsButton = styled('button', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    marginLeft: 'auto',
+    padding: '4px 10px',
+    fontSize: 12,
+    color: '#a0a0a0',
+    background: 'rgba(255, 255, 255, 0.06)',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    borderRadius: 4,
+    cursor: 'pointer',
+    marginBottom: 8,
+    transition: 'background 0.15s ease'
+});
+
+// Plotpoints list — shown/hidden by the toggle button.
+const PlotpointsList = styled('div', {
     marginBottom: 8
 });
 
 // Info message shown when a chapter has not been expanded yet.
 const PendingExpansion = styled('div', {
     color: '#a0a0a0',
-    fontSize: 13,
+    fontSize: 15,
     fontStyle: 'italic',
     padding: '8px 0'
 });
@@ -91,6 +104,37 @@ const ChapterListContainer = styled('div', {
     gap: 12,
     paddingBottom: 80
 });
+
+// Small component that manages the plotpoints toggle state.
+const PlotpointsWrapper: React.FC<{
+    plotpoints: string[];
+    defaultOpen: boolean;
+    testId: string;
+}> = ({ plotpoints, defaultOpen, testId }) => {
+    const [open, setOpen] = React.useState(defaultOpen);
+
+    return (
+        <div data-testid={testId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+            <PlotpointsButton
+                onClick={() => setOpen((v) => !v)}
+                aria-expanded={open}
+                data-testid={`${testId}-toggle`}
+            >
+                {open ? 'Hide' : 'Show'} Plot Points
+                <span style={{ fontSize: 11, color: '#6b6b6b' }}>({plotpoints.length})</span>
+            </PlotpointsButton>
+            {open && (
+                <PlotpointsList data-testid={`${testId}-body`}>
+                    <ul style={{ margin: 0, paddingLeft: 20, fontSize: 15, color: '#c0c0c0', lineHeight: 1.6 }}>
+                        {plotpoints.map((pp: string, j: number) => (
+                            <li key={j}>{pp}</li>
+                        ))}
+                    </ul>
+                </PlotpointsList>
+            )}
+        </div>
+    );
+};
 
 export const SectionStoryContent: React.FC = React.memo(() => {
     const { store, setStore } = useStoryStore();
@@ -276,14 +320,14 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         defaultOpen={i === data.chapters.length - 1}
                         data-testid={`chapter-${i}`}
                         title={
-                            <span style={{ fontSize: 13, color: '#e0e0e0' }}>
+                            <span style={{ fontSize: 16, color: '#e0e0e0' }}>
                                 Chapter {i + 1}{ch.title ? `: ${ch.title}` : ''}
                             </span>
                         }
                         headerExtra={
                             <span
                                 style={{
-                                    fontSize: 11,
+                                    fontSize: 12,
                                     color: '#a0a0a0',
                                     background: 'rgba(255,255,255,0.05)',
                                     padding: '2px 6px',
@@ -310,30 +354,25 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                             </span>
                         }
                     >
-                        {/* Plotpoints — always shown for every chapter */}
-                        {ch.plotpoints && ch.plotpoints.length > 0 && (
-                            <PlotpointsBlock data-testid={`chapter-${i}-plotpoints`}>
-                                <div style={{ fontSize: 11, color: '#a0a0a0', marginBottom: 6, fontWeight: 600 }}>
-                                    Plot Points
-                                </div>
-                                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: '#c0c0c0', lineHeight: 1.6 }}>
-                                    {ch.plotpoints.map((pp: string, j: number) => (
-                                        <li key={j}>{pp}</li>
-                                    ))}
-                                </ul>
-                            </PlotpointsBlock>
-                        )}
+                        <ChapterCard data-testid={`chapter-${i}-content`}>
+                            {/* Plotpoints toggle button — right-aligned, collapsible */}
+                            {ch.plotpoints && ch.plotpoints.length > 0 && (
+                                <PlotpointsWrapper
+                                    plotpoints={ch.plotpoints}
+                                    defaultOpen={!ch.expanded}
+                                    testId={`chapter-${i}-plotpoints`}
+                                />
+                            )}
 
-                        {/* Chapter expansion content — or pending message */}
-                        {ch.expanded ? (
-                            <ChapterCard data-testid={`chapter-${i}-content`}>
+                            {/* Chapter expansion content — or pending message */}
+                            {ch.expanded ? (
                                 <MarkdownContent>{ch.content ?? ''}</MarkdownContent>
-                            </ChapterCard>
-                        ) : (
-                            <PendingExpansion data-testid={`chapter-${i}-pending`}>
-                                This chapter has not been expanded yet.
-                            </PendingExpansion>
-                        )}
+                            ) : (
+                                <PendingExpansion data-testid={`chapter-${i}-pending`}>
+                                    This chapter has not been expanded yet.
+                                </PendingExpansion>
+                            )}
+                        </ChapterCard>
                     </Collapsible>
                 ))}
             </ChapterListContainer>
