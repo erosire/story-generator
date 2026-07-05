@@ -26,11 +26,12 @@ export type Chapter = {
     chapterIndex: number; // 0-based index
     title: string; // chapter title from the LLM
     plotpoints: string[]; // plotpoints for this chapter
-    expanded: boolean; // true if chapter-XXX.md exists (chapter has been expanded)
+    expanded: boolean; // true if chapter-XXX.json has non-empty result.content
     canReExpand: boolean; // true if chapter-XXX.json exists (LLM context available for re-expansion)
     content?: string; // raw markdown (## Title\n\nbody) — only when expanded
     length?: number; // word count — only when expanded
     generationTimeMs?: number; // time in ms the LLM took to generate — only when expanded
+    history?: Array<{ title: string; content: string; generationTimeMs: number; wordCount: number }>;
 };
 
 // Shape of the story data returned by the GET endpoint.
