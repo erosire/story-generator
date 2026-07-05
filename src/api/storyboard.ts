@@ -5,11 +5,13 @@
 //       body: { storyline: string, chapterCount: number }
 //       returns: { storyId: string }
 //       behavior: fire-and-forget background generation; the server writes
-//       plotpoint.md immediately and chapter-NNN.md files one at a time.
+//       plotpoint.json immediately and chapter-NNN.md/json files one at a time.
 //       See generation-create-new-story.ts:236 (background task) and :241 (return).
 //
 //   - GET /v1/storyboard/generations/:storyId
-//       returns: { plotlines: string, chapters: { length, content }[] }
+//       returns: { chapters: Chapter[], meta: StoryMeta | null }
+//       Each chapter includes plotpoints and expansion status. Expanded chapters
+//       include content/length/generationTimeMs; pending chapters have expanded=false.
 //       404 if the storyId dir doesn't exist yet (no POST issued / generation
 //       hasn't started creating files). See generation-get-story-data.ts:19-24.
 //
@@ -105,7 +107,7 @@ export async function fetchStoryData(
         return { status: 'error', error: message };
     }
 
-    // 200 — server always returns { plotlines, chapters } (may both be empty
+    // 200 — server always returns { chapters, meta } (may both be empty
     // for a freshly created dir; see generation-get-story-data.test.ts:128-133).
     const data = (await response.json()) as StoryData;
     return { status: 'data', data };
@@ -118,7 +120,7 @@ export async function fetchStoryData(
 // story.json (see generation-list-stories.ts). Stories are sorted by
 // createdAt descending (newest first) on the server side.
 //
-// The list never includes chapter/plotlines content — callers issue a second
+// The list never includes chapter content — callers issue a second
 // GET with a specific storyId for that.
 //
 // Throws on network failure or non-200 so the caller can surface a load error.
@@ -152,7 +154,7 @@ export async function fetchStoryList(baseUrl: string): Promise<{ stories: StoryM
 //     `data.chapters.length >= expectedChapterCount` (target known — fresh POST).
 //   - When `expectedChapterCount` is 0/omitted (remote story, count unknown):
 //     terminate after the data has been stable across `stablePolls` consecutive
-//     polls (i.e. plotlines AND chapter count both unchanged). The server writes
+//     polls (i.e. chapter count and expanded count both unchanged). The server writes
 //     plotpoint.md first then adds chapter-NNN.md files one at a time
 //     (generation-create-new-story.ts:74 then :181), so stability implies the
 //     background generation has finished for an already-existing story too.
@@ -191,7 +193,7 @@ export async function pollStoryData(params: {
     const expectedChapterCount = params.expectedChapterCount ?? 0;
     const hasTarget = expectedChapterCount > 0;
 
-    let last: StoryData = { plotlines: '', chapters: [], payloads: [] };
+    let last: StoryData = { chapters: [], meta: null };
 
     // Stable-poll tracking for the no-target (remote) mode. We count how many
     // consecutive polls returned data identical to the previous one. Reset to 0
@@ -201,10 +203,11 @@ export async function pollStoryData(params: {
     let lastSignature = '';
 
     // Signature of a StoryData used for equality comparison in remote stable mode.
-    // We track plotlines text + chapter count (chapter *content* could legitimately
-    // be the same across polls since chapters are written once and never edited,
-    // so count is sufficient and cheaper than hashing all content).
-    const signatureOf = (data: StoryData) => `${data.plotlines.length}|${data.chapters.length}`;
+    // We track the total number of chapters and the number of expanded chapters
+    // (plot outline generation adds chapters, chapter expansion flips expanded flags,
+    // so both dimensions capture meaningful state changes).
+    const signatureOf = (data: StoryData) =>
+        `${data.chapters.length}|${data.chapters.filter((c) => c.expanded).length}`;
 
     // Loop until completion, hard error, or external cancellation.
     while (true) {
@@ -224,7 +227,7 @@ export async function pollStoryData(params: {
 
             if (hasTarget) {
                 // Completion check: once the server has written all requested chapters,
-                // we stop polling. Note: plotlines can be written before any chapter
+                // we stop polling. Note: chapters can appear before any chapter
                 // (generation-create-new-story.ts:74), so we gate on chapter count only.
                 if (result.data.chapters.length >= expectedChapterCount) {
                     return { status: 'data', data: result.data };

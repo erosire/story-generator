@@ -16,54 +16,28 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { deleteStory as deleteStoryApi } from '../api';
 
-// Shape of a chapter as returned by GET /v1/storyboard/generations/:storyId
-// (see runtime/service/endpoints/storyboard/generations/generation-get-story-data.ts:35)
+// Shape of a unified chapter as returned by GET /v1/storyboard/generations/:storyId.
+// Each chapter includes its plotpoints and expansion status. If the chapter has
+// been expanded, content/length/generationTimeMs are present; otherwise expanded
+// is false and only plotpoints are available.
+// See storyboard-generations.yml UnifiedChapter schema.
 export type Chapter = {
-    length: number; // word count
-    content: string; // raw markdown (## Title\n\nbody)
-    generationTimeMs?: number; // time in ms the LLM took to generate this chapter
-};
-
-// Shape of a chapter expansion payload (chapter-XXX.json) returned by GET.
-// Contains everything needed to re-trigger the chapter expansion independently:
-// plotpoints, context snapshot, model config, and the full expanded result.
-// See storyboard-generations.yml ChapterPayload schema.
-export type ChapterPayload = {
-    storyId: string;
-    storyline: string;
-    chapterCount: number;
-    chapterNumber: string;
-    chapterIndex: number;
-    title: string;
-    plotpoints: string[];
-    context: {
-        appending: string[];
-        request: string;
-    };
-    config: {
-        model: string;
-        endpoint: string;
-        systemInstructions: string;
-        openingMessage: string;
-    };
-    expansion: {
-        minWords: number;
-        wordCount: number;
-    };
-    generationTimeMs?: number; // time in ms the LLM took to generate this chapter
-    result: {
-        title: string;
-        content: string;
-    };
+    chapterNumber: string; // "1", "2", etc.
+    chapterIndex: number; // 0-based index
+    title: string; // chapter title from the LLM
+    plotpoints: string[]; // plotpoints for this chapter
+    expanded: boolean; // true if chapter-XXX.md exists (chapter has been expanded)
+    content?: string; // raw markdown (## Title\n\nbody) — only when expanded
+    length?: number; // word count — only when expanded
+    generationTimeMs?: number; // time in ms the LLM took to generate — only when expanded
 };
 
 // Shape of the story data returned by the GET endpoint.
-// plotlines is the raw text of plotpoint.md; chapters is sorted list of chapter files.
-// payloads is the sorted list of chapter-XXX.json expansion payloads.
+// chapters is the unified array of all chapters (expanded or not).
+// meta contains story metadata from story.json (or null if absent).
 export type StoryData = {
-    plotlines: string;
     chapters: Chapter[];
-    payloads: ChapterPayload[];
+    meta: { storyline: string; chapterCount: number; createdAt: string } | null;
 };
 
 // A single story session in the dashboard.
@@ -77,7 +51,7 @@ export type StoryEntry = {
     storyline: string;
     chapterCount: number;
     // Progressive data fetched via GET polling. Starts as an empty story (status 200
-    // returns { plotlines: '', chapters: [] } for an existing-but-empty dir — see
+    // returns { chapters: [], meta: null } for an existing-but-empty dir — see
     // generation-get-story-data.test.ts:110-142). We use null to mean "not yet
     // fetched/pending first poll" and a StoryData object once fetched.
     data: StoryData | null;

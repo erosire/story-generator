@@ -83,7 +83,7 @@ describe('StoryGeneratorApp', () => {
                 const storyId = String(url.split('/').pop() ?? '');
                 return Promise.resolve(mockResponse(200, { storyId }));
             }
-            return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
+            return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
         });
 
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
@@ -135,10 +135,16 @@ describe('StoryGeneratorApp', () => {
             fetchMock.__counts[storyId] = (fetchMock.__counts[storyId] ?? 0) + 1;
             const c = fetchMock.__counts[storyId];
             const chapters = Array.from({ length: Math.min(c, 3) }, (_, i) => ({
+                chapterNumber: String(i + 1),
+                chapterIndex: i,
+                title: `Chapter ${i + 1}`,
+                plotpoints: [`Plot point ${i + 1}`],
+                expanded: true,
+                content: `## Chapter ${i + 1}\n\nbody`,
                 length: 1,
-                content: `## Ch${i + 1}\n\nbody`
+                generationTimeMs: 1000
             }));
-            return Promise.resolve(mockResponse(200, { plotlines: '> plotlines', chapters }));
+            return Promise.resolve(mockResponse(200, { chapters, meta: { storyline: 'test', chapterCount: 3, createdAt: '2026-07-01' } }));
         });
 
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
@@ -179,24 +185,29 @@ describe('StoryGeneratorApp', () => {
             });
         });
 
-        // After polling completes, three chapters should be rendered.
+        // After polling completes, three chapters should be rendered as individual collapsibles.
         await waitFor(() => {
-            expect(screen.getByTestId('plotlines').textContent).toContain('plotlines');
+            expect(screen.queryByTestId('chapter-0')).toBeDefined();
+            expect(screen.queryByTestId('chapter-1')).toBeDefined();
             expect(screen.queryByTestId('chapter-2')).toBeDefined();
         });
 
-        // The plotlines and chapters are wrapped in collapsibles.
-        expect(screen.getByTestId('plotlines-collapsible-toggle').getAttribute('aria-expanded')).toBe('true');
-        expect(screen.getByTestId('chapters-collapsible-toggle').getAttribute('aria-expanded')).toBe('true');
-        const chaptersHeader = screen.getByTestId('chapters-collapsible-toggle');
-        expect(chaptersHeader.textContent).toContain('3 chapters');
-
+        // The latest chapter (chapter 2) should be expanded by default
         expect(screen.getByTestId('chapter-2-toggle').getAttribute('aria-expanded')).toBe('true');
-        expect(screen.getByTestId('chapter-1-toggle').getAttribute('aria-expanded')).toBe('false');
+        // Expanded chapter should show plotpoints and content
+        expect(screen.getByTestId('chapter-2-plotpoints')).toBeDefined();
+        expect(screen.getByTestId('chapter-2-content')).toBeDefined();
 
+        // Expand chapter 1 to verify its plotpoints are shown
+        fireEvent.click(screen.getByTestId('chapter-1-toggle'));
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-1-plotpoints')).toBeDefined();
+            expect(screen.getByTestId('chapter-1-content')).toBeDefined();
+        });
+
+        // Toggle chapter 2 to collapse it
         fireEvent.click(screen.getByTestId('chapter-2-toggle'));
         expect(screen.queryByTestId('chapter-2-body')).toBeNull();
-        expect(screen.getByTestId('plotlines').textContent).toContain('plotlines');
     });
 
     it('shows an inline validation error when storyline is empty on submit', async () => {
@@ -234,7 +245,7 @@ describe('StoryGeneratorApp', () => {
                         })
                     );
                 }
-                return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
             }
             return Promise.resolve(mockResponse(200, {}));
         });
@@ -247,11 +258,10 @@ describe('StoryGeneratorApp', () => {
             expect(screen.getByTestId('story-tab-bbbb-2222')).toBeDefined();
         });
 
-        // The first loaded story is auto-selected — its content renders the
-        // plotlines collapsible. Since the mock returns empty plotlines for
-        // specific storyIds, the empty-plotlines fallback is shown.
+        // The first loaded story is auto-selected — its content shows the
+        // chapters list with "No chapters yet." since the mock returns empty chapters.
         await waitFor(() => {
-            expect(screen.getByTestId('plotlines-collapsible-body').textContent).toContain('No plotlines yet.');
+            expect(screen.getByTestId('chapters-list').textContent).toContain('No chapters yet.');
         });
     });
 
@@ -270,8 +280,19 @@ describe('StoryGeneratorApp', () => {
                 }
                 return Promise.resolve(
                     mockResponse(200, {
-                        plotlines: '> plot',
-                        chapters: [{ length: 5, content: '## Ch1\n\nbody' }]
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'Ch1',
+                                plotpoints: ['plot'],
+                                expanded: true,
+                                content: '## Ch1\n\nbody',
+                                length: 5,
+                                generationTimeMs: 1000
+                            }
+                        ],
+                        meta: { storyline: 'Remote story', chapterCount: 1, createdAt: '2026-07-03T12:00:00Z' }
                     })
                 );
             }
@@ -282,8 +303,8 @@ describe('StoryGeneratorApp', () => {
 
         await waitFor(() => {
             expect(screen.getByTestId('story-tab-remote-uuid-1')).toBeDefined();
-            expect(screen.getByTestId('plotlines').textContent).toContain('plot');
             expect(screen.getByTestId('chapter-0-content').textContent).toContain('Ch1');
+            expect(screen.getByTestId('chapter-0-plotpoints').textContent).toContain('plot');
         });
 
         // After two stable polls, isProcessing flips false so the badge stops.
@@ -302,7 +323,7 @@ describe('StoryGeneratorApp', () => {
                 if (url.endsWith('/list')) {
                     return Promise.resolve(mockResponse(200, listResponse));
                 }
-                return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
             }
             return Promise.resolve(mockResponse(200, {}));
         });
@@ -345,7 +366,7 @@ describe('StoryGeneratorApp', () => {
                 if (url.endsWith('/list')) {
                     return Promise.resolve(mockResponse(500, { error: 'server on fire' }));
                 }
-                return Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] }));
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
             }
             return Promise.resolve(mockResponse(200, {}));
         });

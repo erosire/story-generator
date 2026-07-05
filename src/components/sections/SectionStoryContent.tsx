@@ -1,16 +1,16 @@
 // Content section: progressively fetches story data via the GET endpoint and
-// renders plotlines + chapters for the currently selected story.
+// renders chapters for the currently selected story.
 //
-// Mirrors library/workflow/lightning-agent/components/SectionContentDisplay.tsx
-// in shape (reads `selected` from the store, renders messages into Markdown) but
-// the data source is the storyboard GET endpoint (poll-based) rather than an
-// in-memory agent conversation.
+// The API returns a unified chapters array where each chapter includes its
+// plotpoints and expansion status. Chapters are displayed as individual
+// collapsibles. Within each chapter, plotpoints are listed first, followed by
+// the expanded content (or an informational message if not yet expanded).
 //
 // Polling lifecycle (driven by useEffect on selected.id):
 //   1. When a story with chapterCount > 0 is selected, start a pollStoryData
 //      loop (see api/storyboard.ts). Mark entry.isProcessing = true.
-//   2. Each onData callback updates the entry's data in the store — the plotlines
-//      appear as soon as plotpoint.md is written (fast), chapters fill in one by one.
+//   2. Each onData callback updates the entry's data in the store — chapters
+//      appear as soon as plotpoint.json is written, then expand one by one.
 //   3. The loop terminates when chapters.length >= chapterCount, a hard error
 //      occurs, or the user selects a different story (cancellation).
 //
@@ -40,13 +40,10 @@ const EmptyState = styled('div', {
     color: '#6b6b6b',
     fontSize: 18,
     fontStyle: 'italic',
-    // Matches the slight top offset used by lightning-agent EmptyState
-    // (library/workflow/lightning-agent/components/SectionContentDisplay.tsx:26).
     paddingTop: 48
 });
 
-// Hint shown when a story is selected but its generation hasn't been triggered
-// (i.e. the user hasn't submitted a storyline via the Generate button yet).
+// Hint shown when a story is selected but its generation hasn't been triggered.
 const PendingSubmitHint = styled('div', {
     color: '#a0a0a0',
     padding: 24
@@ -62,19 +59,7 @@ const ContentColumn = styled('div', {
     boxSizing: 'border-box'
 });
 
-// Plotlines block wrapper — now delegates markdown rendering to MarkdownContent.
-// Retains the container styling (background, border, padding) for visual
-// consistency while the content inside is rendered as rich markdown.
-const PlotBlock = styled('div', {
-    background: 'rgba(255, 255, 255, 0.03)',
-    padding: 12,
-    borderRadius: 6,
-    border: '1px solid rgba(255, 255, 255, 0.08)'
-});
-
-// Chapter card wrapper — now delegates markdown rendering to MarkdownContent.
-// The server returns chapter content as markdown (## Title\n\nbody), so we
-// render it through react-markdown for proper formatting.
+// Chapter card wrapper — renders expanded chapter content via MarkdownContent.
 const ChapterCard = styled('div', {
     background: 'rgba(255, 255, 255, 0.03)',
     padding: 16,
@@ -82,11 +67,24 @@ const ChapterCard = styled('div', {
     border: '1px solid rgba(255, 255, 255, 0.08)'
 });
 
+// Plotpoints list wrapper — renders the bullet list of plotpoints for a chapter.
+const PlotpointsBlock = styled('div', {
+    background: 'rgba(255, 255, 255, 0.03)',
+    padding: 12,
+    borderRadius: 6,
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    marginBottom: 8
+});
+
+// Info message shown when a chapter has not been expanded yet.
+const PendingExpansion = styled('div', {
+    color: '#a0a0a0',
+    fontSize: 13,
+    fontStyle: 'italic',
+    padding: '8px 0'
+});
+
 // Chapters list container — flex column with gap between chapter collapsibles.
-// Bottom padding ensures that when a chapter near the bottom is expanded in
-// scrolling mode, the next chapter's toggle header remains visible on screen.
-// Without this padding, the scroll container clips the last visible toggle,
-// making it impossible to expand the next chapter without scrolling past it.
 const ChapterListContainer = styled('div', {
     display: 'flex',
     flexDirection: 'column',
@@ -115,8 +113,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                     patch(next as any);
                     return next;
                 }),
-                // If the patched entry is the selected one, refresh the reference too
-                // (mirrors the lightning-agent `store.selected = entry` pattern).
                 selected:
                     prev.selected?.id === id
                         ? (() => {
@@ -130,32 +126,17 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         [setStore]
     );
 
-    // Polling effect. Runs whenever the selected entry's id, storyId,
-    // chapterCount, current chapter count, isRemote, or config changes.
-    //
-    // Two ways to start polling:
-    //   1. chapterCount > 0 (fresh POST or remote entry with known target).
-    //      Terminate when chapters.length reaches chapterCount.
-    //   2. isRemote === true with chapterCount === 0 (legacy remote entry from
-    //      an old list response that only carried storyId). Pass
-    //      expectedChapterCount=0 so the loop terminates via poll-stability.
+    // Polling effect.
     React.useEffect(() => {
         if (!selected || !selected.storyId) {
             return;
         }
 
-        // Poll only when the entry is in a pollable state:
-        //   - remote (always pollable on selection), OR
-        //   - has a target chapterCount > 0 (fresh POST).
         const pollable = selected.isRemote || selected.chapterCount > 0;
         if (!pollable) {
             return;
         }
 
-        // If we already have all requested chapters and the target is known,
-        // no need to start polling. (Remote mode has no fixed target — we always
-        // re-poll on selection to refresh, since the story could have new chapters
-        // since the last fetch. The poll loop self-terminates via stability.)
         if (selected.chapterCount > 0 && selected.data && selected.data.chapters.length >= selected.chapterCount) {
             return;
         }
@@ -165,7 +146,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         const baseUrl = store.config.baseUrl;
         const pollIntervalMs = store.config.pollIntervalMs;
 
-        // Mark as processing so the tab chip shows the ⏳ badge.
+        // Mark as processing so the tab chip shows the badge.
         setStore((prev) => ({
             ...prev,
             records: prev.records.map((e) =>
@@ -175,22 +156,16 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
         activePollIdRef.current = entryId;
 
-        // Capture the entryId locally for shouldStop — we cancel the loop on
-        // unmount or when the user selects a different story.
         const shouldStop = () => activePollIdRef.current !== entryId;
 
-        // onData fires on every successful GET; updates the store entry in place
-        // so the UI progressively reveals plotlines then chapters.
-        const onData = (data: { plotlines: string; chapters: { length: number; content: string; generationTimeMs?: number }[]; payloads?: any[] }) => {
-            // Use the functional form so we don't depend on the closure's stale
-            // store snapshot.
+        // onData fires on every successful GET; updates the store entry in place.
+        const onData = (data: { chapters: any[]; meta: any }) => {
             setStore((prev) => {
                 const records = prev.records.map((e) =>
                     e.id === entryId
-                        ? { ...e, data: { plotlines: data.plotlines, chapters: data.chapters, payloads: data.payloads ?? [] } }
+                        ? { ...e, data: { chapters: data.chapters, meta: data.meta } }
                         : e
                 );
-                // Keep `selected` pointing at the updated record if relevant.
                 const selected =
                     prev.selected?.id === entryId
                         ? records.find((e) => e.id === entryId) ?? prev.selected
@@ -199,14 +174,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             });
         };
 
-        // Fire-and-forget poll loop. We don't await here because the loop
-        // self-terminates via shouldStop; awaiting would block the effect forever
-        // and React would warn about long-running effects.
         pollStoryData({
             baseUrl,
             storyId,
-            // Pass the known target only when chapterCount > 0. For remote
-            // entries pass 0 → loop terminates via poll-stability instead.
             expectedChapterCount: chapterCount > 0 ? chapterCount : 0,
             pollIntervalMs,
             shouldStop,
@@ -219,8 +189,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         if (result.status === 'error') {
                             return { ...e, isProcessing: false, error: result.error };
                         }
-                        // 'data' or 'stopped' — terminal. Clear isProcessing.
-                        // 'stopped' (cancelled) leaves the last-known data intact.
                         return { ...e, isProcessing: false };
                     });
                     const selected =
@@ -231,8 +199,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 });
             })
             .catch((err: Error) => {
-                // Network/parse error from the loop itself (shouldn't normally
-                // happen because fetchStoryData catches and returns 'error').
                 setStore((prev) => ({
                     ...prev,
                     records: prev.records.map((e) =>
@@ -243,25 +209,16 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 }));
             })
             .finally(() => {
-                // Only clear the active poll ref if we're still the active one —
-                // otherwise we'd reset a poll that has already been replaced.
                 if (activePollIdRef.current === entryId) {
                     activePollIdRef.current = null;
                 }
             });
 
-        // Cleanup: signal cancellation. We DON'T clear isProcessing here
-        // because the .then chain above is responsible for that; we only clear
-        // the ref so shouldStop() returns true on the next iteration.
         return () => {
             if (activePollIdRef.current === entryId) {
                 activePollIdRef.current = null;
             }
         };
-        // Intentionally depend on selected.id, storyId, chapterCount, current
-        // chapter count, isRemote, and config. We rebuild the effect only when
-        // these destabilize so the loop's shouldStop closure reflects the
-        // right entry.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         selected?.id,
@@ -280,15 +237,11 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         );
     }
 
-    // Pending-submit hint only applies to locally-added entries that have NOT
-    // been POSTed yet (chapterCount === 0 && !isRemote). Remote entries from
-    // the /list endpoint now carry chapterCount from story.json, so they always
-    // have chapterCount > 0 and never show this hint.
     if (!selected.isRemote && selected.chapterCount <= 0) {
         return (
             <PendingSubmitHint data-testid="content-pending-submit">
                 Enter a storyline and chapter count in the field below, then click
-                “Generate” to start generation for story{' '}
+                "Generate" to start generation for story{' '}
                 <code>{selected.storyId}</code>.
                 {selected.error && (
                     <div style={{ color: '#ff6b6b', marginTop: 12 }}>
@@ -299,7 +252,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         );
     }
 
-    const data = selected.data ?? { plotlines: '', chapters: [], payloads: [] };
+    const data = selected.data ?? { chapters: [], meta: null };
 
     return (
         <ContentColumn data-testid="content-story">
@@ -309,36 +262,25 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         Generating… {data.chapters.length}/{selected.chapterCount} chapters
                     </div>
                 )}
-                {/* Plotlines: collapsible. Starts open so the user sees the
-                    generated outline immediately; can collapse to focus on
-                    chapters below. */}
-                <Collapsible
-                    title="Plotlines"
-                    defaultOpen={true}
-                    data-testid="plotlines-collapsible"
-                >
-                    {data.plotlines ? (
-                        <PlotBlock data-testid="plotlines">
-                            <MarkdownContent>{data.plotlines}</MarkdownContent>
-                        </PlotBlock>
-                    ) : (
-                        <PlotBlock style={{ color: '#6b6b6b', fontStyle: 'italic' }}>
-                            {selected.isProcessing ? 'Waiting for plotpoint.md…' : 'No plotlines yet.'}
-                        </PlotBlock>
-                    )}
-                </Collapsible>
             </div>
 
-            <div>
-                {/* Chapters: collapsible. Starts open. Collapsing the section
-                    hides all chapter cards but keeps the section heading /
-                    count summary accessible. */}
-                <Collapsible
-                    title="Chapters"
-                    defaultOpen={true}
-                    data-testid="chapters-collapsible"
-                    headerExtra={
-                        data.chapters.length > 0 ? (
+            <ChapterListContainer data-testid="chapters-list">
+                {data.chapters.length === 0 && (
+                    <div style={{ color: '#6b6b6b', fontStyle: 'italic', padding: '8px 0' }}>
+                        {selected.isProcessing ? 'Waiting for the first chapter…' : 'No chapters yet.'}
+                    </div>
+                )}
+                {data.chapters.map((ch, i) => (
+                    <Collapsible
+                        key={i}
+                        defaultOpen={i === data.chapters.length - 1}
+                        data-testid={`chapter-${i}`}
+                        title={
+                            <span style={{ fontSize: 13, color: '#e0e0e0' }}>
+                                Chapter {i + 1}{ch.title ? `: ${ch.title}` : ''}
+                            </span>
+                        }
+                        headerExtra={
                             <span
                                 style={{
                                     fontSize: 11,
@@ -346,49 +288,13 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                     background: 'rgba(255,255,255,0.05)',
                                     padding: '2px 6px',
                                     borderRadius: 4,
-                                    marginLeft: 'auto'
+                                    display: 'inline-flex',
+                                    gap: 6,
+                                    alignItems: 'center'
                                 }}
                             >
-                                {data.chapters.length} chapter{data.chapters.length === 1 ? '' : 's'}
-                            </span>
-                        ) : null
-                    }
-                >
-                    {data.chapters.length === 0 && (
-                        <div style={{ color: '#6b6b6b', fontStyle: 'italic', padding: '8px 0' }}>
-                            {selected.isProcessing ? 'Waiting for the first chapter…' : 'No chapters yet.'}
-                        </div>
-                    )}
-                    <ChapterListContainer>
-                        {data.chapters.map((ch, i) => (
-                            // Each chapter is itself collapsible so the user can
-                            // fold away long expanded chapters to skim the list.
-                            // Collapsed by default for chapters AFTER the latest one
-                            // (matches the lightning-agent "auto-collapse older
-                            // messages" pattern in SectionContentDisplay.tsx:92),
-                            // keeping the freshly-generated chapter open for reading.
-                            <Collapsible
-                                key={i}
-                                defaultOpen={i === data.chapters.length - 1}
-                                data-testid={`chapter-${i}`}
-                                title={
-                                    <span style={{ fontSize: 13, color: '#e0e0e0' }}>
-                                        Chapter {i + 1}
-                                    </span>
-                                }
-                                headerExtra={
-                                    <span
-                                        style={{
-                                            fontSize: 11,
-                                            color: '#a0a0a0',
-                                            background: 'rgba(255,255,255,0.05)',
-                                            padding: '2px 6px',
-                                            borderRadius: 4,
-                                            display: 'inline-flex',
-                                            gap: 6,
-                                            alignItems: 'center'
-                                        }}
-                                    >
+                                {ch.expanded ? (
+                                    <>
                                         <span>{ch.length} words</span>
                                         {typeof ch.generationTimeMs === 'number' && ch.generationTimeMs > 0 && (
                                             <span style={{ color: '#7a9ec2' }}>
@@ -397,17 +303,40 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                                     : `${(ch.generationTimeMs / 1000).toFixed(1)}s`}
                                             </span>
                                         )}
-                                    </span>
-                                }
-                            >
-                                <ChapterCard data-testid={`chapter-${i}-content`}>
-                                    <MarkdownContent>{ch.content}</MarkdownContent>
-                                </ChapterCard>
-                            </Collapsible>
-                        ))}
-                    </ChapterListContainer>
-                </Collapsible>
-            </div>
+                                    </>
+                                ) : (
+                                    <span style={{ color: '#7a9ec2' }}>Pending</span>
+                                )}
+                            </span>
+                        }
+                    >
+                        {/* Plotpoints — always shown for every chapter */}
+                        {ch.plotpoints && ch.plotpoints.length > 0 && (
+                            <PlotpointsBlock data-testid={`chapter-${i}-plotpoints`}>
+                                <div style={{ fontSize: 11, color: '#a0a0a0', marginBottom: 6, fontWeight: 600 }}>
+                                    Plot Points
+                                </div>
+                                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: '#c0c0c0', lineHeight: 1.6 }}>
+                                    {ch.plotpoints.map((pp: string, j: number) => (
+                                        <li key={j}>{pp}</li>
+                                    ))}
+                                </ul>
+                            </PlotpointsBlock>
+                        )}
+
+                        {/* Chapter expansion content — or pending message */}
+                        {ch.expanded ? (
+                            <ChapterCard data-testid={`chapter-${i}-content`}>
+                                <MarkdownContent>{ch.content ?? ''}</MarkdownContent>
+                            </ChapterCard>
+                        ) : (
+                            <PendingExpansion data-testid={`chapter-${i}-pending`}>
+                                This chapter has not been expanded yet.
+                            </PendingExpansion>
+                        )}
+                    </Collapsible>
+                ))}
+            </ChapterListContainer>
 
             {selected.error && (
                 <div style={{ color: '#ff6b6b', fontSize: 13 }} data-testid="content-error">

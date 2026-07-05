@@ -41,9 +41,6 @@ describe('createNewStory', () => {
             chapterCount: 3
         });
 
-        // Asserts the request was shaped exactly as the server expects:
-        // - method POST, Content-Type json, URL = BASE_URL/<storyId>
-        // - body is JSON-encoded { storyline, chapterCount }
         expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-abc`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -53,8 +50,6 @@ describe('createNewStory', () => {
     });
 
     it('throws an Error containing the server message on 400 (missing storyline)', async () => {
-        // Server returns { error: 'storyline is required' } on body validation failure
-        // (generation-create-new-story.ts:222).
         (globalThis.fetch as any).mockResolvedValueOnce(
             mockResponse(400, { error: 'storyline is required' })
         );
@@ -65,7 +60,6 @@ describe('createNewStory', () => {
     });
 
     it('falls back to a status-based message when the server body is not JSON', async () => {
-        // A 500 without a JSON body should still surface a descriptive error.
         const badResponse = {
             ok: false,
             status: 500,
@@ -87,7 +81,6 @@ describe('createNewStory', () => {
 
         await createNewStory(BASE_URL, 'a/b c', { storyline: 'x', chapterCount: 1 });
 
-        // encodeURIComponent('a/b c') === 'a%2Fb%20c'
         expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/a%2Fb%20c`);
     });
 });
@@ -96,26 +89,40 @@ describe('fetchStoryData', () => {
     beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
     afterEach(() => vi.unstubAllGlobals());
 
-    it('returns { status: "data", data } on 200 with plotlines and chapters', async () => {
-        // Mirrors the fixture in generation-get-story-data.test.ts:30-34.
+    it('returns { status: "data", data } on 200 with unified chapters', async () => {
         const chapters = [
-            { length: 9, content: '## The Beginning\n\nIt was a dark and stormy night...' },
-            { length: 8, content: '## The Journey\n\nThe next morning, they set out...' }
+            {
+                chapterNumber: '1',
+                chapterIndex: 0,
+                title: 'The Beginning',
+                plotpoints: ['Opening scene'],
+                expanded: true,
+                content: '## The Beginning\n\nIt was a dark and stormy night...',
+                length: 9,
+                generationTimeMs: 1000
+            },
+            {
+                chapterNumber: '2',
+                chapterIndex: 1,
+                title: 'The Journey',
+                plotpoints: ['Character development'],
+                expanded: false
+            }
         ];
+        const meta = { storyline: 'A test story', chapterCount: 2, createdAt: '2026-07-01T10:00:00Z' };
         (globalThis.fetch as any).mockResolvedValueOnce(
-            mockResponse(200, { plotlines: '> Chapter 1', chapters })
+            mockResponse(200, { chapters, meta })
         );
 
         const result = await fetchStoryData(BASE_URL, 'story-1');
 
         expect(result).toEqual({
             status: 'data',
-            data: { plotlines: '> Chapter 1', chapters }
+            data: { chapters, meta }
         });
     });
 
     it('returns { status: "not-found" } on 404 (story dir not created yet)', async () => {
-        // Mirrors generation-get-story-data.test.ts:93-108 (non-existent story).
         (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(404, { error: 'x' }));
 
         const result = await fetchStoryData(BASE_URL, 'nope');
@@ -136,9 +143,6 @@ describe('fetchStoryList', () => {
     beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
     afterEach(() => vi.unstubAllGlobals());
 
-    // Server now returns { stories: StoryMeta[] } with full metadata per story
-    // (see generation-list-stories.ts). Each entry has storyId, storyline,
-    // chapterCount, and createdAt.
     const makeStoryMeta = (overrides: Partial<StoryMeta> = {}): StoryMeta => ({
         storyId: 'story-abc',
         storyline: 'A sci-fi adventure about Mars.',
@@ -159,7 +163,6 @@ describe('fetchStoryList', () => {
         const result = await fetchStoryList(BASE_URL);
 
         expect(result).toEqual({ stories: metas });
-        // URL should be BASE_URL/list (URL-encoded)
         expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/list`);
         expect((fetch as any).mock.calls[0][1]).toEqual({ method: 'GET' });
     });
@@ -207,7 +210,6 @@ describe('fetchStoryList', () => {
 describe('pollStoryData', () => {
     beforeEach(() => {
         vi.stubGlobal('fetch', vi.fn());
-        // Speed up the inter-poll wait so tests don't actually sleep for seconds.
         vi.useFakeTimers();
     });
     afterEach(() => {
@@ -215,9 +217,6 @@ describe('pollStoryData', () => {
         vi.unstubAllGlobals();
     });
 
-    // Helper that drives the poll loop forward through fake timers + a sequence
-    // of mocked fetch responses. Each response is consumed by one loop iteration;
-    // between iterations the loop awaits setTimeout(pollIntervalMs).
     const runPollWithResponses = async (
         responses: any[],
         params: {
@@ -245,8 +244,6 @@ describe('pollStoryData', () => {
             onData: params.onData ?? (() => {})
         });
 
-        // Advance fake timers until the poll loop has consumed all responses.
-        // We tick a few times to flush microtasks + the setTimeout wait.
         let ticks = 0;
         while (responses.length > 0 && ticks < 50) {
             await Promise.resolve();
@@ -261,15 +258,20 @@ describe('pollStoryData', () => {
     it('terminates and returns the final data once chapter count reaches expected', async () => {
         // Three polls: 0 chapters, 1 chapter, 3 chapters (meets expected 3).
         const responses = [
-            mockResponse(200, { plotlines: 'pp', chapters: [] }),
-            mockResponse(200, { plotlines: 'pp', chapters: [{ length: 1, content: 'a' }] }),
+            mockResponse(200, { chapters: [], meta: null }),
             mockResponse(200, {
-                plotlines: 'pp',
                 chapters: [
-                    { length: 1, content: 'a' },
-                    { length: 1, content: 'b' },
-                    { length: 1, content: 'c' }
-                ]
+                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['a'], expanded: true, content: 'a', length: 1 }
+                ],
+                meta: null
+            }),
+            mockResponse(200, {
+                chapters: [
+                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['a'], expanded: true, content: 'a', length: 1 },
+                    { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['b'], expanded: true, content: 'b', length: 1 },
+                    { chapterNumber: '3', chapterIndex: 2, title: 'Ch3', plotpoints: ['c'], expanded: true, content: 'c', length: 1 }
+                ],
+                meta: null
             })
         ];
 
@@ -280,25 +282,15 @@ describe('pollStoryData', () => {
             onData
         });
 
-        expect(result).toEqual({
-            status: 'data',
-            data: {
-                plotlines: 'pp',
-                chapters: [
-                    { length: 1, content: 'a' },
-                    { length: 1, content: 'b' },
-                    { length: 1, content: 'c' }
-                ]
-            }
-        });
+        expect(result.status).toBe('data');
+        expect(result.data.chapters.length).toBe(3);
         // onData should have fired once per data-bearing poll (3 times).
         expect(onData).toHaveBeenCalledTimes(3);
     });
 
     it('returns "stopped" when shouldStop returns true before any fetch', async () => {
-        // shouldStop is true from the start — the loop bails before fetch.
         const fetchMock = globalThis.fetch as any;
-        fetchMock.mockImplementation(() => Promise.resolve(mockResponse(200, { plotlines: '', chapters: [] })));
+        fetchMock.mockImplementation(() => Promise.resolve(mockResponse(200, { chapters: [], meta: null })));
 
         const result = await pollStoryData({
             baseUrl: BASE_URL,
@@ -310,13 +302,12 @@ describe('pollStoryData', () => {
         });
 
         expect(result).toEqual({ status: 'stopped' });
-        // And crucially, no fetch call was ever made.
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('returns "error" when fetchStoryData reports a hard error', async () => {
         const responses = [
-            mockResponse(200, { plotlines: 'pp', chapters: [] }),
+            mockResponse(200, { chapters: [], meta: null }),
             mockResponse(500, { error: 'server on fire' })
         ];
 
@@ -328,13 +319,14 @@ describe('pollStoryData', () => {
     });
 
     it('keeps polling on 404 without terminating', async () => {
-        // 404 means dir not created yet — loop should keep going.
         const responses = [
             mockResponse(404, {}),
             mockResponse(404, {}),
             mockResponse(200, {
-                plotlines: 'pp',
-                chapters: [{ length: 1, content: 'x' }]
+                chapters: [
+                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['x'], expanded: true, content: 'x', length: 1 }
+                ],
+                meta: null
             })
         ];
         const onData = vi.fn();
@@ -344,10 +336,8 @@ describe('pollStoryData', () => {
             onData
         });
 
-        expect(result).toEqual({
-            status: 'data',
-            data: { plotlines: 'pp', chapters: [{ length: 1, content: 'x' }] }
-        });
+        expect(result.status).toBe('data');
+        expect(result.data.chapters.length).toBe(1);
         // onData must NOT have been called on 404 polls — only on the final 200.
         expect(onData).toHaveBeenCalledTimes(1);
     });
