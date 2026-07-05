@@ -111,11 +111,13 @@ const PendingExpansion = styled('div', {
     padding: '8px 0'
 });
 
-// Re-expand button — shown at the end of each expanded chapter that has a stored
-// chapter-XXX.json payload. Uses an accent tinted background so it reads as a
-// secondary action. Disabled while a re-expand is in flight or the story is
-// actively processing. Cannot use styled() for & pseudo-selectors, so this is
-// a plain component with conditional inline styles.
+// Expand / Re-expand button — shown at the end of each chapter that has a stored
+// chapter-XXX.json payload (canReExpand). For pending chapters (expanded=false),
+// this allows recovering from a crashed generation. For expanded chapters, it
+// allows re-generating with a fresh LLM call. Uses an accent tinted background
+// so it reads as a secondary action. Disabled while a re-expand is in flight or
+// the story is actively processing. Cannot use styled() for & pseudo-selectors,
+// so this is a plain component with conditional inline styles.
 const ReExpandButton: React.FC<{
     disabled?: boolean;
     onClick?: () => void;
@@ -554,11 +556,15 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 </PendingExpansion>
                             )}
 
-                            {/* Re-expand button — only for chapters with a stored
-                                chapter-XXX.json payload (canReExpand). The JSON
-                                file holds the LLM conversation context needed to
-                                regenerate the chapter content via PATCH. */}
-                            {ch.expanded && ch.canReExpand && (
+                            {/* Expand / Re-expand button — shown when a stored
+                                chapter-XXX.json payload exists (canReExpand). The
+                                JSON file holds the LLM conversation context needed
+                                to generate or regenerate the chapter via PATCH.
+                                For pending chapters (expanded=false) this lets the
+                                user recover from a crashed generation. For expanded
+                                chapters it allows re-generating with a fresh LLM
+                                call. */}
+                            {ch.canReExpand && (
                                 <ReExpandButton
                                     onClick={() =>
                                         handleReExpand(ch.chapterIndex, ch.generationTimeMs)
@@ -569,8 +575,12 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                     data-testid={`chapter-${i}-reexpand`}
                                 >
                                     {reExpandState?.chapterIndex === ch.chapterIndex
-                                        ? 'Re-expanding…'
-                                        : 'Re-expand Chapter'}
+                                        ? ch.expanded
+                                            ? 'Re-expanding…'
+                                            : 'Expanding…'
+                                        : ch.expanded
+                                            ? 'Re-expand Chapter'
+                                            : 'Expand Chapter'}
                                 </ReExpandButton>
                             )}
                         </ChapterCard>
