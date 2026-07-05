@@ -20,6 +20,14 @@
 //       Each entry includes full metadata from story.json (storyId, storyline,
 //       chapterCount, createdAt). See generation-list-stories.ts.
 //
+//   - PATCH /v1/storyboard/generations/:storyId
+//       body: { chapterIndex: number }
+//       returns: { storyId, chapterIndex, chapterNumber, title, message }
+//       behavior: fire-and-forget re-expansion of a single chapter using the
+//       stored LLM context. The server reads the chapter-XXX.json payload to
+//       recover the conversation context, then calls the LLM to regenerate.
+//       See generation-update-chapter.ts.
+//
 // `pollStoryData` repeatedly hits GET until a stop condition is met:
 //   - chapter count reaches the requested chapterCount, OR
 //   - the response is a 404 (treated as "not started yet", keep polling), OR
@@ -285,4 +293,42 @@ export async function deleteStory(
     }
 
     return (await response.json()) as { success: boolean; storyId: string };
+}
+
+// Re-expand a chapter via PATCH. Server starts background re-expansion and
+// returns immediately with chapter info. The UI should poll GET to detect
+// when re-expansion completes (generationTimeMs in the chapter payload changes).
+// Throws on network failure or non-200 response.
+export type UpdateChapterResponse = {
+    storyId: string;
+    chapterIndex: number;
+    chapterNumber: string;
+    title: string;
+    message: string;
+};
+
+export async function updateChapter(
+    baseUrl: string,
+    storyId: string,
+    chapterIndex: number
+): Promise<UpdateChapterResponse> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chapterIndex })
+    });
+
+    if (!response.ok) {
+        let message = `Failed to update chapter (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as UpdateChapterResponse;
 }
