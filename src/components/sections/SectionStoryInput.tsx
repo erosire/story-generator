@@ -14,7 +14,7 @@
 // a story. This replaces the previous "Add button → fill form → Generate" flow.
 
 import React from 'react';
-import { styled } from '../../styles';
+import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
 import { createNewStory } from '../../api';
 
@@ -29,18 +29,21 @@ const FooterColumn = styled('div', {
 // When unfocused, collapses to a single-line bar (minHeight:36, one row).
 // When focused, expands to full multi-line editing area (minHeight:60).
 // transition provides a smooth visual cue for the size change.
+// Modern: focus ring (sg-input) + accent-tinted background, slightly larger
+// radius so the field reads as a primary input surface.
 const StorylineTextarea = styled('textarea', {
     width: '100%',
     resize: 'vertical',
-    padding: 8,
-    borderRadius: 6,
-    border: '1px solid rgba(255, 255, 255, 0.18)',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    color: '#e0e0e0',
-    fontFamily: 'system-ui, sans-serif',
+    padding: 10,
+    borderRadius: theme.radiusMd,
+    border: `1px solid ${theme.borderStrong}`,
+    backgroundColor: theme.surface1,
+    color: theme.text,
+    fontFamily: theme.fontSans,
     fontSize: 14,
+    lineHeight: 1.5,
     boxSizing: 'border-box',
-    transition: 'min-height 0.15s ease'
+    transition: `min-height ${theme.transition}, border-color ${theme.transition}, background-color ${theme.transition}`
 });
 
 // Horizontal control row: chapter-count input on the left, Generate button on right.
@@ -48,7 +51,7 @@ const StorylineTextarea = styled('textarea', {
 const ControlRow = styled('div', {
     display: 'flex',
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
     alignItems: 'center',
     flexWrap: 'wrap'
 });
@@ -57,32 +60,41 @@ const ControlRow = styled('div', {
 // without crowding the action button.
 const ChapterCountInput = styled('input', {
     width: 80,
-    padding: '6px 8px',
-    borderRadius: 6,
-    border: '1px solid rgba(255, 255, 255, 0.18)',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    color: '#e0e0e0',
+    padding: '7px 10px',
+    borderRadius: theme.radiusMd,
+    border: `1px solid ${theme.borderStrong}`,
+    backgroundColor: theme.surface1,
+    color: theme.text,
+    fontFamily: theme.fontSans,
     fontSize: 14,
-    boxSizing: 'border-box'
+    boxSizing: 'border-box',
+    transition: `border-color ${theme.transition}, background-color ${theme.transition}`
 });
 
-// Primary action button.
+// Primary action button — accent gradient surface, bright shadow on hover via
+// the `sg-primary` class hook (global.ts).
 const GenerateButton = styled('button', {
-    padding: '8px 18px',
-    borderRadius: 6,
+    padding: '9px 20px',
+    borderRadius: theme.radiusMd,
     border: 'none',
-    backgroundColor: '#3a6ea5',
+    background: `linear-gradient(180deg, ${theme.accentHover}, ${theme.accent})`,
     color: '#fff',
     fontSize: 14,
     fontWeight: 600,
     cursor: 'pointer',
-    flex: '0 0 auto'
+    flex: '0 0 auto',
+    boxShadow: '0 2px 8px rgba(99, 102, 241, 0.25)',
+    transition: `transform ${theme.transition}, box-shadow ${theme.transition}, background ${theme.transition}`
 });
 
 // Error message line under the form.
 const ErrorLine = styled('div', {
-    color: '#ff6b6b',
-    fontSize: 13
+    color: theme.danger,
+    fontSize: 13,
+    padding: '8px 12px',
+    background: theme.dangerSoft,
+    border: `1px solid ${theme.dangerBorder}`,
+    borderRadius: theme.radiusMd
 });
 
 export const SectionStoryInput: React.FC = React.memo(() => {
@@ -101,7 +113,6 @@ export const SectionStoryInput: React.FC = React.memo(() => {
     // Focus tracking: the expanded controls (chapter count + generate button)
     // are only visible when the input area is focused. `isFocused` is true
     // when either the textarea or the chapter-count input has focus.
-    // We use a container ref to detect focus anywhere inside the footer.
     const [isFocused, setIsFocused] = React.useState(false);
     const containerRef = React.useRef<HTMLDivElement>(null);
 
@@ -114,20 +125,15 @@ export const SectionStoryInput: React.FC = React.memo(() => {
         setError('');
     }, [selected?.id]);
 
-    // Focus/blur handlers on the container. Using focusin/focusout (bubbling)
-    // so we catch focus moving to any child (textarea, chapter input, button).
-    // This keeps the controls visible while the user is interacting with them.
+    // Focus/blur handlers on the container.
     const handleFocusIn = React.useCallback(() => setIsFocused(true), []);
     const handleFocusOut = React.useCallback((e: React.FocusEvent) => {
-        // Only collapse when focus leaves the entire container — not when it
-        // moves between children inside the footer (e.g. textarea → chapter input).
         if (containerRef.current && !containerRef.current.contains(e.relatedTarget as Node)) {
             setIsFocused(false);
         }
     }, []);
 
     // Validation: storyline must be non-empty; chapterCount must be a positive int.
-    // Matches server-side validation in generation-create-new-story.ts:222-233.
     const onSubmit = async () => {
         setError('');
 
@@ -141,12 +147,9 @@ export const SectionStoryInput: React.FC = React.memo(() => {
         }
 
         setIsSubmitting(true);
-        // Capture entryId for error handling — if POST fails, we mark the
-        // entry as not processing so the tab doesn't show a stuck spinner.
         let entryId: number | null = null;
         try {
             // Generate a storyId in DateTime format: YYYYMMDD-HHMMSS
-            // e.g. "20260703-162233" → 03 July 2026, 4:22:33pm
             entryId = Date.now();
             const now = new Date();
             const pad = (n: number) => String(n).padStart(2, '0');
@@ -154,13 +157,9 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
                 `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 
-            // Create the entry with processing state and add to store.
-            // The entry is created before the POST so the tab appears immediately.
             const entry = {
                 id: entryId,
                 storyId,
-                // Title shows a human-readable version of the DateTime storyId.
-                // e.g. "20260703 4:22pm"
                 title: `${storyId.slice(0, 8)} ${now.getHours()}:${pad(now.getMinutes())}${now.getHours() >= 12 ? 'pm' : 'am'}`,
                 storyline: storyline.trim(),
                 chapterCount,
@@ -176,22 +175,15 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 selected: entry
             }));
 
-            // POST to the server. The server validates and returns { storyId }.
+            // POST to the server.
             await createNewStory(store.config.baseUrl, storyId, {
                 storyline: storyline.trim(),
                 chapterCount
             });
 
-            // Collapse back to minimal footprint after successful submit.
-            // The form will be re-populated by the useEffect when the new
-            // story is selected (since it carries the same storyline).
             setIsFocused(false);
         } catch (err: any) {
-            // Surface the server's error message (createNewStory already parses it).
             setError(err?.message ?? 'Failed to create story');
-            // Mark the entry as not processing on failure so the tab doesn't
-            // show a stuck spinner. The entry remains in the store so the user
-            // can see it and potentially retry.
             if (entryId !== null) {
                 setStore((prev) => ({
                     ...prev,
@@ -212,37 +204,33 @@ export const SectionStoryInput: React.FC = React.memo(() => {
     };
 
     return (
-        <FooterColumn
-            data-testid="story-input"
-        >
-        <div
-            ref={containerRef}
-            onFocus={handleFocusIn}
-            onBlur={handleFocusOut}
-            style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}
-        >
-            {/* Wrapper div controls minHeight to avoid passing `style` to the
-                styled StorylineTextarea — the vendored styled() helper applies
-                styles via React.createElement(Tag, { style, ...rest }) so a
-                consumer `style` prop overwrites the static styles entirely,
-                stripping background/color/border and falling back to browser
-                defaults (black on white).
-                When focused, minHeight = 10 rows (~200px with 14px font + padding). */}
-            <div style={{ minHeight: isFocused ? 200 : 36 }}>
-                <StorylineTextarea
-                    data-testid="storyline-input"
-                    rows={isFocused ? 10 : 1}
-                    placeholder="Storyline — e.g. A sci-fi adventure about a crew discovering an ancient alien artifact on Mars."
-                    value={storyline}
-                    onChange={(e) => setStoryline(e.target.value)}
-                    disabled={isSubmitting}
-                />
-            </div>
-            {/* Controls only visible when the input area is in focus. */}
-            {isFocused && (
-                <>
+        <FooterColumn data-testid="story-input">
+            <div
+                ref={containerRef}
+                onFocus={handleFocusIn}
+                onBlur={handleFocusOut}
+                style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}
+            >
+                {/* Wrapper div controls minHeight to avoid passing `style` to the
+                    styled StorylineTextarea — the vendored styled() helper applies
+                    styles via React.createElement(Tag, { style, ...rest }) so a
+                    consumer `style` prop overwrites the static styles entirely.
+                    When focused, minHeight = 10 rows (~200px). */}
+                <div style={{ minHeight: isFocused ? 200 : 36, transition: `min-height ${theme.transition}` }}>
+                    <StorylineTextarea
+                        data-testid="storyline-input"
+                        className="sg-input"
+                        rows={isFocused ? 10 : 1}
+                        placeholder="Storyline — e.g. A sci-fi adventure about a crew discovering an ancient alien artifact on Mars."
+                        value={storyline}
+                        onChange={(e) => setStoryline(e.target.value)}
+                        disabled={isSubmitting}
+                    />
+                </div>
+                {/* Controls only visible when the input area is in focus. */}
+                {isFocused && (
                     <ControlRow>
-                        <label htmlFor="chapter-count" style={{ color: '#a0a0a0', fontSize: 13 }}>
+                        <label htmlFor="chapter-count" style={{ color: theme.textMuted, fontSize: 13, fontWeight: 500 }}>
                             Chapters
                         </label>
                         <ChapterCountInput
@@ -253,19 +241,20 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                             onChange={(e) => setChapterCount(Number(e.target.value))}
                             disabled={isSubmitting}
                             data-testid="chapter-count-input"
+                            className="sg-input"
                         />
                         <GenerateButton
                             onClick={onSubmit}
                             disabled={isSubmitting}
                             data-testid="generate-button"
+                            className="sg-primary"
                         >
                             {isSubmitting ? 'Generating…' : 'Generate'}
                         </GenerateButton>
+                        {error && <ErrorLine data-testid="input-error">{error}</ErrorLine>}
                     </ControlRow>
-                    {error && <ErrorLine data-testid="input-error">{error}</ErrorLine>}
-                </>
-            )}
-        </div>
+                )}
+            </div>
         </FooterColumn>
     );
 });

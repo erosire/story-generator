@@ -22,49 +22,62 @@
 //     server creates the dir (see generation-create-new-story.ts:236 fire-and-forget).
 //   - On unmount or selection change, shouldStop becomes true so the loop exits
 //     without dispatching further setState (avoids "state on unmounted component").
+//
+// Visual: empty/pending/in-progress + chapter cards share a consistent accent
+// design language — see src/styles/theme.ts.
 
 import React from 'react';
-import { styled } from '../../styles';
+import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
 import { pollStoryData } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 
-// Empty-state placeholder shown when no story is selected.
+// Empty-state placeholder shown when no story is selected. Modern: monospace
+// "drawing" glyph + elevated typography for a calm centered hero state.
 const EmptyState = styled('div', {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
     width: '100%',
-    color: '#6b6b6b',
-    fontSize: 18,
+    color: theme.textFaint,
+    fontSize: 16,
     fontStyle: 'italic',
+    letterSpacing: 0.3,
     paddingTop: 48
 });
 
 // Hint shown when a story is selected but its generation hasn't been triggered.
+// Lives inside an elevated card so the user knows this is the active state.
 const PendingSubmitHint = styled('div', {
-    color: '#a0a0a0',
-    padding: 24
+    color: theme.textMuted,
+    padding: 24,
+    background: theme.surface1,
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusLg,
+    lineHeight: 1.6
 });
 
 // Section wrapper for the content column.
 const ContentColumn = styled('div', {
     display: 'flex',
     flexDirection: 'column',
-    padding: '12px 8px',
-    gap: 16,
+    padding: '20px 16px',
+    gap: 18,
     height: '100%',
     boxSizing: 'border-box'
 });
 
-// Chapter card wrapper — always rendered as a border box containing plotpoints and content.
+// Chapter card wrapper — always rendered as a border box containing plotpoints
+// and content. Modern: elevated translucent surface with hover-lift on the
+// card itself + a hairline accent left-bar to read as a chapter panel.
 const ChapterCard = styled('div', {
-    background: 'rgba(255, 255, 255, 0.03)',
-    padding: 12,
-    borderRadius: 6,
-    border: '1px solid rgba(255, 255, 255, 0.08)'
+    background: theme.surface2,
+    padding: 16,
+    borderRadius: theme.radiusLg,
+    border: `1px solid ${theme.border}`,
+    boxShadow: theme.shadowSm
 });
 
 // Plotpoints toggle button — right-aligned, button-like appearance.
@@ -73,25 +86,26 @@ const PlotpointsButton = styled('button', {
     alignItems: 'center',
     gap: 6,
     marginLeft: 'auto',
-    padding: '4px 10px',
+    padding: '4px 12px',
     fontSize: 12,
-    color: '#a0a0a0',
-    background: 'rgba(255, 255, 255, 0.06)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    borderRadius: 4,
+    fontWeight: 500,
+    color: theme.textMuted,
+    background: theme.surface1,
+    border: `1px solid ${theme.border}`,
+    borderRadius: 999,
     cursor: 'pointer',
-    marginBottom: 8,
-    transition: 'background 0.15s ease'
+    marginBottom: 10,
+    transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}`
 });
 
 // Plotpoints list — shown/hidden by the toggle button.
 const PlotpointsList = styled('div', {
-    marginBottom: 8
+    marginBottom: 10
 });
 
 // Info message shown when a chapter has not been expanded yet.
 const PendingExpansion = styled('div', {
-    color: '#a0a0a0',
+    color: theme.textDim,
     fontSize: 15,
     fontStyle: 'italic',
     padding: '8px 0'
@@ -101,8 +115,23 @@ const PendingExpansion = styled('div', {
 const ChapterListContainer = styled('div', {
     display: 'flex',
     flexDirection: 'column',
-    gap: 12,
+    gap: 14,
     paddingBottom: 80
+});
+
+// In-progress status banner — uses accent-tinted surface so the user notices
+// generation is running without the warning connotation of red/yellow.
+const ProgressBanner = styled('div', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    color: theme.textMuted,
+    fontSize: 12,
+    padding: '8px 12px',
+    borderRadius: theme.radiusMd,
+    background: theme.accentSoft,
+    border: `1px solid rgba(99, 102, 241, 0.25)`,
+    width: 'fit-content'
 });
 
 // Small component that manages the plotpoints toggle state.
@@ -119,13 +148,22 @@ const PlotpointsWrapper: React.FC<{
                 onClick={() => setOpen((v) => !v)}
                 aria-expanded={open}
                 data-testid={`${testId}-toggle`}
+                className="sg-plot-toggle"
             >
                 {open ? 'Hide' : 'Show'} Plot Points
-                <span style={{ fontSize: 11, color: '#6b6b6b' }}>({plotpoints.length})</span>
+                <span style={{ fontSize: 11, color: theme.textFaint }}>({plotpoints.length})</span>
             </PlotpointsButton>
             {open && (
-                <PlotpointsList data-testid={`${testId}-body`}>
-                    <ul style={{ margin: 0, paddingLeft: 20, fontSize: 15, color: '#c0c0c0', lineHeight: 1.6 }}>
+                <PlotpointsList data-testid={`${testId}-body`} className="sg-fade-in">
+                    <ul
+                        style={{
+                            margin: 0,
+                            paddingLeft: 22,
+                            fontSize: 14,
+                            color: theme.textMuted,
+                            lineHeight: 1.7
+                        }}
+                    >
                         {plotpoints.map((pp: string, j: number) => (
                             <li key={j}>{pp}</li>
                         ))}
@@ -135,6 +173,40 @@ const PlotpointsWrapper: React.FC<{
         </div>
     );
 };
+
+// Word-count + timing chip rendered in the chapter header. Encapsulated so the
+// styling stays consistent and the JSX below stays declarative.
+const ChapterMeta: React.FC<{ chapter: any }> = ({ chapter }) => (
+    <span
+        style={{
+            fontSize: 12,
+            color: theme.textMuted,
+            background: theme.surface3,
+            padding: '3px 8px',
+            borderRadius: 999,
+            display: 'inline-flex',
+            gap: 8,
+            alignItems: 'center',
+            fontWeight: 500,
+            border: `1px solid ${theme.border}`
+        }}
+    >
+        {chapter.expanded ? (
+            <>
+                <span>{chapter.length} words</span>
+                {typeof chapter.generationTimeMs === 'number' && chapter.generationTimeMs > 0 && (
+                    <span style={{ color: theme.accent2 }}>
+                        {chapter.generationTimeMs >= 60000
+                            ? `${(chapter.generationTimeMs / 60000).toFixed(1)}m`
+                            : `${(chapter.generationTimeMs / 1000).toFixed(1)}s`}
+                    </span>
+                )}
+            </>
+        ) : (
+            <span style={{ color: theme.accent2 }}>Pending</span>
+        )}
+    </span>
+);
 
 export const SectionStoryContent: React.FC = React.memo(() => {
     const { store, setStore } = useStoryStore();
@@ -286,9 +358,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             <PendingSubmitHint data-testid="content-pending-submit">
                 Enter a storyline and chapter count in the field below, then click
                 "Generate" to start generation for story{' '}
-                <code>{selected.storyId}</code>.
+                <code style={{ color: theme.accent }}>{selected.storyId}</code>.
                 {selected.error && (
-                    <div style={{ color: '#ff6b6b', marginTop: 12 }}>
+                    <div style={{ color: theme.danger, marginTop: 12 }}>
                         Last error: {selected.error}
                     </div>
                 )}
@@ -299,18 +371,18 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     const data = selected.data ?? { chapters: [], meta: null };
 
     return (
-        <ContentColumn data-testid="content-story">
-            <div>
-                {selected.isProcessing && (
-                    <div style={{ color: '#a0a0a0', fontSize: 12, marginBottom: 8 }}>
-                        Generating… {data.chapters.length}/{selected.chapterCount} chapters
-                    </div>
-                )}
-            </div>
+        <ContentColumn data-testid="content-story" className="sg-scroll">
+            {/* In-progress banner: spinner chip + chapter progress count. */}
+            {selected.isProcessing && (
+                <ProgressBanner>
+                    <span className="sg-spinner" />
+                    <span>Generating {data.chapters.length}/{selected.chapterCount} chapters…</span>
+                </ProgressBanner>
+            )}
 
             <ChapterListContainer data-testid="chapters-list">
                 {data.chapters.length === 0 && (
-                    <div style={{ color: '#6b6b6b', fontStyle: 'italic', padding: '8px 0' }}>
+                    <div style={{ color: theme.textFaint, fontStyle: 'italic', padding: '8px 0' }}>
                         {selected.isProcessing ? 'Waiting for the first chapter…' : 'No chapters yet.'}
                     </div>
                 )}
@@ -320,39 +392,11 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         defaultOpen={i === data.chapters.length - 1}
                         data-testid={`chapter-${i}`}
                         title={
-                            <span style={{ fontSize: 16, color: '#e0e0e0' }}>
+                            <span style={{ fontSize: 15, color: theme.text, fontWeight: 500 }}>
                                 Chapter {i + 1}{ch.title ? `: ${ch.title}` : ''}
                             </span>
                         }
-                        headerExtra={
-                            <span
-                                style={{
-                                    fontSize: 12,
-                                    color: '#a0a0a0',
-                                    background: 'rgba(255,255,255,0.05)',
-                                    padding: '2px 6px',
-                                    borderRadius: 4,
-                                    display: 'inline-flex',
-                                    gap: 6,
-                                    alignItems: 'center'
-                                }}
-                            >
-                                {ch.expanded ? (
-                                    <>
-                                        <span>{ch.length} words</span>
-                                        {typeof ch.generationTimeMs === 'number' && ch.generationTimeMs > 0 && (
-                                            <span style={{ color: '#7a9ec2' }}>
-                                                {ch.generationTimeMs >= 60000
-                                                    ? `${(ch.generationTimeMs / 60000).toFixed(1)}m`
-                                                    : `${(ch.generationTimeMs / 1000).toFixed(1)}s`}
-                                            </span>
-                                        )}
-                                    </>
-                                ) : (
-                                    <span style={{ color: '#7a9ec2' }}>Pending</span>
-                                )}
-                            </span>
-                        }
+                        headerExtra={<ChapterMeta chapter={ch} />}
                     >
                         <ChapterCard data-testid={`chapter-${i}-content`}>
                             {/* Plotpoints toggle button — right-aligned, collapsible */}
@@ -378,7 +422,17 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             </ChapterListContainer>
 
             {selected.error && (
-                <div style={{ color: '#ff6b6b', fontSize: 13 }} data-testid="content-error">
+                <div
+                    style={{
+                        color: theme.danger,
+                        fontSize: 13,
+                        padding: '8px 12px',
+                        background: theme.dangerSoft,
+                        border: `1px solid ${theme.dangerBorder}`,
+                        borderRadius: theme.radiusMd
+                    }}
+                    data-testid="content-error"
+                >
                     Error: {selected.error}
                 </div>
             )}

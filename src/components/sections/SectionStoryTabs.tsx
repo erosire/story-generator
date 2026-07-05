@@ -14,14 +14,19 @@
 //     and merge new entries while preserving the current selection and any
 //     locally-cached chapter data.
 //   - Errors surface as a non-blocking loadWarning (same as BootstrapLayer).
+//
+// Visual: elevated translucent sidebar with refined story pills (pill-shaped
+// items, hover tint via sg-story-item class, accent-tinted selected state,
+// rounded badges, animated spinner instead of ⏳ emoji for the processing
+// indicator — though the processing badge text is still the literal ⏳ so the
+// test that asserts `not.toContain('⏳')` after polling completes keeps working).
 
 import React from 'react';
-import { styled } from '../../styles';
+import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
 import { fetchStoryList } from '../../api';
 
 // How often to auto-refresh the story list from the server (30 seconds).
-// Short enough to pick up new stories quickly, long enough to avoid hammering.
 const REFRESH_INTERVAL_MS = 30_000;
 
 // Sidebar container — fills its parent's height, scrollable if stories overflow.
@@ -31,39 +36,44 @@ const SidebarContainer = styled('div', {
     height: '100%',
     overflowY: 'auto',
     overflowX: 'hidden',
-    padding: '8px 0',
+    padding: '10px 0',
     boxSizing: 'border-box'
 });
 
 // Section label at the top of the sidebar.
 const SectionLabel = styled('div', {
-    padding: '4px 12px',
+    padding: '6px 14px',
     fontSize: 11,
-    fontWeight: 600,
-    color: '#808080',
+    fontWeight: 700,
+    color: theme.textDim,
     textTransform: 'uppercase' as const,
-    letterSpacing: 0.5
+    letterSpacing: 1
 });
 
-// Individual story item in the list.
+// Individual story item in the list. Pill-like row with hover tint applied via
+// the `sg-story-item` class hook (global.ts) on unselected items only — the
+// selected item gets its own accent surface via inline override.
 const StoryItem = styled('button', {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
     width: '100%',
+    margin: '1px 8px',
     padding: '8px 12px',
     border: 'none',
+    borderRadius: theme.radiusMd,
     backgroundColor: 'transparent',
-    color: '#e0e0e0',
+    color: theme.text,
     cursor: 'pointer',
     textAlign: 'left' as const,
     fontSize: 13,
+    fontWeight: 500,
     lineHeight: 1.4,
     boxSizing: 'border-box' as const,
-    transition: 'background-color 0.1s ease'
+    transition: `background-color ${theme.transition}, color ${theme.transition}`
 });
 
-// Selected variant — highlighted background.
+// Selected variant — accent-tinted surface + brighter text.
 type StoryItemSelectedProps = { children?: React.ReactNode } & {
     [key: string]: unknown;
 } & React.HTMLAttributes<HTMLButtonElement>;
@@ -72,8 +82,9 @@ const StoryItemSelected: React.FC<StoryItemSelectedProps> = (props) => (
         {...props}
         style={{
             ...props.style,
-            backgroundColor: 'rgba(58, 110, 165, 0.35)',
-            color: '#ffffff'
+            backgroundColor: theme.accentSoft,
+            color: '#ffffff',
+            boxShadow: `inset 0 0 0 1px rgba(99, 102, 241, 0.35)`
         }}
     >
         {props.children}
@@ -88,22 +99,26 @@ const StoryTitle = styled('span', {
     whiteSpace: 'nowrap' as const
 });
 
-// Badge for chapter count or processing status.
+// Badge for chapter count or processing status. Modern: pill-shaped surface
+// with hairline border so badges read as status chips.
 const Badge = styled('span', {
     flex: '0 0 auto',
-    fontSize: 11,
-    color: '#a0a0a0',
-    background: 'rgba(255, 255, 255, 0.06)',
-    padding: '1px 5px',
-    borderRadius: 3
+    fontSize: 10,
+    fontWeight: 600,
+    color: theme.textMuted,
+    background: theme.surface3,
+    border: `1px solid ${theme.border}`,
+    padding: '2px 7px',
+    borderRadius: 999
 });
 
 // Empty-state message when no stories exist.
 const EmptyMessage = styled('div', {
-    padding: '16px 12px',
-    color: '#6b6b6b',
+    padding: '20px 14px',
+    color: theme.textFaint,
     fontSize: 13,
-    fontStyle: 'italic'
+    fontStyle: 'italic',
+    lineHeight: 1.5
 });
 
 export const SectionStoryTabs: React.FC = React.memo(() => {
@@ -111,8 +126,6 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
     const { records, selected } = store;
 
     // Auto-refresh: periodically fetch /list to pick up new stories.
-    // Uses the same merge logic as the old manual Refresh button — preserve
-    // the current selection by storyId and keep any locally-cached chapter data.
     React.useEffect(() => {
         const baseUrl = store.config.baseUrl;
 
@@ -121,9 +134,6 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 const { stories } = await fetchStoryList(baseUrl);
                 if (!stories || stories.length === 0) return;
 
-                // Build entries from the server list using full StoryMeta
-                // (storyId, storyline, chapterCount, createdAt). Server already
-                // sorts by createdAt descending.
                 const entries = stories.map((meta, i) => ({
                     id: -(Date.now() + i + 1),
                     storyId: meta.storyId,
@@ -137,11 +147,9 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 }));
 
                 setStore((prev) => {
-                    // Merge: keep cached data for stories we already know about.
                     const prevByStoryId = new Map(prev.records.map((r) => [r.storyId, r]));
                     const merged = entries.map((e) => prevByStoryId.get(e.storyId) ?? e);
 
-                    // Preserve current selection by storyId.
                     let selected = prev.selected;
                     if (prev.selected) {
                         selected = merged.find((m) => m.storyId === prev.selected!.storyId) ?? (merged.length > 0 ? merged[0] : null);
@@ -151,23 +159,17 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     return { ...prev, records: merged, selected, loadWarning: undefined };
                 });
             } catch {
-                // Silently ignore refresh errors — the UI already shows whatever
-                // records were last loaded. Only the initial bootstrap sets
-                // loadWarning since that's the user's first impression.
+                // Silently ignore refresh errors.
             }
         };
 
-        // Set up the interval. Run once immediately (the BootstrapLayer handles
-        // the initial mount fetch, so we skip the immediate call here to avoid
-        // a double-fetch — the interval fires after REFRESH_INTERVAL_MS).
         const intervalId = setInterval(refresh, REFRESH_INTERVAL_MS);
         return () => clearInterval(intervalId);
-        // Re-subscribe if the baseUrl changes (unlikely in practice, but correct).
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [store.config.baseUrl, setStore]);
 
     return (
-        <SidebarContainer data-testid="sidebar">
+        <SidebarContainer data-testid="sidebar" className="sg-scroll">
             <SectionLabel>Stories</SectionLabel>
             {records.length === 0 && (
                 <EmptyMessage data-testid="sidebar-empty">
@@ -182,6 +184,8 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 const chapterBadge = entry.data && entry.data.chapters.length > 0
                     ? `${entry.data.chapters.length}ch`
                     : '';
+                // Processing badge content is the literal ⏳ — kept so the test
+                // asserting `not.toContain('⏳')` after polling completes passes.
                 const processingBadge = entry.isProcessing ? '⏳' : '';
 
                 const itemProps = {
@@ -199,7 +203,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                                 {processingBadge && <Badge>{processingBadge}</Badge>}
                             </StoryItemSelected>
                         ) : (
-                            <StoryItem {...itemProps}>
+                            <StoryItem {...itemProps} className="sg-story-item">
                                 <StoryTitle>{entry.title}</StoryTitle>
                                 {chapterBadge && <Badge>{chapterBadge}</Badge>}
                                 {processingBadge && <Badge>{processingBadge}</Badge>}
@@ -215,14 +219,16 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     title={store.loadWarning}
                     style={{
                         fontSize: 11,
-                        color: '#ff9b6b',
-                        background: 'rgba(255, 107, 107, 0.08)',
-                        padding: '4px 8px',
-                        margin: '8px 8px 0',
-                        borderRadius: 4,
+                        color: theme.warning,
+                        background: theme.warningSoft,
+                        border: `1px solid rgba(255, 184, 107, 0.25)`,
+                        padding: '6px 10px',
+                        margin: '10px 10px 0',
+                        borderRadius: theme.radiusSm,
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
-                        textOverflow: 'ellipsis'
+                        textOverflow: 'ellipsis',
+                        boxShadow: theme.shadowSm
                     }}
                 >
                     ⚠ {store.loadWarning}

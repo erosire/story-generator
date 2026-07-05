@@ -4,7 +4,7 @@
 // renders its children. Used by SectionStoryContent to wrap the Plotlines block
 // and each Chapter card so users can collapse/expand them individually.
 //
-//State:
+// State:
 //   - `defaultOpen` controls the initial open state (uncontrolled). We use
 //     uncontrolled state so re-renders of the parent (e.g. on every poll that
 //     updates the chapter list) don't reset the user's collapse choices.
@@ -15,41 +15,51 @@
 //   - The region below uses `role="region"` and `aria-labelledby` is omitted in
 //     favour of the heading text being inside the button (screen readers read
 //     the button label, then announce the region presence).
+//
+// Visual: the chevron rotates 90deg → 270deg (pointing down when open) with a
+// slow cubic-bezier for a tactile feel. The header gets a hover tint via the
+// `sg-collapse-header` class hook (see src/styles/global.ts).
 
 import React from 'react';
-import { styled } from '../styles';
+import { styled, theme } from '../styles';
 
-// Header button — full width, left aligned. The arrow glyph sits to the right
-// of the heading text and rotates 90deg when open via a CSS transform.
+// Header button — full width, left aligned. The arrow glyph sits to the left
+// of the heading text and rotates when open via a CSS transform.
 const HeaderButton = styled('button', {
     display: 'flex',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     width: '100%',
-    padding: '6px 4px',
+    padding: '8px 8px',
     background: 'transparent',
     border: 'none',
-    color: '#e0e0e0',
+    color: theme.text,
     cursor: 'pointer',
     textAlign: 'left',
     font: 'inherit',
-    borderRadius: 4
+    borderRadius: theme.radiusSm,
+    transition: `background-color ${theme.transition}`
 });
 
 // The arrow svg rendered inside the header. We rotate it conditionally based
 // on the open state. Inline svg keeps the package icon-free (matches the
-// lightning-agent dashboard convention of inline glyphs only).
+// dashboard convention of inline glyphs only). Uses a cubic-bezier curve to
+// feel springy rather than mechanical.
 const ArrowIcon: React.FC<{ open: boolean }> = ({ open }) => (
     <svg
-        width={10}
-        height={10}
+        width={12}
+        height={12}
         viewBox="0 0 10 10"
         aria-hidden="true"
         style={{
+            // Closed (default): points right (0deg). Open: rotates to point
+            // down (90deg). The two-step rotate keeps things simple and reads
+            // intuitively as "expand downwards".
             transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
-            transition: 'transform 120ms ease',
-            flex: '0 0 10px'
+            transition: `transform ${theme.transitionSlow}`,
+            flex: '0 0 12px',
+            color: theme.textMuted
         }}
     >
         {/* Right-pointing triangle that rotates to point down when open. */}
@@ -92,6 +102,7 @@ export const Collapsible: React.FC<CollapsibleProps> = ({
                 aria-expanded={open}
                 onClick={() => setOpen((v) => !v)}
                 data-testid={testId ? `${testId}-toggle` : undefined}
+                className="sg-collapse-header"
             >
                 <ArrowIcon open={open} />
                 <span style={{ flex: '1 1 auto' }}>{title}</span>
@@ -99,9 +110,14 @@ export const Collapsible: React.FC<CollapsibleProps> = ({
             </HeaderButton>
             {/* Body — conditionally rendered (not just visually hidden) so
                 collapsed content contributes nothing to scroll height and
-                screen readers skip it entirely. */}
+                screen readers skip it entirely. The fade-in animation gives a
+                soft entrance when expanded. */}
             {open && (
-                <div role="region" data-testid={testId ? `${testId}-body` : undefined}>
+                <div
+                    role="region"
+                    data-testid={testId ? `${testId}-body` : undefined}
+                    className="sg-fade-in"
+                >
                     {children}
                 </div>
             )}

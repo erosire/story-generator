@@ -17,77 +17,93 @@
 // Default open on desktop (≥768px), default closed on mobile (<768px).
 
 import React from 'react';
-import { styled } from '../styles';
+import { styled, theme } from '../styles';
 import { StoryStoreProvider, useStoryStore } from '../context';
 import { StoryGeneratorDashboard } from './StoryGeneratorDashboard';
 import { BootstrapLayer } from './BootstrapLayer';
 import { SectionStoryTabs, SectionStoryContent, SectionStoryInput } from './sections';
 
 // Full-bleed container that forces the dashboard to fill the viewport.
+// Uses an accent-tinted radial vignette layered over the near-black base so
+// the surface has subtle depth instead of looking flat.
 const FullScreen = styled('div', {
     position: 'fixed',
     inset: 0,
     width: '100%',
     height: '100%',
-    overflow: 'hidden'
+    overflow: 'hidden',
+    background: `radial-gradient(1200px 800px at 80% -10%, rgba(99, 102, 241, 0.10), transparent 60%), radial-gradient(900px 600px at -10% 110%, rgba(124, 166, 201, 0.06), transparent 60%), ${theme.bg}`
 });
 
-// Dark theme wrapper.
+// Outer theme wrapper — sets the font + text color for the whole dashboard.
+// Background is transparent so the vignette from FullScreen shows through.
 const DarkThemeWrapper = styled('div', {
     width: '100%',
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
-    backgroundColor: '#121212',
-    color: '#e0e0e0',
+    backgroundColor: 'transparent',
+    color: theme.text,
     overflow: 'hidden',
-    fontFamily: 'system-ui, -apple-system, sans-serif'
+    fontFamily: theme.fontSans,
+    fontSize: 14,
+    // Smoother font rendering on the dark surface.
+    WebkitFontSmoothing: 'antialiased' as const,
+    textRendering: 'optimizeLegibility' as const
 });
 
 // Toggle button — hamburger icon that opens/closes the sidebar.
+// Modern: square-ish pill with soft hover bg, accent ring on focus, and a
+// subtle inner shadow so it reads as a tactile button on the dark header.
 const ToggleButton = styled('button', {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: 32,
-    height: 32,
+    width: 34,
+    height: 34,
     flex: '0 0 auto',
-    borderRadius: 6,
-    border: '1px solid rgba(255, 255, 255, 0.15)',
-    backgroundColor: 'transparent',
-    color: '#e0e0e0',
+    borderRadius: theme.radiusMd,
+    border: `1px solid ${theme.border}`,
+    backgroundColor: theme.surface1,
+    color: theme.text,
     cursor: 'pointer',
     fontSize: 16,
     lineHeight: 1,
-    padding: 0
+    padding: 0,
+    boxShadow: theme.shadowSm,
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}, box-shadow ${theme.transition}`
 });
 
-// App title text in the header.
+// App title text in the header. Slightly larger, brighter, and tracked out
+// for a modern dashboard wordmark look.
 const HeaderTitle = styled('span', {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: 600,
-    color: '#c0c0c0',
+    color: theme.text,
+    letterSpacing: 0.2,
     whiteSpace: 'nowrap' as const,
     userSelect: 'none' as const
 });
 
 // Delete button — appears in the header top right when a story is selected.
+// Modern destructive button: translucent danger surface, danger border, hover
+// lifts to a stronger red-filled state.
 const DeleteButton = styled('button', {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    height: 28,
-    padding: '0 10px',
-    borderRadius: 6,
-    border: '1px solid rgba(255, 80, 80, 0.4)',
-    backgroundColor: 'transparent',
-    color: '#ff6b6b',
+    height: 30,
+    padding: '0 12px',
+    borderRadius: theme.radiusMd,
+    border: `1px solid ${theme.dangerBorder}`,
+    backgroundColor: theme.dangerSoft,
+    color: theme.danger,
     cursor: 'pointer',
     fontSize: 12,
-    fontWeight: 500,
+    fontWeight: 600,
     lineHeight: 1,
     marginLeft: 'auto',
-    transition: 'background-color 0.15s ease, border-color 0.15s ease'
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}`
 });
 
 // Composed dashboard. Accepts optional store overrides (used by tests and by
@@ -125,6 +141,7 @@ const HeaderControls: React.FC<{
                 onClick={onToggleSidebar}
                 aria-label="Toggle story sidebar"
                 data-testid="sidebar-toggle"
+                className="sg-hover"
             >
                 ☰
             </ToggleButton>
@@ -134,6 +151,7 @@ const HeaderControls: React.FC<{
                     onClick={handleDelete}
                     disabled={deleting}
                     data-testid="delete-story-button"
+                    className="sg-danger"
                 >
                     {deleting ? 'Deleting...' : 'Delete'}
                 </DeleteButton>
