@@ -71,20 +71,20 @@ const ChapterCountInput = styled('input', {
     transition: `border-color ${theme.transition}, background-color ${theme.transition}`
 });
 
-// Primary action button — accent gradient surface, bright shadow on hover via
-// the `sg-primary` class hook (global.ts).
+// Primary action button — flat solid accent fill. Hover swaps to a brighter
+// solid via the `sg-primary` class hook (global.ts). Flat: no gradient, no
+// shadow, no translate-on-hover.
 const GenerateButton = styled('button', {
     padding: '9px 20px',
     borderRadius: theme.radiusMd,
     border: 'none',
-    background: `linear-gradient(180deg, ${theme.accentHover}, ${theme.accent})`,
-    color: '#fff',
+    backgroundColor: theme.accent,
+    color: '#ffffff',
     fontSize: 14,
     fontWeight: 600,
     cursor: 'pointer',
     flex: '0 0 auto',
-    boxShadow: '0 2px 8px rgba(99, 102, 241, 0.25)',
-    transition: `transform ${theme.transition}, box-shadow ${theme.transition}, background ${theme.transition}`
+    transition: `background-color ${theme.transition}`
 });
 
 // Error message line under the form.

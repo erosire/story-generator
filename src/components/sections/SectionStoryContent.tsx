@@ -70,14 +70,14 @@ const ContentColumn = styled('div', {
 });
 
 // Chapter card wrapper — always rendered as a border box containing plotpoints
-// and content. Modern: elevated translucent surface with hover-lift on the
-// card itself + a hairline accent left-bar to read as a chapter panel.
+// and content. Flat Design: solid surface block + crisp hairline border. No
+// shadow — depth comes from the contrast between the card's solid surface2 and
+// the inner-Content background.
 const ChapterCard = styled('div', {
     background: theme.surface2,
     padding: 16,
     borderRadius: theme.radiusLg,
-    border: `1px solid ${theme.border}`,
-    boxShadow: theme.shadowSm
+    border: `1px solid ${theme.border}`
 });
 
 // Plotpoints toggle button — right-aligned, button-like appearance.
@@ -119,18 +119,19 @@ const ChapterListContainer = styled('div', {
     paddingBottom: 80
 });
 
-// In-progress status banner — uses accent-tinted surface so the user notices
-// generation is running without the warning connotation of red/yellow.
+// In-progress status banner — flat solid accent-tinted surface + accent border
+// so the user notices generation is running without the connotation of red.
 const ProgressBanner = styled('div', {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    color: theme.textMuted,
+    color: theme.text,
     fontSize: 12,
+    fontWeight: 500,
     padding: '8px 12px',
     borderRadius: theme.radiusMd,
-    background: theme.accentSoft,
-    border: `1px solid rgba(99, 102, 241, 0.25)`,
+    backgroundColor: theme.accentSoft,
+    border: `1px solid ${theme.accent}`,
     width: 'fit-content'
 });
 

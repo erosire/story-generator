@@ -55,17 +55,21 @@ export const theme = {
     radiusMd: 8,
     radiusLg: 12,
 
-    // Soft elevation shadows. Used on cards and the input focus state to lift
-    // them off the flat dark background without adding heavy borders.
+    // Soft elevation. Modern Flat Design avoids heavy shadows — depth is
+    // communicated by solid background blocks + crisp borders, so we keep
+    // shadows subtle and mostly off by default. shadowSm is a single soft
+    // bottom whisper for elements that genuinely need separation from the
+    // background (chapter cards, code blocks).
     shadowSm: '0 1px 2px rgba(0, 0, 0, 0.4)',
-    shadowMd: '0 4px 16px rgba(0, 0, 0, 0.45)',
-    shadowLg: '0 12px 40px rgba(0, 0, 0, 0.55)',
-    shadowAccent: '0 4px 18px rgba(99, 102, 241, 0.35)',
+    shadowMd: 'none',
+    shadowLg: 'none',
+    shadowAccent: 'none',
 
-    // Transition curves reused across hover/focus effects.
+    // Transition curves reused across hover/focus effects. Flat design keeps
+    // motion minimal — color + border transitions only, no translate lifts.
     transitionFast: '120ms ease',
-    transition: '180ms ease',
-    transitionSlow: '280ms cubic-bezier(0.16, 1, 0.3, 1)',
+    transition: '160ms ease',
+    transitionSlow: '220ms ease',
 
     // Font stacks.
     fontSans: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',

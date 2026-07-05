@@ -10,65 +10,103 @@
 // All colors reference the same tokens as src/styles/theme.ts so the visual
 // style stays consistent. Keep this file in sync with theme.ts if you retune
 // the palette.
+//
+// Modern Flat Design principles applied here:
+//   - Depth comes from solid color blocks + crisp hairline borders, NOT shadows,
+//     gradients, or glow effects.
+//   - Hover feedback swaps to a solid surface color or solid border — never
+//     translates / lifts / glows.
+//   - The selected-state indicator is a flat accent block (left rail) rather
+//     than a gradient-tinted card.
 
 import { theme } from './theme';
 
-// Build the CSS string. We use CSS variables for the accent tokens so future
-// runtime theming (eg. dark/light swap) only needs to redefine --sg-accent.
+// Solid accent fill used by the primary button base background. Flat buttons
+// have no gradients — the hover just swaps to a brighter solid.
+const ACCENT_SOLID = theme.accent;
+const ACCENT_SOLID_HOVER = theme.accentHover;
+
 const sheet = `
 /* ---- Shared interactive class hooks ----------------------------------- */
 
-/* Generic hover lift — used by header toggle, story pills. */
+/* Generic hover for flat outline buttons (header toggle, story pills).
+   Flat Design: solid surface swap to surface2 + crisper border, no lift. */
 .sg-hover:hover { background-color: ${theme.surface2}; border-color: ${theme.borderStrong}; }
-.sg-hover:active { transform: translateY(0.5px); }
+.sg-hover:disabled { opacity: 0.55; cursor: not-allowed; }
 
-/* Destructive hover — delete button. */
-.sg-danger:hover { background-color: rgba(255, 107, 107, 0.18); border-color: ${theme.danger}; color: #ff8a8a; }
+/* Destructive hover — flat solid danger surface swap. */
+.sg-danger:hover { background-color: ${theme.danger}; border-color: ${theme.danger}; color: #ffffff; }
 .sg-danger:disabled { opacity: 0.55; cursor: not-allowed; }
 
-/* Primary action button — gradient + glow on hover. */
-.sg-primary:hover { background: linear-gradient(180deg, ${theme.accentHover}, ${theme.accent}); box-shadow: ${theme.shadowAccent}; transform: translateY(-1px); }
-.sg-primary:active { transform: translateY(0); box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25); }
-.sg-primary:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
+/* Primary action button — flat solid accent fill. Hover swaps to a brighter
+   accent solid, stays put (no translate, no shadow). */
+.sg-primary { background-color: ${ACCENT_SOLID}; }
+.sg-primary:hover { background-color: ${ACCENT_SOLID_HOVER}; }
+.sg-primary:active { background-color: ${ACCENT_SOLID}; }
+.sg-primary:disabled { opacity: 0.55; cursor: not-allowed; }
 
-/* Outline input — focus ring. Used by StorylineTextarea + ChapterCountInput. */
-.sg-input:focus { outline: none; border-color: ${theme.accent}; box-shadow: 0 0 0 3px ${theme.accentRing}; background-color: ${theme.surface3}; }
+/* Outline input — flat focus treatment. Flat Design uses a crisp accent
+   border swap (not a gl Resource box-shadow ring). A subtle 1px inner accent
+   keeps the focus visible without a glow. */
+.sg-input:focus { outline: none; border-color: ${theme.accent}; background-color: ${theme.surface3}; }
 .sg-input:disabled { opacity: 0.55; cursor: not-allowed; }
 
-/* Story pill — selected/unselected states handled inline, but unselected
-   rows get a hover bg here. */
+/* Story pill — unselected rows get a flat solid hover surface. */
 .sg-story-item:hover { background-color: ${theme.surface2}; }
 
-/* Collapsible header — hover subtle bg. */
+/* Selected story item — modern Flat "active" treatment: a flat solid accent
+   surface (no gradient, no glow) with a brighter accent rail via ::before.
+   Hover swaps the surface to a slightly brighter accent solid. */
+.sg-story-selected {
+    position: relative;
+    overflow: hidden;
+    background-color: ${theme.accent};
+    color: #ffffff;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+}
+.sg-story-selected:hover {
+    background-color: ${theme.accentHover};
+}
+/* Left rail — a solid lighter-accent bar that visually locks the pick in place. */
+.sg-story-selected::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: #c7c9ff;
+}
+
+/* Collapsible header — flat hover surface swap. */
 .sg-collapse-header:hover { background-color: ${theme.surface2}; }
 
-/* Plotpoints toggle — hover lift. */
-.sg-plot-toggle:hover { background-color: ${theme.surface3}; color: ${theme.text}; }
+/* Plotpoints toggle — flat hover, surface + text color swap. */
+.sg-plot-toggle:hover { background-color: ${theme.surface3}; color: ${theme.text}; border-color: ${theme.borderStrong}; }
 
 /* ---- Keyframes ------------------------------------------------------- */
 
 @keyframes sg-spin {
     to { transform: rotate(360deg); }
 }
-/* Spinner badge used while a story is generating. */
+/* Spinner badge used while a story is generating. Flat: solid accent ring
+   on a faint accent surface, no glow. */
 .sg-spinner {
     display: inline-block;
     width: 10px;
     height: 10px;
-    border: 2px solid ${theme.accentSoft};
+    border: 2px solid rgba(99, 102, 241, 0.30);
     border-top-color: ${theme.accent};
     border-radius: 50%;
     animation: sg-spin 700ms linear infinite;
 }
 
+/* Flat: fade-in kept minimal — opacity only, no translate lift. */
 @keyframes sg-fade-in {
-    from { opacity: 0; transform: translateY(4px); }
-    to   { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; }
+    to   { opacity: 1; }
 }
-/* Subtle entrance used by chapter cards + plotpoints list. */
-.sg-fade-in { animation: sg-fade-in 220ms ease both; }
+.sg-fade-in { animation: sg-fade-in 160ms ease both; }
 
-/* Scrollbar styling — modern thin dark-native scrollbars. */
+/* Scrollbar styling — flat thin dark-native scrollbars. */
 .sg-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
 .sg-scroll::-webkit-scrollbar-track { background: transparent; }
 .sg-scroll::-webkit-scrollbar-thumb {

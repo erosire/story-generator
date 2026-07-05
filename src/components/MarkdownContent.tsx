@@ -109,8 +109,8 @@ const InlineCode: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
     </code>
 );
 
-// Code block — fenced code rendered with a distinct elevated background plus a
-// subtle accent left-bar to read as "code surface" rather than plain text.
+// Code block — fenced code rendered with a distinct solid surface + accent
+// left-bar to read as "code surface" rather than plain text. Flat: no shadow.
 const CodeBlock: React.FC<{ children?: React.ReactNode; className?: string }> = ({
     children,
     className
@@ -126,8 +126,7 @@ const CodeBlock: React.FC<{ children?: React.ReactNode; className?: string }> = 
                 borderRadius: theme.radiusMd,
                 padding: 14,
                 overflowX: 'auto',
-                margin: '1em 0',
-                boxShadow: theme.shadowSm
+                margin: '1em 0'
             }}
         >
             <code
@@ -175,13 +174,13 @@ const Blockquote: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
     </blockquote>
 );
 
-// Horizontal rule — soft accent gradient divider.
+// Horizontal rule — flat solid hairline divider.
 const Hr: React.FC = () => (
     <hr
         style={{
             border: 'none',
             height: 1,
-            background: `linear-gradient(90deg, transparent, ${theme.border}, transparent)`,
+            background: theme.border,
             margin: '1.4em 0'
         }}
     />
@@ -199,8 +198,8 @@ const A: React.FC<{ href?: string; children?: React.ReactNode }> = ({ href, chil
     </a>
 );
 
-// Table — GFM table support via remark-gfm. Simple bordered table style with
-// elevated header row.
+// Table — GFM table support via remark-gfm. Flat: crisp hairline borders
+// separating cells, elevated header row via solid surface block.
 const Table: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
     <div style={{ overflowX: 'auto', margin: '1em 0' }}>
         <table
@@ -208,7 +207,6 @@ const Table: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
                 borderCollapse: 'collapse',
                 width: '100%',
                 fontSize: '0.92em',
-                boxShadow: theme.shadowSm,
                 borderRadius: theme.radiusMd,
                 overflow: 'hidden'
             }}

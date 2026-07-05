@@ -24,15 +24,15 @@ import { BootstrapLayer } from './BootstrapLayer';
 import { SectionStoryTabs, SectionStoryContent, SectionStoryInput } from './sections';
 
 // Full-bleed container that forces the dashboard to fill the viewport.
-// Uses an accent-tinted radial vignette layered over the near-black base so
-// the surface has subtle depth instead of looking flat.
+// Flat Design: a single solid near-black surface — no vignette, gradient, or
+// glow. Depth is created by solid surface blocks + crisp borders downstream.
 const FullScreen = styled('div', {
     position: 'fixed',
     inset: 0,
     width: '100%',
     height: '100%',
     overflow: 'hidden',
-    background: `radial-gradient(1200px 800px at 80% -10%, rgba(99, 102, 241, 0.10), transparent 60%), radial-gradient(900px 600px at -10% 110%, rgba(124, 166, 201, 0.06), transparent 60%), ${theme.bg}`
+    backgroundColor: theme.bg
 });
 
 // Outer theme wrapper — sets the font + text color for the whole dashboard.
@@ -53,8 +53,8 @@ const DarkThemeWrapper = styled('div', {
 });
 
 // Toggle button — hamburger icon that opens/closes the sidebar.
-// Modern: square-ish pill with soft hover bg, accent ring on focus, and a
-// subtle inner shadow so it reads as a tactile button on the dark header.
+// Flat Design: outlined square with solid surface + crisp hairline border.
+// Hover swaps to surface2 + stronger border (sg-hover class). No shadow.
 const ToggleButton = styled('button', {
     display: 'inline-flex',
     alignItems: 'center',
@@ -70,8 +70,7 @@ const ToggleButton = styled('button', {
     fontSize: 16,
     lineHeight: 1,
     padding: 0,
-    boxShadow: theme.shadowSm,
-    transition: `background-color ${theme.transition}, border-color ${theme.transition}, box-shadow ${theme.transition}`
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}`
 });
 
 // App title text in the header. Slightly larger, brighter, and tracked out

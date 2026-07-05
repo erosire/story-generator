@@ -52,14 +52,14 @@ const SectionLabel = styled('div', {
 
 // Individual story item in the list. Pill-like row with hover tint applied via
 // the `sg-story-item` class hook (global.ts) on unselected items only — the
-// selected item gets its own accent surface via inline override.
+// selected item uses its own elevated accent surface below.
 const StoryItem = styled('button', {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-    width: '100%',
-    margin: '1px 8px',
-    padding: '8px 12px',
+    width: 'calc(100% - 16px)',
+    margin: '2px 8px',
+    padding: '9px 12px',
     border: 'none',
     borderRadius: theme.radiusMd,
     backgroundColor: 'transparent',
@@ -70,26 +70,39 @@ const StoryItem = styled('button', {
     fontWeight: 500,
     lineHeight: 1.4,
     boxSizing: 'border-box' as const,
-    transition: `background-color ${theme.transition}, color ${theme.transition}`
+    transition: `background-color ${theme.transition}, color ${theme.transition}, box-shadow ${theme.transition}`
 });
 
-// Selected variant — accent-tinted surface + brighter text.
-type StoryItemSelectedProps = { children?: React.ReactNode } & {
-    [key: string]: unknown;
-} & React.HTMLAttributes<HTMLButtonElement>;
-const StoryItemSelected: React.FC<StoryItemSelectedProps> = (props) => (
-    <StoryItem
-        {...props}
-        style={{
-            ...props.style,
-            backgroundColor: theme.accentSoft,
-            color: '#ffffff',
-            boxShadow: `inset 0 0 0 1px rgba(99, 102, 241, 0.35)`
-        }}
-    >
-        {props.children}
-    </StoryItem>
-);
+// Selected variant — modern Flat Design "active" treatment. Solid accent
+// fill + a brighter accent rail applied via the `sg-story-selected` class
+// hook (global.ts ::before). Flat: no gradient, no glow, no shadow — the row
+// reads as the current pick purely through solid color + crisp border.
+//
+// Using a dedicated styled button (not StoryItem + inline override) keeps the
+// selected row's typography, padding, and weight consistent with itself.
+const StoryItemSelected = styled('button', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    width: 'calc(100% - 16px)',
+    margin: '2px 8px',
+    padding: '9px 12px 9px 16px',
+    border: 'none',
+    borderRadius: theme.radiusMd,
+    cursor: 'pointer',
+    textAlign: 'left' as const,
+    fontSize: 13,
+    fontWeight: 600,
+    lineHeight: 1.4,
+    boxSizing: 'border-box' as const,
+    // Inline background is set to the solid accent so the row renders as flat
+    // even if the global stylesheet hasn't been injected yet (eg. during SSR).
+    // The .sg-story-selected class also sets backgroundColor; both agree.
+    backgroundColor: theme.accent,
+    color: '#ffffff',
+    // Flat: no shadow. The active rail (::before) supplies the visual emphasis.
+    transition: `background-color ${theme.transition}, color ${theme.transition}`
+});
 
 // Title text — truncated if too long.
 const StoryTitle = styled('span', {
@@ -100,7 +113,7 @@ const StoryTitle = styled('span', {
 });
 
 // Badge for chapter count or processing status. Modern: pill-shaped surface
-// with hairline border so badges read as status chips.
+// with hairline border so badges read as status chips on unselected rows.
 const Badge = styled('span', {
     flex: '0 0 auto',
     fontSize: 10,
@@ -108,6 +121,19 @@ const Badge = styled('span', {
     color: theme.textMuted,
     background: theme.surface3,
     border: `1px solid ${theme.border}`,
+    padding: '2px 7px',
+    borderRadius: 999
+});
+
+// Selected-row badge — accent-tinted surface that pops on the gradient row
+// instead of blending into the dark background like the default Badge.
+const BadgeActive = styled('span', {
+    flex: '0 0 auto',
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#e0e1ff',
+    background: 'rgba(99, 102, 241, 0.35)',
+    border: '1px solid rgba(199, 201, 255, 0.45)',
     padding: '2px 7px',
     borderRadius: 999
 });
@@ -197,10 +223,10 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 return (
                     <React.Fragment key={entry.id}>
                         {isSelected ? (
-                            <StoryItemSelected {...itemProps}>
+                            <StoryItemSelected {...itemProps} className="sg-story-selected">
                                 <StoryTitle>{entry.title}</StoryTitle>
-                                {chapterBadge && <Badge>{chapterBadge}</Badge>}
-                                {processingBadge && <Badge>{processingBadge}</Badge>}
+                                {chapterBadge && <BadgeActive>{chapterBadge}</BadgeActive>}
+                                {processingBadge && <BadgeActive>{processingBadge}</BadgeActive>}
                             </StoryItemSelected>
                         ) : (
                             <StoryItem {...itemProps} className="sg-story-item">
@@ -227,8 +253,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                         borderRadius: theme.radiusSm,
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        boxShadow: theme.shadowSm
+                        textOverflow: 'ellipsis'
                     }}
                 >
                     ⚠ {store.loadWarning}
