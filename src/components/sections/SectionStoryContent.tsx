@@ -507,10 +507,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             return;
         }
 
-        if (selected.chapterCount > 0 && selected.data && selected.data.chapters.length >= selected.chapterCount) {
-            return;
-        }
-
         const entryId = selected.id;
         const { storyId, chapterCount, isRemote } = selected;
         const baseUrl = store.config.baseUrl;

@@ -242,10 +242,15 @@ export async function pollStoryData(params: {
             onData(result.data);
 
             if (hasTarget) {
-                // Completion check: once the server has written all requested chapters,
-                // we stop polling. Note: chapters can appear before any chapter
-                // (generation-create-new-story.ts:74), so we gate on chapter count only.
-                if (result.data.chapters.length >= expectedChapterCount) {
+                // Completion check: once the server has written all requested chapters
+                // AND all of them have been expanded (result.content is non-empty),
+                // we stop polling. Checking only chapter count is not enough because
+                // plotpoint.json is written with all chapter entries before any
+                // chapter expansion starts — see generation-create-new-story.ts.
+                const allExpanded =
+                    result.data.chapters.length >= expectedChapterCount &&
+                    result.data.chapters.every((ch) => ch.expanded);
+                if (allExpanded) {
                     return { status: 'data', data: result.data };
                 }
             } else {
