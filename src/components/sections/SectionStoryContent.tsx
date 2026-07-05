@@ -675,9 +675,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                         onClick={() =>
                                             handleReExpand(ch.chapterIndex, ch.generationTimeMs)
                                         }
-                                        disabled={
-                                            reExpandState !== null || selected.isProcessing
-                                        }
                                         title={
                                             reExpandState?.chapterIndex === ch.chapterIndex
                                                 ? ch.expanded
@@ -693,9 +690,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                     </ChapterActionButton>
                                     <ChapterActionButton
                                         onClick={() => handleFork(ch.chapterIndex)}
-                                        disabled={
-                                            reExpandState !== null || selected.isProcessing
-                                        }
                                         title="Fork from this chapter"
                                         data-testid={`chapter-${i}-fork`}
                                     >
