@@ -19,6 +19,7 @@
 import React from 'react';
 import { styled, theme } from '../styles';
 import { StoryStoreProvider, useStoryStore } from '../context';
+import { updateStoryMeta } from '../api';
 import { StoryGeneratorDashboard } from './StoryGeneratorDashboard';
 import { BootstrapLayer } from './BootstrapLayer';
 import { SectionStoryTabs, SectionStoryContent, SectionStoryInput } from './sections';
@@ -73,6 +74,56 @@ const ToggleButton = styled('button', {
     transition: `background-color ${theme.transition}, border-color ${theme.transition}`
 });
 
+// Dialog overlay — semi-transparent backdrop for the rename modal.
+const DialogOverlay = styled('div', {
+    position: 'fixed',
+    inset: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000
+});
+
+// Dialog box — floating card for the rename input.
+const DialogBox = styled('div', {
+    background: theme.surface2,
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusLg,
+    padding: 24,
+    minWidth: 320,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14
+});
+
+const DialogLabel = styled('label', {
+    fontSize: 13,
+    fontWeight: 600,
+    color: theme.textMuted,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5
+});
+
+const DialogActions = styled('div', {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 4
+});
+
+const DialogButton = styled('button', {
+    padding: '8px 16px',
+    fontSize: 13,
+    fontWeight: 600,
+    borderRadius: theme.radiusMd,
+    cursor: 'pointer',
+    border: `1px solid ${theme.border}`,
+    backgroundColor: theme.surface1,
+    color: theme.textMuted,
+    transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}`
+});
+
 // App title text in the header. Slightly larger, brighter, and tracked out
 // for a modern dashboard wordmark look.
 const HeaderTitle = styled('span', {
@@ -117,9 +168,11 @@ const HeaderControls: React.FC<{
     sidebarOpen: boolean;
     onToggleSidebar: () => void;
 }> = React.memo(({ sidebarOpen, onToggleSidebar }) => {
-    const { store, deleteStory } = useStoryStore();
+    const { store, setStore, deleteStory } = useStoryStore();
     const { selected } = store;
     const [deleting, setDeleting] = React.useState(false);
+    const [renaming, setRenaming] = React.useState(false);
+    const [renameValue, setRenameValue] = React.useState('');
 
     const handleDelete = React.useCallback(async () => {
         if (!selected || deleting) return;
@@ -134,6 +187,47 @@ const HeaderControls: React.FC<{
         }
     }, [selected, deleting, deleteStory]);
 
+    const openRename = React.useCallback(() => {
+        if (!selected) return;
+        setRenameValue(selected.storyName || selected.title || '');
+        setRenaming(true);
+    }, [selected]);
+
+    const closeRename = React.useCallback(() => {
+        setRenaming(false);
+        setRenameValue('');
+    }, []);
+
+    const handleRename = React.useCallback(async () => {
+        if (!selected || !renameValue.trim()) return;
+        try {
+            await updateStoryMeta(store.config.baseUrl, selected.storyId, { storyName: renameValue.trim() });
+            setStore((prev) => {
+                const records = prev.records.map((e) =>
+                    e.storyId === selected.storyId
+                        ? { ...e, storyName: renameValue.trim(), title: renameValue.trim() }
+                        : e
+                );
+                const selectedEntry = records.find((e) => e.storyId === selected.storyId) ?? prev.selected;
+                return { ...prev, records, selected: selectedEntry };
+            });
+            setRenaming(false);
+        } catch (err) {
+            console.error('Failed to rename story:', err);
+        }
+    }, [selected, renameValue, store.config.baseUrl, setStore]);
+
+    const handleRenameKeyDown = React.useCallback(
+        (e: React.KeyboardEvent) => {
+            if (e.key === 'Enter') {
+                handleRename();
+            } else if (e.key === 'Escape') {
+                closeRename();
+            }
+        },
+        [handleRename, closeRename]
+    );
+
     return (
         <>
             <ToggleButton
@@ -144,7 +238,14 @@ const HeaderControls: React.FC<{
             >
                 ☰
             </ToggleButton>
-            <HeaderTitle>{selected?.storyName || selected?.title || 'Story Generator'}</HeaderTitle>
+            <HeaderTitle
+                onClick={openRename}
+                data-testid="story-title"
+                style={{ cursor: selected ? 'pointer' : 'default' }}
+                title={selected ? 'Click to rename' : undefined}
+            >
+                {selected?.storyName || selected?.title || 'Story Generator'}
+            </HeaderTitle>
             {selected && (
                 <DeleteButton
                     onClick={handleDelete}
@@ -154,6 +255,64 @@ const HeaderControls: React.FC<{
                 >
                     {deleting ? 'Deleting...' : 'Delete'}
                 </DeleteButton>
+            )}
+
+            {/* Rename dialog */}
+            {renaming && (
+                <DialogOverlay onClick={closeRename} data-testid="rename-overlay">
+                    <DialogBox onClick={(e) => e.stopPropagation()} data-testid="rename-dialog">
+                        <DialogLabel>Story Name</DialogLabel>
+                        <input
+                            autoFocus
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={handleRenameKeyDown}
+                            placeholder="Enter story name"
+                            data-testid="rename-input"
+                            style={{
+                                padding: '10px 14px',
+                                fontSize: 14,
+                                borderRadius: theme.radiusMd,
+                                border: `1px solid ${theme.border}`,
+                                backgroundColor: theme.surface1,
+                                color: theme.text,
+                                outline: 'none'
+                            }}
+                            onFocus={(e) => { e.currentTarget.style.borderColor = theme.accent; }}
+                            onBlur={(e) => { e.currentTarget.style.borderColor = theme.border; }}
+                        />
+                        <DialogActions>
+                            <DialogButton onClick={closeRename} data-testid="rename-cancel">
+                                Cancel
+                            </DialogButton>
+                            <button
+                                onClick={handleRename}
+                                disabled={!renameValue.trim()}
+                                data-testid="rename-confirm"
+                                style={{
+                                    padding: '8px 16px',
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    borderRadius: theme.radiusMd,
+                                    cursor: !renameValue.trim() ? 'not-allowed' : 'pointer',
+                                    border: `1px solid ${theme.accent}`,
+                                    backgroundColor: theme.accent,
+                                    color: '#ffffff',
+                                    opacity: !renameValue.trim() ? 0.5 : 1,
+                                    transition: `background-color ${theme.transition}`
+                                }}
+                                onMouseEnter={(e) => {
+                                    if (renameValue.trim()) e.currentTarget.style.backgroundColor = theme.accentHover;
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor = theme.accent;
+                                }}
+                            >
+                                Rename
+                            </button>
+                        </DialogActions>
+                    </DialogBox>
+                </DialogOverlay>
             )}
         </>
     );

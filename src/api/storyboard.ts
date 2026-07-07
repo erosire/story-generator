@@ -23,11 +23,12 @@
 //       See generation-list-stories.ts.
 //
 //   - PATCH /v1/storyboard/generations/:storyId
-//       body: { chapterIndex: number }
-//       returns: { storyId, chapterIndex, chapterNumber, title, message }
-//       behavior: fire-and-forget re-expansion of a single chapter using the
-//       stored LLM context. The server reads the chapter-XXX.json payload to
-//       recover the conversation context, then calls the LLM to regenerate.
+//       body: { storyName?: string, chapterIndex?: number }
+//       returns: { storyId, storyName?, chapterIndex?, chapterNumber?, title?, message }
+//       behavior: Updates story metadata (e.g. storyName) and/or triggers
+//       fire-and-forget re-expansion of a single chapter. When chapterIndex is
+//       provided, the server reads the chapter-XXX.json payload to recover the
+//       conversation context, then calls the LLM to regenerate.
 //       See generation-update-chapter.ts.
 //
 // `pollStoryData` repeatedly hits GET until a stop condition is met:
@@ -350,4 +351,32 @@ export async function updateChapter(
     }
 
     return (await response.json()) as UpdateChapterResponse;
+}
+
+// Update story metadata via PATCH. Accepts any writable field (storyName, etc.)
+// and returns the updated metadata. Throws on network failure or non-200 response.
+export async function updateStoryMeta(
+    baseUrl: string,
+    storyId: string,
+    body: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+        let message = `Failed to update story (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as Record<string, unknown>;
 }
