@@ -525,11 +525,17 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         const shouldStop = () => activePollIdRef.current !== entryId;
 
         // onData fires on every successful GET; updates the store entry in place.
+        // Also propagates meta.storyline into entry.storyline so the input box
+        // pre-fills when the user selects a remote story.
         const onData = (data: { chapters: any[]; meta: any }) => {
             setStore((prev) => {
                 const records = prev.records.map((e) =>
                     e.id === entryId
-                        ? { ...e, data: { chapters: data.chapters, meta: data.meta } }
+                        ? {
+                              ...e,
+                              data: { chapters: data.chapters, meta: data.meta },
+                              storyline: data.meta?.storyline ?? e.storyline
+                          }
                         : e
                 );
                 const selected =

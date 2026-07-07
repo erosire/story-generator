@@ -60,10 +60,11 @@ export type StoryEntry = {
     isProcessing: boolean; // true while polling for new chapters
     error: string; // populated if create or fetch failed
     // True for entries that came from the server's GET /list endpoint (BootstrapLayer
-    // or Refresh). The list endpoint now returns full StoryMeta objects (storyId,
-    // storyline, chapterCount, createdAt) so remote entries are seeded with the
-    // server's chapterCount and storyline. Locally-added entries (Add button /
-    // SectionStoryInput) have isRemote = false.
+    // or Refresh). The list endpoint returns metadata (storyId, chapterCount,
+    // createdAt) but not storyline (which is free-form user text). Remote entries
+    // are seeded with the server's chapterCount but have an empty storyline.
+    // Locally-added entries (Add button / SectionStoryInput) have isRemote = false
+    // and may carry a storyline from the input form.
     isRemote: boolean;
 };
 

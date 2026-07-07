@@ -164,7 +164,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     id: -(Date.now() + i + 1),
                     storyId: meta.storyId,
                     title: meta.storyId.slice(0, 8),
-                    storyline: meta.storyline,
+                    storyline: '',
                     chapterCount: meta.chapterCount,
                     data: null,
                     isProcessing: false,

@@ -145,7 +145,6 @@ describe('fetchStoryList', () => {
 
     const makeStoryMeta = (overrides: Partial<StoryMeta> = {}): StoryMeta => ({
         storyId: 'story-abc',
-        storyline: 'A sci-fi adventure about Mars.',
         chapterCount: 5,
         createdAt: '2026-07-03T12:00:00Z',
         ...overrides
@@ -153,8 +152,8 @@ describe('fetchStoryList', () => {
 
     it('returns { stories: StoryMeta[] } on 200 with story metadata', async () => {
         const metas: StoryMeta[] = [
-            makeStoryMeta({ storyId: 'story-1', storyline: 'First story', chapterCount: 3, createdAt: '2026-07-03T12:00:00Z' }),
-            makeStoryMeta({ storyId: 'story-2', storyline: 'Second story', chapterCount: 7, createdAt: '2026-07-02T10:00:00Z' })
+            makeStoryMeta({ storyId: 'story-1', chapterCount: 3, createdAt: '2026-07-03T12:00:00Z' }),
+            makeStoryMeta({ storyId: 'story-2', chapterCount: 7, createdAt: '2026-07-02T10:00:00Z' })
         ];
         (globalThis.fetch as any).mockResolvedValueOnce(
             mockResponse(200, { stories: metas })

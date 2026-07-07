@@ -30,7 +30,7 @@ const makeEntryFromStoryMeta = (meta: StoryMeta, index: number) => ({
     // Title = first 8 chars of the storyId (matches AddNewButton's convention
     // in SectionStoryTabs.tsx but trimmed to 8 chars for the chip width).
     title: meta.storyId.slice(0, 8),
-    storyline: meta.storyline,
+    storyline: '',
     chapterCount: meta.chapterCount,
     data: null,
     isProcessing: false,

@@ -119,11 +119,17 @@ export const SectionStoryInput: React.FC = React.memo(() => {
     // Populate the form with the selected story's storyline and chapterCount
     // so the user can hit "Generate" to create a new story with the same prompt.
     // Falls back to empty storyline / default 3 chapters when nothing is selected.
+    // For remote stories, storyline comes from the per-story GET endpoint's
+    // meta.storyline (populated by polling in SectionStoryContent). The
+    // dependency on data?.meta?.storyline ensures the input updates when
+    // polling first resolves the storyline — subsequent polls with the same
+    // string won't re-trigger, so user edits are preserved.
     React.useEffect(() => {
-        setStoryline(selected?.storyline ?? '');
-        setChapterCount(selected?.chapterCount ?? 3);
+        const resolvedStoryline = selected?.data?.meta?.storyline || selected?.storyline || '';
+        setStoryline(resolvedStoryline);
+        setChapterCount(selected?.data?.meta?.chapterCount ?? selected?.chapterCount ?? 3);
         setError('');
-    }, [selected?.id]);
+    }, [selected?.id, selected?.data?.meta?.storyline]);
 
     // Focus/blur handlers on the container.
     const handleFocusIn = React.useCallback(() => setIsFocused(true), []);
