@@ -144,7 +144,7 @@ const HeaderControls: React.FC<{
             >
                 ☰
             </ToggleButton>
-            <HeaderTitle>Story Generator</HeaderTitle>
+            <HeaderTitle>{selected?.storyName || selected?.title || 'Story Generator'}</HeaderTitle>
             {selected && (
                 <DeleteButton
                     onClick={handleDelete}

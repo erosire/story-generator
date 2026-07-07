@@ -47,9 +47,10 @@ import type { StoryData } from '../context';
 // and includes the metadata stored in plotpoint.json by generation-create-new-story.
 // Note: storyline is intentionally omitted from the list response — it is
 // free-form user text that can be arbitrarily long and is not needed by the
-// sidebar which only renders storyId (as title) and chapterCount (as badge).
+// sidebar which only renders storyName/storyId (as title) and chapterCount (as badge).
 export type StoryMeta = {
     storyId: string;
+    storyName?: string;
     chapterCount: number;
     createdAt: string;
 };

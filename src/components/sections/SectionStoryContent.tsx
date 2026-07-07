@@ -457,7 +457,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             if (!selected?.storyId) return;
 
             const newStoryId = `fork-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            const newTitle = `fork-${selected.storyId.slice(0, 8)}`;
+            const newTitle = `fork-${selected.storyName || selected.storyId.slice(0, 8)}`;
 
             try {
                 const result = await createNewStory(
@@ -472,6 +472,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                     const newEntry = {
                         id: Date.now(),
                         storyId: result.storyId,
+                        storyName: selected.storyName,
                         title: newTitle,
                         storyline: selected.storyline,
                         chapterCount: selected.chapterCount,
@@ -525,8 +526,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         const shouldStop = () => activePollIdRef.current !== entryId;
 
         // onData fires on every successful GET; updates the store entry in place.
-        // Also propagates meta.storyline into entry.storyline so the input box
-        // pre-fills when the user selects a remote story.
+        // Also propagates meta.storyline into entry.storyline and meta.storyName
+        // into entry.storyName/title so the sidebar and header update with a
+        // meaningful name once the server responds.
         const onData = (data: { chapters: any[]; meta: any }) => {
             setStore((prev) => {
                 const records = prev.records.map((e) =>
@@ -534,7 +536,10 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         ? {
                               ...e,
                               data: { chapters: data.chapters, meta: data.meta },
-                              storyline: data.meta?.storyline ?? e.storyline
+                              storyline: data.meta?.storyline ?? e.storyline,
+                              ...(data.meta?.storyName
+                                  ? { storyName: data.meta.storyName, title: data.meta.storyName }
+                                  : {})
                           }
                         : e
                 );
@@ -614,7 +619,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             <PendingSubmitHint data-testid="content-pending-submit">
                 Enter a storyline and chapter count in the field below, then click
                 "Generate" to start generation for story{' '}
-                <code style={{ color: theme.accent }}>{selected.storyId}</code>.
+                <code style={{ color: theme.accent }}>{selected.storyName || selected.storyId}</code>.
                 {selected.error && (
                     <div style={{ color: theme.danger, marginTop: 12 }}>
                         Last error: {selected.error}

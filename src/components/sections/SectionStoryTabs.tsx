@@ -163,7 +163,8 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 const entries = stories.map((meta, i) => ({
                     id: -(Date.now() + i + 1),
                     storyId: meta.storyId,
-                    title: meta.storyId.slice(0, 8),
+                    storyName: meta.storyName,
+                    title: meta.storyName || meta.storyId.slice(0, 8),
                     storyline: '',
                     chapterCount: meta.chapterCount,
                     data: null,

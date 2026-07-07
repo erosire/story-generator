@@ -39,7 +39,7 @@ export type Chapter = {
 // meta contains story metadata from story.json (or null if absent).
 export type StoryData = {
     chapters: Chapter[];
-    meta: { storyline: string; chapterCount: number; createdAt: string } | null;
+    meta: { storyName?: string; storyline: string; chapterCount: number; createdAt: string } | null;
 };
 
 // A single story session in the dashboard.
@@ -49,6 +49,7 @@ export type StoryData = {
 export type StoryEntry = {
     id: number;
     storyId: string;
+    storyName?: string;
     title: string;
     storyline: string;
     chapterCount: number;

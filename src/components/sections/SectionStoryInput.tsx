@@ -163,11 +163,16 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
                 `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 
+            // Derive storyName from the storyline: first line, truncated to 120 chars
+            const trimmedStoryline = storyline.trim();
+            const storyName = trimmedStoryline.split('\n')[0].trim().slice(0, 120) || trimmedStoryline.slice(0, 120);
+
             const entry = {
                 id: entryId,
                 storyId,
-                title: `${storyId.slice(0, 8)} ${now.getHours()}:${pad(now.getMinutes())}${now.getHours() >= 12 ? 'pm' : 'am'}`,
-                storyline: storyline.trim(),
+                storyName,
+                title: storyName || `${storyId.slice(0, 8)} ${now.getHours()}:${pad(now.getMinutes())}${now.getHours() >= 12 ? 'pm' : 'am'}`,
+                storyline: trimmedStoryline,
                 chapterCount,
                 data: null,
                 isProcessing: true,

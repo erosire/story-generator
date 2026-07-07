@@ -20,16 +20,15 @@ import { useStoryStore } from '../context';
 import { fetchStoryList, type StoryMeta } from '../api';
 
 // Build a StoryEntry from a StoryMeta object returned by GET /list.
-// The list endpoint now returns full metadata (storyId, storyline, chapterCount,
-// createdAt) so we can seed the entry with the server's values. We give each
-// seeded entry a unique client-side `id` (descending negative timestamps so they
-// never collide with the Date.now() positive ids used by freshly-added empty stories).
+// The list endpoint now returns full metadata (storyId, storyName, storyline,
+// chapterCount, createdAt) so we can seed the entry with the server's values.
+// storyName is used as the display title when available; falls back to the
+// first 8 chars of storyId (matches AddNewButton's convention in SectionStoryTabs.tsx).
 const makeEntryFromStoryMeta = (meta: StoryMeta, index: number) => ({
     id: -(Date.now() + index + 1),
     storyId: meta.storyId,
-    // Title = first 8 chars of the storyId (matches AddNewButton's convention
-    // in SectionStoryTabs.tsx but trimmed to 8 chars for the chip width).
-    title: meta.storyId.slice(0, 8),
+    storyName: meta.storyName,
+    title: meta.storyName || meta.storyId.slice(0, 8),
     storyline: '',
     chapterCount: meta.chapterCount,
     data: null,
