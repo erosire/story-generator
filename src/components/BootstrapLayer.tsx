@@ -6,11 +6,11 @@
 // load existing state into the store on mount — renders nothing).
 //
 // Behavior:
-//   - On mount, calls fetchStoryList(config.baseUrl) once.
-//   - If the list is non-empty, hydrates store.records with one StoryEntry per
-//     story using the full StoryMeta from the server (storyId, storyline,
-//     chapterCount, createdAt). Selects the first entry so the user immediately
-//     sees the latest story's content.
+//   - On mount, hydrates from localStorage first so the dashboard appears
+//     instantly with cached data (even if the server is unreachable).
+//   - Then calls fetchStoryList(config.baseUrl) to get fresh data from the server.
+//   - If the list is non-empty, merges server entries into the store (preserving
+//     locally-cached chapter data for entries that haven't changed).
 //   - On error, sets a loadWarning on store.config (read by the dashboard
 //     header so the user can see the backend is unreachable).
 //   - Renders null — purely a side-effect component.
@@ -18,7 +18,7 @@
 import React from 'react';
 import { useStoryStore } from '../context';
 import { fetchStoryList, type StoryMeta } from '../api';
-import { getLastStoryId } from '../context/store';
+import { getLastStoryId, loadRecordsFromStorage } from '../context/store';
 
 // Build a StoryEntry from a StoryMeta object returned by GET /list.
 // The list endpoint now returns full metadata (storyId, storyName, storyline,
@@ -56,10 +56,31 @@ export const BootstrapLayer: React.FC = React.memo(() => {
         // the consumer swaps it later the bootstrap only fires once.
         const baseUrl = store.config.baseUrl;
 
+        // ── Step 1: Hydrate from localStorage instantly ──────────────────
+        // This makes the dashboard appear immediately with cached data
+        // (stories + chapter content) without waiting for the server.
+        const cachedRecords = loadRecordsFromStorage();
+        if (cachedRecords.length > 0) {
+            setStore((prev) => {
+                // Don't overwrite records that were pre-seeded via initialStore
+                // prop (eg. by tests).
+                if (prev.records.length > 0) return prev;
+
+                const lastStoryId = getLastStoryId();
+                const selected = lastStoryId
+                    ? cachedRecords.find((m) => m.storyId === lastStoryId) ?? cachedRecords[0]
+                    : cachedRecords[0] ?? null;
+                return { ...prev, records: cachedRecords, selected: selected ?? prev.selected };
+            });
+        }
+
+        // ── Step 2: Fetch fresh data from the server ────────────────────
+        // Runs in background after localStorage hydration. Merges server
+        // entries into the store, preserving locally-cached chapter data.
         fetchStoryList(baseUrl)
             .then(({ stories }) => {
-                // No stories → leave store.records empty (the user can still
-                // type a storyline and click Generate to create one locally).
+                // No stories → leave store.records as-is (may already have
+                // cached records from localStorage).
                 if (!stories || stories.length === 0) {
                     return;
                 }
@@ -70,14 +91,24 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                 const entries = stories.map((meta, i) => makeEntryFromStoryMeta(meta, i));
 
                 setStore((prev) => {
-                    // Avoid clobbering any records that were pre-seeded via
-                    // initialStore prop (eg. by tests). Merge remote entries on top,
-                    // de-duplicating by storyId so a test fixture doesn't double.
-                    const existingIds = new Set(prev.records.map((r) => r.storyId));
-                    const merged = [
-                        ...prev.records,
-                        ...entries.filter((e) => !existingIds.has(e.storyId))
-                    ];
+                    // Merge server entries on top of existing records.
+                    // Preserve locally-cached data (chapter content, storyline)
+                    // for entries that already exist in the store.
+                    const prevByStoryId = new Map(prev.records.map((r) => [r.storyId, r]));
+                    const merged = entries.map((e) => {
+                        const existing = prevByStoryId.get(e.storyId);
+                        if (existing) {
+                            // Keep the local entry's data (chapters, storyline)
+                            // but update metadata from the server (chapterCount
+                            // may have changed if generation completed while offline).
+                            return {
+                                ...e,
+                                data: existing.data,
+                                storyline: existing.storyline || e.storyline
+                            };
+                        }
+                        return e;
+                    });
                     // If no entry is currently selected, try restoring the last
                     // selected storyId from localStorage. Fall back to the first
                     // entry if the saved storyId no longer exists.
@@ -90,8 +121,9 @@ export const BootstrapLayer: React.FC = React.memo(() => {
             })
             .catch((err: Error) => {
                 // Surface a non-blocking warning rather than crashing the dashboard —
-                // the user can still Add a story locally and POST (the bootstrap
-                // failure shouldn't block the whole UI).
+                // the user can still see cached data from localStorage and Add a
+                // story locally and POST (the bootstrap failure shouldn't block
+                // the whole UI).
                 setStore((prev) => ({ ...prev, loadWarning: err.message }));
                 console.warn('[BootstrapLayer] Failed to list existing stories.', err);
             });

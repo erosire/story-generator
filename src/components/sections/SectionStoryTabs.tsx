@@ -211,7 +211,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 correctly as strings in descending order. */}
             {[...records].sort((a, b) => b.storyId.localeCompare(a.storyId)).map((entry) => {
                 const isSelected = selected?.id === entry.id;
-                const chapterBadge = entry.data && entry.data.chapters.length > 0
+                const chapterBadge = entry.data?.chapters && entry.data.chapters.length > 0
                     ? `${entry.data.chapters.length}ch`
                     : '';
                 // Processing badge content is the literal ⏳ — kept so the test

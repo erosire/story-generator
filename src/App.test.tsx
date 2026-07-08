@@ -13,6 +13,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoryGeneratorApp } from './components';
+import { cancelPendingStorageWrites } from './context/store';
 
 const BASE_URL = 'http://test.local/v1/storyboard/generations';
 const POLL_INTERVAL_MS = 10;
@@ -30,6 +31,9 @@ describe('StoryGeneratorApp', () => {
     // BootstrapLayer catch-paths and the act() warnings that come from
     // an unresolved promise firing setState after the test completes.
     beforeEach(() => {
+        // Clear localStorage to prevent cross-test contamination from the
+        // auto-persist useEffect (scheduleSaveRecordsToStorage) in the store.
+        localStorage.clear();
         vi.stubGlobal(
             'fetch',
             vi.fn((url: string, init?: any) => {
@@ -40,7 +44,11 @@ describe('StoryGeneratorApp', () => {
             })
         );
     });
-    afterEach(() => vi.unstubAllGlobals());
+    afterEach(() => {
+        cancelPendingStorageWrites();
+        localStorage.clear();
+        vi.unstubAllGlobals();
+    });
 
     it('renders the empty state and input area before any story is created', async () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
