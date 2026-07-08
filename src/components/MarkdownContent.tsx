@@ -102,7 +102,7 @@ const InlineCode: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
             padding: '2px 6px',
             borderRadius: 4,
             color: '#c7c9ff',
-            border: `1px solid rgba(99, 102, 241, 0.25)`
+            border: `1px solid rgba(129, 140, 248, 0.25)`
         }}
     >
         {children}

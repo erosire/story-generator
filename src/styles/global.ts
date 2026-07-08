@@ -73,7 +73,7 @@ const sheet = `
     position: absolute;
     left: 0; top: 0; bottom: 0;
     width: 3px;
-    background: #c7c9ff;
+    background: #c7cdfc;
 }
 
 /* Collapsible header — flat hover surface swap. */
@@ -93,7 +93,7 @@ const sheet = `
     display: inline-block;
     width: 10px;
     height: 10px;
-    border: 2px solid rgba(99, 102, 241, 0.30);
+    border: 2px solid rgba(129, 140, 248, 0.30);
     border-top-color: ${theme.accent};
     border-radius: 50%;
     animation: sg-spin 700ms linear infinite;

@@ -18,37 +18,42 @@ export const theme = {
     // Base surface tones. surfaces are stacked translucent layers — the
     // dashboard background uses `bg` and panels layer `surface*` on top.
     bg: '#0b0f17',
-    surface1: 'rgba(255, 255, 255, 0.025)',
-    surface2: 'rgba(255, 255, 255, 0.045)',
-    surface3: 'rgba(255, 255, 255, 0.07)',
+    surface1: 'rgba(255, 255, 255, 0.04)',
+    surface2: 'rgba(255, 255, 255, 0.07)',
+    surface3: 'rgba(255, 255, 255, 0.10)',
 
     // Border hairlines. Stronger on hover/focus.
-    border: 'rgba(255, 255, 255, 0.08)',
-    borderStrong: 'rgba(255, 255, 255, 0.16)',
+    border: 'rgba(255, 255, 255, 0.15)',
+    borderStrong: 'rgba(255, 255, 255, 0.28)',
 
     // Text tones — from dim → bright for hierarchical emphasis.
-    text: '#e6e8ee',
-    textMuted: '#a4abbd',
-    textDim: '#6b7180',
-    textFaint: '#4a4f5c',
+    // All tested against #0b0f17 background for WCAG compliance:
+    //   text       #f0f2f5  ~17:1  AAA
+    //   textMuted  #c8cdd8  ~12:1  AAA
+    //   textDim    #8891a5   ~6:1  AA+
+    //   textFaint  #77819a   ~5:1  AA
+    text: '#f0f2f5',
+    textMuted: '#c8cdd8',
+    textDim: '#8891a5',
+    textFaint: '#77819a',
 
     // Brand accent — indigo/blue. Used on primary action, selected story
     // highlight, focus rings, and the header title.
-    accent: '#6366f1',
-    accentHover: '#7c7ff5',
-    accentSoft: 'rgba(99, 102, 241, 0.18)',
-    accentRing: 'rgba(99, 102, 241, 0.45)',
+    accent: '#818cf8',
+    accentHover: '#a5b4fc',
+    accentSoft: 'rgba(129, 140, 248, 0.18)',
+    accentRing: 'rgba(129, 140, 248, 0.45)',
 
     // Secondary accent for status badges (e.g. word-count timing chip).
-    accent2: '#7ca6c9',
+    accent2: '#93b4d4',
 
     // Semantic colors.
-    danger: '#ff6b6b',
-    dangerSoft: 'rgba(255, 107, 107, 0.12)',
-    dangerBorder: 'rgba(255, 107, 107, 0.32)',
-    warning: '#ffb86b',
-    warningSoft: 'rgba(255, 184, 107, 0.10)',
-    success: '#5fd9a5',
+    danger: '#f87171',
+    dangerSoft: 'rgba(248, 113, 113, 0.15)',
+    dangerBorder: 'rgba(248, 113, 113, 0.35)',
+    warning: '#fbbf24',
+    warningSoft: 'rgba(251, 191, 36, 0.12)',
+    success: '#6ee7b7',
 
     // Radii.
     radiusSm: 6,

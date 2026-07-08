@@ -133,8 +133,8 @@ const BadgeActive = styled('span', {
     fontSize: theme.fontSize.xs,
     fontWeight: 700,
     color: '#e0e1ff',
-    background: 'rgba(99, 102, 241, 0.35)',
-    border: '1px solid rgba(199, 201, 255, 0.45)',
+    background: 'rgba(129, 140, 248, 0.35)',
+    border: '1px solid rgba(199, 205, 252, 0.45)',
     padding: '2px 7px',
     borderRadius: 999
 });
@@ -251,7 +251,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                         fontSize: theme.fontSize.sm,
                         color: theme.warning,
                         background: theme.warningSoft,
-                        border: `1px solid rgba(255, 184, 107, 0.25)`,
+                        border: `1px solid rgba(251, 191, 36, 0.25)`,
                         padding: '6px 10px',
                         margin: '10px 10px 0',
                         borderRadius: theme.radiusSm,
