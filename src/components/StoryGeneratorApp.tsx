@@ -47,7 +47,7 @@ const DarkThemeWrapper = styled('div', {
     color: theme.text,
     overflow: 'hidden',
     fontFamily: theme.fontSans,
-    fontSize: 14,
+    fontSize: theme.fontSize.body,
     // Smoother font rendering on the dark surface.
     WebkitFontSmoothing: 'antialiased' as const,
     textRendering: 'optimizeLegibility' as const
@@ -68,7 +68,7 @@ const ToggleButton = styled('button', {
     backgroundColor: theme.surface1,
     color: theme.text,
     cursor: 'pointer',
-    fontSize: 16,
+    fontSize: theme.fontSize.xl,
     lineHeight: 1,
     padding: 0,
     transition: `background-color ${theme.transition}, border-color ${theme.transition}`
@@ -98,7 +98,7 @@ const DialogBox = styled('div', {
 });
 
 const DialogLabel = styled('label', {
-    fontSize: 13,
+    fontSize: theme.fontSize.md,
     fontWeight: 600,
     color: theme.textMuted,
     textTransform: 'uppercase' as const,
@@ -114,7 +114,7 @@ const DialogActions = styled('div', {
 
 const DialogButton = styled('button', {
     padding: '8px 16px',
-    fontSize: 13,
+    fontSize: theme.fontSize.md,
     fontWeight: 600,
     borderRadius: theme.radiusMd,
     cursor: 'pointer',
@@ -127,7 +127,7 @@ const DialogButton = styled('button', {
 // App title text in the header. Slightly larger, brighter, and tracked out
 // for a modern dashboard wordmark look.
 const HeaderTitle = styled('span', {
-    fontSize: 15,
+    fontSize: theme.fontSize.lg,
     fontWeight: 600,
     color: theme.text,
     letterSpacing: 0.2,
@@ -149,7 +149,7 @@ const DeleteButton = styled('button', {
     backgroundColor: theme.dangerSoft,
     color: theme.danger,
     cursor: 'pointer',
-    fontSize: 12,
+    fontSize: theme.fontSize.base,
     fontWeight: 600,
     lineHeight: 1,
     marginLeft: 'auto',
@@ -271,7 +271,7 @@ const HeaderControls: React.FC<{
                             data-testid="rename-input"
                             style={{
                                 padding: '10px 14px',
-                                fontSize: 14,
+                                fontSize: theme.fontSize.body,
                                 borderRadius: theme.radiusMd,
                                 border: `1px solid ${theme.border}`,
                                 backgroundColor: theme.surface1,
@@ -291,7 +291,7 @@ const HeaderControls: React.FC<{
                                 data-testid="rename-confirm"
                                 style={{
                                     padding: '8px 16px',
-                                    fontSize: 13,
+                                    fontSize: theme.fontSize.md,
                                     fontWeight: 600,
                                     borderRadius: theme.radiusMd,
                                     cursor: !renameValue.trim() ? 'not-allowed' : 'pointer',

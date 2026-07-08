@@ -40,7 +40,7 @@ const StorylineTextarea = styled('textarea', {
     backgroundColor: theme.surface1,
     color: theme.text,
     fontFamily: theme.fontSans,
-    fontSize: 14,
+    fontSize: theme.fontSize.body,
     lineHeight: 1.5,
     boxSizing: 'border-box',
     transition: `min-height ${theme.transition}, border-color ${theme.transition}, background-color ${theme.transition}`
@@ -66,7 +66,7 @@ const ChapterCountInput = styled('input', {
     backgroundColor: theme.surface1,
     color: theme.text,
     fontFamily: theme.fontSans,
-    fontSize: 14,
+    fontSize: theme.fontSize.body,
     boxSizing: 'border-box',
     transition: `border-color ${theme.transition}, background-color ${theme.transition}`
 });
@@ -80,7 +80,7 @@ const GenerateButton = styled('button', {
     border: 'none',
     backgroundColor: theme.accent,
     color: '#ffffff',
-    fontSize: 14,
+    fontSize: theme.fontSize.body,
     fontWeight: 600,
     cursor: 'pointer',
     flex: '0 0 auto',
@@ -90,7 +90,7 @@ const GenerateButton = styled('button', {
 // Error message line under the form.
 const ErrorLine = styled('div', {
     color: theme.danger,
-    fontSize: 13,
+    fontSize: theme.fontSize.md,
     padding: '8px 12px',
     background: theme.dangerSoft,
     border: `1px solid ${theme.dangerBorder}`,
@@ -241,7 +241,7 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 {/* Controls only visible when the input area is in focus. */}
                 {isFocused && (
                     <ControlRow>
-                        <label htmlFor="chapter-count" style={{ color: theme.textMuted, fontSize: 13, fontWeight: 500 }}>
+                        <label htmlFor="chapter-count" style={{ color: theme.textMuted, fontSize: theme.fontSize.md, fontWeight: 500 }}>
                             Chapters
                         </label>
                         <ChapterCountInput

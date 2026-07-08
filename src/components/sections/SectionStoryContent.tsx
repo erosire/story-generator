@@ -43,7 +43,7 @@ const EmptyState = styled('div', {
     height: '100%',
     width: '100%',
     color: theme.textFaint,
-    fontSize: 16,
+    fontSize: theme.fontSize.xl,
     fontStyle: 'italic',
     letterSpacing: 0.3,
     paddingTop: 48
@@ -88,7 +88,7 @@ const PlotpointsButton = styled('button', {
     gap: 6,
     marginLeft: 'auto',
     padding: '4px 12px',
-    fontSize: 12,
+    fontSize: theme.fontSize.base,
     fontWeight: 500,
     color: theme.textMuted,
     background: theme.surface1,
@@ -107,7 +107,7 @@ const PlotpointsList = styled('div', {
 // Info message shown when a chapter has not been expanded yet.
 const PendingExpansion = styled('div', {
     color: theme.textDim,
-    fontSize: 15,
+    fontSize: theme.fontSize.lg,
     fontStyle: 'italic',
     padding: '8px 0'
 });
@@ -232,7 +232,7 @@ const ProgressBanner = styled('div', {
     alignItems: 'center',
     gap: 10,
     color: theme.text,
-    fontSize: 12,
+    fontSize: theme.fontSize.base,
     fontWeight: 500,
     padding: '8px 12px',
     borderRadius: theme.radiusMd,
@@ -258,7 +258,7 @@ const PlotpointsWrapper: React.FC<{
                 className="sg-plot-toggle"
             >
                 {open ? 'Hide' : 'Show'} Plot Points
-                <span style={{ fontSize: 11, color: theme.textFaint }}>({plotpoints.length})</span>
+                <span style={{ fontSize: theme.fontSize.sm, color: theme.textFaint }}>({plotpoints.length})</span>
             </PlotpointsButton>
             {open && (
                 <PlotpointsList data-testid={`${testId}-body`} className="sg-fade-in">
@@ -266,7 +266,7 @@ const PlotpointsWrapper: React.FC<{
                         style={{
                             margin: 0,
                             paddingLeft: 22,
-                            fontSize: 14,
+                            fontSize: theme.fontSize.body,
                             color: theme.textMuted,
                             lineHeight: 1.7
                         }}
@@ -286,7 +286,7 @@ const PlotpointsWrapper: React.FC<{
 const ChapterMeta: React.FC<{ chapter: any }> = ({ chapter }) => (
     <span
         style={{
-            fontSize: 12,
+            fontSize: theme.fontSize.base,
             color: theme.textMuted,
             background: theme.surface3,
             padding: '3px 8px',
@@ -691,7 +691,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         onToggle={(open) => handleChapterToggle(i, open)}
                         data-testid={`chapter-${i}`}
                         title={
-                            <span style={{ fontSize: 15, color: theme.text, fontWeight: 500 }}>
+                            <span style={{ fontSize: theme.fontSize.lg, color: theme.text, fontWeight: 500 }}>
                                 Chapter {i + 1}{ch.title ? `: ${ch.title}` : ''}
                             </span>
                         }
@@ -754,7 +754,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 <div
                     style={{
                         color: theme.danger,
-                        fontSize: 13,
+                        fontSize: theme.fontSize.md,
                         padding: '8px 12px',
                         background: theme.dangerSoft,
                         border: `1px solid ${theme.dangerBorder}`,

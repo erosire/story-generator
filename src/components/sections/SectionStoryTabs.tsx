@@ -44,7 +44,7 @@ const SidebarContainer = styled('div', {
 // Section label at the top of the sidebar.
 const SectionLabel = styled('div', {
     padding: '6px 14px',
-    fontSize: 11,
+    fontSize: theme.fontSize.sm,
     fontWeight: 700,
     color: theme.textDim,
     textTransform: 'uppercase' as const,
@@ -67,7 +67,7 @@ const StoryItem = styled('button', {
     color: theme.text,
     cursor: 'pointer',
     textAlign: 'left' as const,
-    fontSize: 13,
+    fontSize: theme.fontSize.md,
     fontWeight: 500,
     lineHeight: 1.4,
     boxSizing: 'border-box' as const,
@@ -92,7 +92,7 @@ const StoryItemSelected = styled('button', {
     borderRadius: theme.radiusMd,
     cursor: 'pointer',
     textAlign: 'left' as const,
-    fontSize: 13,
+    fontSize: theme.fontSize.md,
     fontWeight: 600,
     lineHeight: 1.4,
     boxSizing: 'border-box' as const,
@@ -117,7 +117,7 @@ const StoryTitle = styled('span', {
 // with hairline border so badges read as status chips on unselected rows.
 const Badge = styled('span', {
     flex: '0 0 auto',
-    fontSize: 10,
+    fontSize: theme.fontSize.xs,
     fontWeight: 600,
     color: theme.textMuted,
     background: theme.surface3,
@@ -130,7 +130,7 @@ const Badge = styled('span', {
 // instead of blending into the dark background like the default Badge.
 const BadgeActive = styled('span', {
     flex: '0 0 auto',
-    fontSize: 10,
+    fontSize: theme.fontSize.xs,
     fontWeight: 700,
     color: '#e0e1ff',
     background: 'rgba(99, 102, 241, 0.35)',
@@ -143,7 +143,7 @@ const BadgeActive = styled('span', {
 const EmptyMessage = styled('div', {
     padding: '20px 14px',
     color: theme.textFaint,
-    fontSize: 13,
+    fontSize: theme.fontSize.md,
     fontStyle: 'italic',
     lineHeight: 1.5
 });
@@ -248,7 +248,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     data-testid="load-warning"
                     title={store.loadWarning}
                     style={{
-                        fontSize: 11,
+                        fontSize: theme.fontSize.sm,
                         color: theme.warning,
                         background: theme.warningSoft,
                         border: `1px solid rgba(255, 184, 107, 0.25)`,

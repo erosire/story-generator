@@ -73,7 +73,19 @@ export const theme = {
 
     // Font stacks.
     fontSans: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-    fontMono: 'ui-monospace, "Cascadia Code", "Source Code Pro", "JetBrains Mono", monospace'
+    fontMono: 'ui-monospace, "Cascadia Code", "Source Code Pro", "JetBrains Mono", monospace',
+
+    // Font sizes — rem-based. The root font-size is set on <body> in index.html
+    // so scaling the entire UI only requires changing that one value.
+    fontSize: {
+        xs: '0.625rem',     // ~10px at 16px root
+        sm: '0.6875rem',    // ~11px
+        base: '0.75rem',    // ~12px
+        md: '0.8125rem',    // ~13px
+        body: '0.875rem',   // ~14px — primary body text
+        lg: '0.9375rem',    // ~15px
+        xl: '1rem',         // ~16px
+    } as const
 } as const;
 
 // Helper to build a translucent white overlay of a given alpha — used by

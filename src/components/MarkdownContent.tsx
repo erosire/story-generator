@@ -30,7 +30,7 @@ const MarkdownWrapper = styled('div', {
     overflowWrap: 'anywhere',
     lineHeight: 1.7,
     color: theme.textMuted,
-    fontSize: 15
+    fontSize: theme.fontSize.lg
 });
 
 // Heading styles — progressively smaller for h1-h6, inheriting the bright
