@@ -32,6 +32,7 @@ import { useStoryStore } from '../../context';
 import { pollStoryData, updateChapter, fetchStoryData, createNewStory } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
+import { getExpandedChapters, setExpandedChapters } from '../../context/store';
 
 // Empty-state placeholder shown when no story is selected. Modern: monospace
 // "drawing" glyph + elevated typography for a calm centered hero state.
@@ -322,6 +323,41 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     // can flip shouldStop(). Using a ref avoids stale-closure problems across
     // re-renders.
     const activePollIdRef = React.useRef<number | null>(null);
+
+    // ── Expanded chapter state ─────────────────────────────────────────
+    // Tracks which chapter indices are currently expanded. Persisted to
+    // localStorage per story so the user returns to the same expansion
+    // state after navigating away or reloading.
+    const [expandedChapters, setExpandedChaptersState] = React.useState<Set<number>>(new Set());
+
+    // Load expanded chapters from localStorage when the selected story changes.
+    React.useEffect(() => {
+        if (!selected?.storyId) {
+            setExpandedChaptersState(new Set());
+            return;
+        }
+        const saved = getExpandedChapters(selected.storyId);
+        setExpandedChaptersState(new Set(saved));
+    }, [selected?.storyId]);
+
+    // Persist expanded chapters to localStorage whenever they change.
+    React.useEffect(() => {
+        if (!selected?.storyId) return;
+        setExpandedChapters(selected.storyId, Array.from(expandedChapters));
+    }, [selected?.storyId, expandedChapters]);
+
+    /** Toggle a chapter's expanded state and persist to localStorage. */
+    const handleChapterToggle = React.useCallback((index: number, open: boolean) => {
+        setExpandedChaptersState((prev) => {
+            const next = new Set(prev);
+            if (open) {
+                next.add(index);
+            } else {
+                next.delete(index);
+            }
+            return next;
+        });
+    }, []);
 
     // Patch a single record's fields by id. We use functional updates so the
     // updater always targets the latest records array.
@@ -650,7 +686,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 {data.chapters.map((ch, i) => (
                     <Collapsible
                         key={i}
-                        defaultOpen={i === data.chapters.length - 1}
+                        defaultOpen={false}
+                        open={expandedChapters.has(i)}
+                        onToggle={(open) => handleChapterToggle(i, open)}
                         data-testid={`chapter-${i}`}
                         title={
                             <span style={{ fontSize: 15, color: theme.text, fontWeight: 500 }}>
@@ -679,35 +717,34 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                             )}
 
                             {/* Per-chapter action buttons — right-aligned row.
-                                Re-expand: refresh icon. Fork: branch icon. */}
-                            {ch.canReExpand && (
-                                <ChapterActions>
-                                    <ChapterActionButton
-                                        onClick={() =>
-                                            handleReExpand(ch.chapterIndex, ch.generationTimeMs)
-                                        }
-                                        title={
-                                            reExpandState?.chapterIndex === ch.chapterIndex
-                                                ? ch.expanded
-                                                    ? 'Re-expanding…'
-                                                    : 'Expanding…'
-                                                : ch.expanded
-                                                    ? 'Re-expand Chapter'
-                                                    : 'Expand Chapter'
-                                        }
-                                        data-testid={`chapter-${i}-reexpand`}
-                                    >
-                                        <RefreshIcon />
-                                    </ChapterActionButton>
-                                    <ChapterActionButton
-                                        onClick={() => handleFork(ch.chapterIndex)}
-                                        title="Fork from this chapter"
-                                        data-testid={`chapter-${i}-fork`}
-                                    >
-                                        <ForkIcon />
-                                    </ChapterActionButton>
-                                </ChapterActions>
-                            )}
+                                Re-expand: refresh icon. Fork: branch icon.
+                                Always shown regardless of generation state. */}
+                            <ChapterActions>
+                                <ChapterActionButton
+                                    onClick={() =>
+                                        handleReExpand(ch.chapterIndex, ch.generationTimeMs)
+                                    }
+                                    title={
+                                        reExpandState?.chapterIndex === ch.chapterIndex
+                                            ? ch.expanded
+                                                ? 'Re-expanding…'
+                                                : 'Expanding…'
+                                            : ch.expanded
+                                                ? 'Re-expand Chapter'
+                                                : 'Expand Chapter'
+                                    }
+                                    data-testid={`chapter-${i}-reexpand`}
+                                >
+                                    <RefreshIcon />
+                                </ChapterActionButton>
+                                <ChapterActionButton
+                                    onClick={() => handleFork(ch.chapterIndex)}
+                                    title="Fork from this chapter"
+                                    data-testid={`chapter-${i}-fork`}
+                                >
+                                    <ForkIcon />
+                                </ChapterActionButton>
+                            </ChapterActions>
                         </ChapterCard>
                     </Collapsible>
                 ))}

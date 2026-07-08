@@ -25,6 +25,7 @@ import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
 import { fetchStoryList } from '../../api';
+import { getLastStoryId } from '../../context/store';
 
 // How often to auto-refresh the story list from the server (30 seconds).
 const REFRESH_INTERVAL_MS = 30_000;
@@ -181,7 +182,9 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     if (prev.selected) {
                         selected = merged.find((m) => m.storyId === prev.selected!.storyId) ?? (merged.length > 0 ? merged[0] : null);
                     } else if (merged.length > 0) {
-                        selected = merged[0];
+                        // No current selection — try localStorage, then fall back to first entry
+                        const lastStoryId = getLastStoryId();
+                        selected = (lastStoryId ? merged.find((m) => m.storyId === lastStoryId) : null) ?? merged[0];
                     }
                     return { ...prev, records: merged, selected, loadWarning: undefined };
                 });

@@ -18,6 +18,7 @@
 import React from 'react';
 import { useStoryStore } from '../context';
 import { fetchStoryList, type StoryMeta } from '../api';
+import { getLastStoryId } from '../context/store';
 
 // Build a StoryEntry from a StoryMeta object returned by GET /list.
 // The list endpoint now returns full metadata (storyId, storyName, storyline,
@@ -77,10 +78,13 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                         ...prev.records,
                         ...entries.filter((e) => !existingIds.has(e.storyId))
                     ];
-                    // If no entry is currently selected, default-select the first
-                    // remote entry (most recent if we reversed). Wrap in try/catch
-                    // semantics: selecting null is fine when the list is empty.
-                    const selected = prev.selected ?? (merged.length > 0 ? merged[0] : null);
+                    // If no entry is currently selected, try restoring the last
+                    // selected storyId from localStorage. Fall back to the first
+                    // entry if the saved storyId no longer exists.
+                    const lastStoryId = getLastStoryId();
+                    const selected = prev.selected
+                        ?? (lastStoryId ? merged.find((m) => m.storyId === lastStoryId) ?? merged[0] : merged[0])
+                        ?? null;
                     return { ...prev, records: merged, selected };
                 });
             })

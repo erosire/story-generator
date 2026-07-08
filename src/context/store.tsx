@@ -13,8 +13,53 @@
 // `useStoryStore` that mirrors the lightning-agent `lightningAgentStore()` accessor
 // pattern (read + mutate triggers re-render).
 
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { deleteStory as deleteStoryApi } from '../api';
+
+// ── localStorage helpers ──────────────────────────────────────────────
+const STORAGE_KEY_STORY = 'storyGenerator:lastStoryId';
+const STORAGE_KEY_EXPANDED_PREFIX = 'storyGenerator:expanded:';
+
+/** Read the last-selected storyId from localStorage. Returns null if absent. */
+export const getLastStoryId = (): string | null => {
+    try {
+        return localStorage.getItem(STORAGE_KEY_STORY);
+    } catch {
+        return null;
+    }
+};
+
+/** Persist the last-selected storyId to localStorage. */
+export const setLastStoryId = (storyId: string | null) => {
+    try {
+        if (storyId) {
+            localStorage.setItem(STORAGE_KEY_STORY, storyId);
+        } else {
+            localStorage.removeItem(STORAGE_KEY_STORY);
+        }
+    } catch {
+        // localStorage unavailable (SSR / private browsing) — silently ignore.
+    }
+};
+
+/** Read the expanded chapter indices for a story. Returns [] if absent. */
+export const getExpandedChapters = (storyId: string): number[] => {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY_EXPANDED_PREFIX + storyId);
+        return raw ? JSON.parse(raw) : [];
+    } catch {
+        return [];
+    }
+};
+
+/** Persist the expanded chapter indices for a story. */
+export const setExpandedChapters = (storyId: string, indices: number[]) => {
+    try {
+        localStorage.setItem(STORAGE_KEY_EXPANDED_PREFIX + storyId, JSON.stringify(indices));
+    } catch {
+        // ignore
+    }
+};
 
 // Shape of a unified chapter as returned by GET /v1/storyboard/generations/:storyId.
 // Each chapter includes its plotpoints and expansion status. If the chapter has
@@ -125,6 +170,11 @@ export const StoryStoreProvider: React.FC<{
         (updater: (prev: StoryStore) => StoryStore) => setStoreState((prev) => updater(prev)),
         []
     );
+
+    // Persist selected storyId to localStorage whenever it changes.
+    useEffect(() => {
+        setLastStoryId(store.selected?.storyId ?? null);
+    }, [store.selected?.storyId]);
 
     // Delete a story: call DELETE API, then remove from local store.
     const deleteStory = useCallback(

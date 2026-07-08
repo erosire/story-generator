@@ -72,10 +72,15 @@ export type CollapsibleProps = {
     title: React.ReactNode;
     // The body to expand/collapse.
     children: React.ReactNode;
-    // Initial open state — uncontrolled. Defaults to true so freshly-arrived
-    // chapters are visible by default (matches lightning-agent OutputMarkdown's
-    // "last message expanded" behaviour in SectionContentDisplay.tsx:92).
+    // Initial open state — uncontrolled. Defaults to false so chapters start
+    // collapsed when a story is selected. Survives parent re-renders without
+    // resetting.
     defaultOpen?: boolean;
+    // Controlled open state. When provided, the parent owns the toggle state.
+    open?: boolean;
+    // Callback fired when the toggle is clicked. Receives the new open value.
+    // Required when `open` is provided (controlled mode).
+    onToggle?: (open: boolean) => void;
     // Optional extra content rendered on the right side of the header (e.g. the
     // word-count badge on chapter cards). Hidden when collapsed is fine because
     // it's part of the header, not the body.
@@ -87,24 +92,36 @@ export type CollapsibleProps = {
 export const Collapsible: React.FC<CollapsibleProps> = ({
     title,
     children,
-    defaultOpen = true,
+    defaultOpen = false,
+    open: controlledOpen,
+    onToggle,
     headerExtra,
     ...rest
 }) => {
-    // Uncontrolled open state — survives parent re-renders without resetting.
-    const [open, setOpen] = React.useState(defaultOpen);
+    // Internal state for uncontrolled mode. When `controlledOpen` is provided,
+    // this is ignored and the parent owns the open state.
+    const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
+    const isOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
     const testId = rest['data-testid'];
+
+    const handleToggle = () => {
+        const next = !isOpen;
+        if (controlledOpen === undefined) {
+            setInternalOpen(next);
+        }
+        onToggle?.(next);
+    };
 
     return (
         <div data-testid={testId} style={{ display: 'flex', flexDirection: 'column' }}>
             <HeaderButton
                 type="button"
-                aria-expanded={open}
-                onClick={() => setOpen((v) => !v)}
+                aria-expanded={isOpen}
+                onClick={handleToggle}
                 data-testid={testId ? `${testId}-toggle` : undefined}
                 className="sg-collapse-header"
             >
-                <ArrowIcon open={open} />
+                <ArrowIcon open={isOpen} />
                 <span style={{ flex: '1 1 auto' }}>{title}</span>
                 {headerExtra}
             </HeaderButton>
@@ -112,7 +129,7 @@ export const Collapsible: React.FC<CollapsibleProps> = ({
                 collapsed content contributes nothing to scroll height and
                 screen readers skip it entirely. The fade-in animation gives a
                 soft entrance when expanded. */}
-            {open && (
+            {isOpen && (
                 <div
                     role="region"
                     data-testid={testId ? `${testId}-body` : undefined}
