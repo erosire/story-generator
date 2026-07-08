@@ -67,9 +67,9 @@ describe('StoryGeneratorApp', () => {
         const toggle = screen.getByTestId('sidebar-toggle');
         const panel = screen.getByTestId('sidebar-panel');
 
-        // Sidebar starts open — panel has width 200.
+        // Sidebar starts open — panel has width 12.5rem.
         expect(panel).toBeDefined();
-        expect(panel.style.width).toBe('200px');
+        expect(panel.style.width).toBe('12.5rem');
 
         // Click toggle to close.
         fireEvent.click(toggle);
@@ -80,7 +80,7 @@ describe('StoryGeneratorApp', () => {
         // Click toggle to reopen.
         fireEvent.click(toggle);
         await waitFor(() => {
-            expect(panel.style.width).toBe('200px');
+            expect(panel.style.width).toBe('12.5rem');
         });
     });
 

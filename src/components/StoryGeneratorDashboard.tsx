@@ -147,15 +147,15 @@ export const StoryGeneratorDashboard: React.FC<StoryGeneratorDashboardProps> = R
                 <DashboardBody>
                     {/* Sidebar width is dynamic — controlled via inline style since
                         the vendored styled() helper doesn't support function values.
-                        Width 200 when open / 0 when closed is part of the public test
+                        Width 12.5rem when open / 0 when closed is part of the public test
                         contract (App.test.tsx:64). */}
                     <DashboardSidebarPanel
                         data-testid="sidebar-panel"
                         className="sg-scroll"
                         style={{
-                            width: sidebarOpen ? 200 : 0,
-                            minWidth: sidebarOpen ? 200 : 0,
-                            maxWidth: sidebarOpen ? 200 : 0,
+                            width: sidebarOpen ? '12.5rem' : 0,
+                            minWidth: sidebarOpen ? '12.5rem' : 0,
+                            maxWidth: sidebarOpen ? '12.5rem' : 0,
                             borderRight: sidebarOpen ? `1px solid ${theme.border}` : 'none'
                         }}
                     >
