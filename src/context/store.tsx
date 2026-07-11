@@ -70,7 +70,7 @@ export const setExpandedChapters = (storyId: string, indices: number[]) => {
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
 // that don't survive across sessions (error, isProcessing).
-type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterCount' | 'isRemote'> & {
+type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterCount' | 'createdAt' | 'isRemote'> & {
     data: StoryData | null;
 };
 
@@ -82,6 +82,7 @@ const toPersistable = (entry: StoryEntry): PersistableStoryEntry => ({
     title: entry.title,
     storyline: entry.storyline,
     chapterCount: entry.chapterCount,
+    createdAt: entry.createdAt,
     data: entry.data,
     isRemote: entry.isRemote
 });
@@ -97,9 +98,12 @@ export const loadRecordsFromStorage = (): StoryEntry[] => {
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        // Rehydrate with default transient fields (isProcessing=false, error='')
+        // Rehydrate with default transient fields (isProcessing=false, error='').
+        // Legacy entries from localStorage may lack createdAt — fall back to epoch
+        // so they sort to the bottom (server will supply the real value on refresh).
         return parsed.map((entry: PersistableStoryEntry) => ({
             ...entry,
+            createdAt: entry.createdAt || new Date(0).toISOString(),
             isProcessing: false,
             error: ''
         }));
@@ -202,6 +206,7 @@ export type StoryEntry = {
     title: string;
     storyline: string;
     chapterCount: number;
+    createdAt: string; // ISO 8601 timestamp from the server's /list endpoint
     // Progressive data fetched via GET polling. Starts as an empty story (status 200
     // returns { chapters: [], meta: null } for an existing-but-empty dir — see
     // generation-get-story-data.test.ts:110-142). We use null to mean "not yet

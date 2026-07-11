@@ -32,6 +32,7 @@ const makeEntryFromStoryMeta = (meta: StoryMeta, index: number) => ({
     title: meta.storyName || meta.storyId.slice(0, 8),
     storyline: '',
     chapterCount: meta.chapterCount,
+    createdAt: meta.createdAt,
     data: null,
     isProcessing: false,
     error: '',

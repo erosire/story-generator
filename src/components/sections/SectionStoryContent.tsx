@@ -512,6 +512,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         title: newTitle,
                         storyline: selected.storyline,
                         chapterCount: selected.chapterCount,
+                        createdAt: new Date().toISOString(),
                         data: null,
                         isProcessing: true,
                         error: '',

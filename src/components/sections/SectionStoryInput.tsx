@@ -174,6 +174,7 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 title: storyName || `${storyId.slice(0, 8)} ${now.getHours()}:${pad(now.getMinutes())}${now.getHours() >= 12 ? 'pm' : 'am'}`,
                 storyline: trimmedStoryline,
                 chapterCount,
+                createdAt: now.toISOString(),
                 data: null,
                 isProcessing: true,
                 error: '',
