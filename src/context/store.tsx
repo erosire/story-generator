@@ -70,7 +70,7 @@ export const setExpandedChapters = (storyId: string, indices: number[]) => {
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
 // that don't survive across sessions (error, isProcessing).
-type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterCount' | 'createdAt' | 'isRemote'> & {
+type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterRequested' | 'chapterCompleted' | 'createdDate' | 'status' | 'isRemote'> & {
     data: StoryData | null;
 };
 
@@ -81,8 +81,10 @@ const toPersistable = (entry: StoryEntry): PersistableStoryEntry => ({
     storyName: entry.storyName,
     title: entry.title,
     storyline: entry.storyline,
-    chapterCount: entry.chapterCount,
-    createdAt: entry.createdAt,
+    chapterRequested: entry.chapterRequested,
+    chapterCompleted: entry.chapterCompleted,
+    createdDate: entry.createdDate,
+    status: entry.status,
     data: entry.data,
     isRemote: entry.isRemote
 });
@@ -99,11 +101,14 @@ export const loadRecordsFromStorage = (): StoryEntry[] => {
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
         // Rehydrate with default transient fields (isProcessing=false, error='').
-        // Legacy entries from localStorage may lack createdAt — fall back to epoch
+        // Legacy entries from localStorage may lack createdDate — fall back to epoch
         // so they sort to the bottom (server will supply the real value on refresh).
         return parsed.map((entry: PersistableStoryEntry) => ({
             ...entry,
-            createdAt: entry.createdAt || new Date(0).toISOString(),
+            createdDate: entry.createdDate || new Date(0).toISOString(),
+            chapterRequested: entry.chapterRequested || 0,
+            chapterCompleted: entry.chapterCompleted || 0,
+            status: entry.status || 'generating',
             isProcessing: false,
             error: ''
         }));
@@ -205,8 +210,10 @@ export type StoryEntry = {
     storyName?: string;
     title: string;
     storyline: string;
-    chapterCount: number;
-    createdAt: string; // ISO 8601 timestamp from the server's /list endpoint
+    chapterRequested: number;
+    chapterCompleted: number;
+    createdDate: string; // ISO 8601 timestamp from the server's /list endpoint
+    status: 'generating' | 'completed' | 'failed';
     // Progressive data fetched via GET polling. Starts as an empty story (status 200
     // returns { chapters: [], meta: null } for an existing-but-empty dir — see
     // generation-get-story-data.test.ts:110-142). We use null to mean "not yet
@@ -215,9 +222,9 @@ export type StoryEntry = {
     isProcessing: boolean; // true while polling for new chapters
     error: string; // populated if create or fetch failed
     // True for entries that came from the server's GET /list endpoint (BootstrapLayer
-    // or Refresh). The list endpoint returns metadata (storyId, chapterCount,
-    // createdAt) but not storyline (which is free-form user text). Remote entries
-    // are seeded with the server's chapterCount but have an empty storyline.
+    // or Refresh). The list endpoint returns metadata (storyId, chapterRequested,
+    // createdDate, status) but not storyline (which is free-form user text). Remote
+    // entries are seeded with the server's chapterRequested but have an empty storyline.
     // Locally-added entries (Add button / SectionStoryInput) have isRemote = false
     // and may carry a storyline from the input form.
     isRemote: boolean;

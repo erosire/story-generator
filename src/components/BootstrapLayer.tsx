@@ -21,9 +21,9 @@ import { fetchStoryList, type StoryMeta } from '../api';
 import { getLastStoryId, loadRecordsFromStorage } from '../context/store';
 
 // Build a StoryEntry from a StoryMeta object returned by GET /list.
-// The list endpoint now returns full metadata (storyId, storyName, storyline,
-// chapterCount, createdAt) so we can seed the entry with the server's values.
-// storyName is used as the display title when available; falls back to the
+// The list endpoint now returns full metadata (storyId, storyName, chapterRequested,
+// chapterCompleted, createdDate, status) so we can seed the entry with the server's
+// values. storyName is used as the display title when available; falls back to the
 // first 8 chars of storyId (matches AddNewButton's convention in SectionStoryTabs.tsx).
 const makeEntryFromStoryMeta = (meta: StoryMeta, index: number) => ({
     id: -(Date.now() + index + 1),
@@ -31,13 +31,15 @@ const makeEntryFromStoryMeta = (meta: StoryMeta, index: number) => ({
     storyName: meta.storyName,
     title: meta.storyName || meta.storyId.slice(0, 8),
     storyline: '',
-    chapterCount: meta.chapterCount,
-    createdAt: meta.createdAt,
+    chapterRequested: meta.chapterRequested,
+    chapterCompleted: meta.chapterCompleted,
+    createdDate: meta.createdDate,
+    status: meta.status,
     data: null,
     isProcessing: false,
     error: '',
     // Marked remote so SectionStoryContent polls to hydrate on selection.
-    // Now that the list returns chapterCount, the polling uses the known target
+    // Now that the list returns chapterRequested, the polling uses the known target
     // instead of stability-based termination.
     isRemote: true
 });
@@ -86,9 +88,9 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                     return;
                 }
 
-                // Server returns stories sorted by createdAt descending (newest
+                // Server returns stories sorted by createdDate descending (newest
                 // first). Build one StoryEntry per StoryMeta using the full
-                // metadata (storyline, chapterCount, etc.).
+                // metadata (storyline, chapterRequested, etc.).
                 const entries = stories.map((meta, i) => makeEntryFromStoryMeta(meta, i));
 
                 setStore((prev) => {
@@ -100,8 +102,8 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                         const existing = prevByStoryId.get(e.storyId);
                         if (existing) {
                             // Keep the local entry's data (chapters, storyline)
-                            // but update metadata from the server (chapterCount
-                            // may have changed if generation completed while offline).
+                                // but update metadata from the server (chapterRequested
+                                // may have changed if generation completed while offline).
                             return {
                                 ...e,
                                 data: existing.data,

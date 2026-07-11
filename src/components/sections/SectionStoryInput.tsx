@@ -1,8 +1,8 @@
-// Footer section: storyline + chapterCount input form.
+// Footer section: storyline + chapterRequested input form.
 //
 // On submit it creates a new story entry locally (generating a fresh storyId),
 // adds it to the store, selects it, and POSTs to /v1/storyboard/generations/:storyId
-// with the entered storyline + chapterCount (matching the server's expected body —
+// with the entered storyline + chapterCount (matching the server's POST body —
 // see generation-create-new-story.ts:219).
 //
 // After a successful POST the form is cleared and collapsed so the user can
@@ -116,7 +116,7 @@ export const SectionStoryInput: React.FC = React.memo(() => {
     const [isFocused, setIsFocused] = React.useState(false);
     const containerRef = React.useRef<HTMLDivElement>(null);
 
-    // Populate the form with the selected story's storyline and chapterCount
+    // Populate the form with the selected story's storyline and chapterRequested
     // so the user can hit "Generate" to create a new story with the same prompt.
     // Falls back to empty storyline / default 3 chapters when nothing is selected.
     // For remote stories, storyline comes from the per-story GET endpoint's
@@ -127,7 +127,7 @@ export const SectionStoryInput: React.FC = React.memo(() => {
     React.useEffect(() => {
         const resolvedStoryline = selected?.data?.meta?.storyline || selected?.storyline || '';
         setStoryline(resolvedStoryline);
-        setChapterCount(selected?.data?.meta?.chapterCount ?? selected?.chapterCount ?? 3);
+        setChapterCount(selected?.data?.meta?.chapterCount ?? selected?.chapterRequested ?? 3);
         setError('');
     }, [selected?.id, selected?.data?.meta?.storyline]);
 
@@ -173,8 +173,10 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 storyName,
                 title: storyName || `${storyId.slice(0, 8)} ${now.getHours()}:${pad(now.getMinutes())}${now.getHours() >= 12 ? 'pm' : 'am'}`,
                 storyline: trimmedStoryline,
-                chapterCount,
-                createdAt: now.toISOString(),
+                chapterRequested: chapterCount,
+                chapterCompleted: 0,
+                createdDate: now.toISOString(),
+                status: 'generating' as const,
                 data: null,
                 isProcessing: true,
                 error: '',

@@ -167,8 +167,10 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     storyName: meta.storyName,
                     title: meta.storyName || meta.storyId.slice(0, 8),
                     storyline: '',
-                    chapterCount: meta.chapterCount,
-                    createdAt: meta.createdAt,
+                    chapterRequested: meta.chapterRequested,
+                    chapterCompleted: meta.chapterCompleted,
+                    createdDate: meta.createdDate,
+                    status: meta.status,
                     data: null,
                     isProcessing: false,
                     error: '',
@@ -207,10 +209,10 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     No stories yet. Create one below.
                 </EmptyMessage>
             )}
-            {/* Sort records by createdAt descending so the newest story appears
+            {/* Sort records by createdDate descending so the newest story appears
                 at the top. ISO 8601 timestamps sort correctly as strings in
                 descending order. */}
-            {[...records].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((entry) => {
+            {[...records].sort((a, b) => b.createdDate.localeCompare(a.createdDate)).map((entry) => {
                 const isSelected = selected?.id === entry.id;
                 const chapterBadge = entry.data?.chapters && entry.data.chapters.length > 0
                     ? `${entry.data.chapters.length}ch`

@@ -17,8 +17,8 @@
 //
 //   - GET /v1/storyboard/generations/list
 //       returns: { stories: StoryMeta[] }
-//       Each entry includes metadata from plotpoint.json (storyId,
-//       chapterCount, createdAt). Storyline is intentionally omitted
+//       Each entry includes metadata (storyId, chapterRequested, chapterCompleted,
+//       createdDate, status). Storyline is intentionally omitted
 //       because it is free-form user text not needed by the sidebar.
 //       See generation-list-stories.ts.
 //
@@ -32,7 +32,7 @@
 //       See generation-update-chapter.ts.
 //
 // `pollStoryData` repeatedly hits GET until a stop condition is met:
-//   - chapter count reaches the requested chapterCount, OR
+//   - chapter count reaches the requested chapterRequested, OR
 //   - the response is a 404 (treated as "not started yet", keep polling), OR
 //   - a non-200/non-404 error occurs, OR
 //   - the caller signals cancellation via shouldStop().
@@ -43,17 +43,19 @@
 import type { StoryData } from '../context';
 
 // Story metadata returned by GET /v1/storyboard/generations/list.
-// Matches the server's StoryMeta type in generation-list-stories.ts.
+// Matches the server's StoryListEntry schema in storyboard-generations.yml.
 // Each entry corresponds to a directory under temporary/database/storyboard/
-// and includes the metadata stored in plotpoint.json by generation-create-new-story.
+// and includes summary information derived from plotpoint.json by generation-list-stories.
 // Note: storyline is intentionally omitted from the list response — it is
 // free-form user text that can be arbitrarily long and is not needed by the
-// sidebar which only renders storyName/storyId (as title) and chapterCount (as badge).
+// sidebar which only renders storyName/storyId (as title) and chapterRequested (as badge).
 export type StoryMeta = {
     storyId: string;
     storyName?: string;
-    chapterCount: number;
-    createdAt: string;
+    chapterRequested: number;
+    chapterCompleted: number;
+    createdDate: string;
+    status: 'generating' | 'completed' | 'failed';
 };
 
 // Result of a single GET poll attempt. `status` distinguishes terminal 200
@@ -138,9 +140,9 @@ export async function fetchStoryData(
 // Fetch the list of all stories via GET .../list.
 //
 // The server returns { stories: StoryMeta[] } where each entry contains
-// story metadata (storyId, chapterCount, createdAt) from
-// plotpoint.json (see generation-list-stories.ts). Stories are sorted by
-// createdAt descending (newest first) on the server side.
+// story metadata (storyId, chapterRequested, chapterCompleted, createdDate,
+// status) from plotpoint.json (see generation-list-stories.ts). Stories are
+// sorted by createdDate descending (newest first) on the server side.
 // Storyline is intentionally omitted from the list response.
 //
 // The list never includes chapter content — callers issue a second

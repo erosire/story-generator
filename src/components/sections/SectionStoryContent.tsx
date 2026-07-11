@@ -7,15 +7,15 @@
 // the expanded content (or an informational message if not yet expanded).
 //
 // Polling lifecycle (driven by useEffect on selected.id):
-//   1. When a story with chapterCount > 0 is selected, start a pollStoryData
+//   1. When a story with chapterRequested > 0 is selected, start a pollStoryData
 //      loop (see api/storyboard.ts). Mark entry.isProcessing = true.
 //   2. Each onData callback updates the entry's data in the store — chapters
 //      appear as soon as plotpoint.json is written, then expand one by one.
-//   3. The loop terminates when chapters.length >= chapterCount, a hard error
+//   3. The loop terminates when chapters.length >= chapterRequested, a hard error
 //      occurs, or the user selects a different story (cancellation).
 //
 // Edge cases:
-//   - chapterCount == 0 means the story was added locally but never submitted
+//   - chapterRequested == 0 means the story was added locally but never submitted
 //     (storyline form not yet sent). We render an empty-state hint in that case
 //     instead of polling.
 //   - GET returning 404 right after POST is expected; poll keeps going until the
@@ -511,8 +511,10 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         storyName: selected.storyName,
                         title: newTitle,
                         storyline: selected.storyline,
-                        chapterCount: selected.chapterCount,
-                        createdAt: new Date().toISOString(),
+                        chapterRequested: selected.chapterRequested,
+                        chapterCompleted: 0,
+                        createdDate: new Date().toISOString(),
+                        status: 'generating' as const,
                         data: null,
                         isProcessing: true,
                         error: '',
@@ -540,13 +542,13 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             return;
         }
 
-        const pollable = selected.isRemote || selected.chapterCount > 0;
+        const pollable = selected.isRemote || selected.chapterRequested > 0;
         if (!pollable) {
             return;
         }
 
         const entryId = selected.id;
-        const { storyId, chapterCount, isRemote } = selected;
+        const { storyId, chapterRequested, isRemote } = selected;
         const baseUrl = store.config.baseUrl;
         const pollIntervalMs = store.config.pollIntervalMs;
 
@@ -591,7 +593,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         pollStoryData({
             baseUrl,
             storyId,
-            expectedChapterCount: chapterCount > 0 ? chapterCount : 0,
+            expectedChapterCount: chapterRequested > 0 ? chapterRequested : 0,
             pollIntervalMs,
             shouldStop,
             onData
@@ -637,7 +639,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     }, [
         selected?.id,
         selected?.storyId,
-        selected?.chapterCount,
+        selected?.chapterRequested,
         selected?.isRemote,
         selected?.data?.chapters.length,
         store.config.baseUrl,
@@ -651,7 +653,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         );
     }
 
-    if (!selected.isRemote && selected.chapterCount <= 0) {
+    if (!selected.isRemote && selected.chapterRequested <= 0) {
         return (
             <PendingSubmitHint data-testid="content-pending-submit">
                 Enter a storyline and chapter count in the field below, then click
@@ -674,7 +676,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             {selected.isProcessing && (
                 <ProgressBanner>
                     <span className="sg-spinner" />
-                    <span>Generating {data.chapters.length}/{selected.chapterCount} chapters…</span>
+                    <span>Generating {data.chapters.length}/{selected.chapterRequested} chapters…</span>
                 </ProgressBanner>
             )}
 

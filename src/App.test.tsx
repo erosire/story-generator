@@ -250,8 +250,8 @@ describe('StoryGeneratorApp', () => {
                     return Promise.resolve(
                         mockResponse(200, {
                             stories: [
-                                { storyId: 'aaaa-1111', chapterCount: 3, createdAt: '2026-07-03T12:00:00Z' },
-                                { storyId: 'bbbb-2222', chapterCount: 5, createdAt: '2026-07-02T10:00:00Z' }
+                                { storyId: 'aaaa-1111', chapterRequested: 3, chapterCompleted: 0, createdDate: '2026-07-03T12:00:00Z', status: 'generating' },
+                                { storyId: 'bbbb-2222', chapterRequested: 5, chapterCompleted: 0, createdDate: '2026-07-02T10:00:00Z', status: 'generating' }
                             ]
                         })
                     );
@@ -284,7 +284,7 @@ describe('StoryGeneratorApp', () => {
                     return Promise.resolve(
                         mockResponse(200, {
                             stories: [
-                                { storyId: 'remote-uuid-1', chapterCount: 1, createdAt: '2026-07-03T12:00:00Z' }
+                                { storyId: 'remote-uuid-1', chapterRequested: 1, chapterCompleted: 0, createdDate: '2026-07-03T12:00:00Z', status: 'generating' }
                             ]
                         })
                     );
@@ -329,7 +329,7 @@ describe('StoryGeneratorApp', () => {
     // Auto-refresh picks up new stories that appear on the server after mount.
     it('auto-refreshes the sidebar to pick up new stories from the server', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true });
-        let listResponse = { stories: [{ storyId: 'first-uuid', chapterCount: 2, createdAt: '2026-07-03T12:00:00Z' }] };
+        let listResponse = { stories: [{ storyId: 'first-uuid', chapterRequested: 2, chapterCompleted: 0, createdDate: '2026-07-03T12:00:00Z', status: 'generating' }] };
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
                 if (url.endsWith('/list')) {
@@ -348,8 +348,8 @@ describe('StoryGeneratorApp', () => {
         // Simulate a new story appearing on the server.
         listResponse = {
             stories: [
-                { storyId: 'first-uuid', chapterCount: 2, createdAt: '2026-07-03T12:00:00Z' },
-                { storyId: 'second-uuid', chapterCount: 4, createdAt: '2026-07-03T13:00:00Z' }
+                { storyId: 'first-uuid', chapterRequested: 2, chapterCompleted: 0, createdDate: '2026-07-03T12:00:00Z', status: 'generating' },
+                { storyId: 'second-uuid', chapterRequested: 4, chapterCompleted: 0, createdDate: '2026-07-03T13:00:00Z', status: 'generating' }
             ]
         };
 
