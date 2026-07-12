@@ -217,12 +217,62 @@ const ForkIcon: React.FC = () => (
     </svg>
 );
 
+// Inline SVG extend icon — right-pointing arrow with lines, used for the
+// Extend action button that copies plotpoints into the storyline input.
+const ExtendIcon: React.FC = () => (
+    <svg
+        width={14}
+        height={14}
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: 'block' }}
+    >
+        {/* Horizontal arrow pointing right */}
+        <path d="M2 8h10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <path d="M9 5l3 3-3 3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+);
+
 // Chapters list container — flex column with gap between chapter collapsibles.
 const ChapterListContainer = styled('div', {
     display: 'flex',
     flexDirection: 'column',
     gap: 14,
     paddingBottom: 80
+});
+
+// Floating action bar — pinned to the bottom-right of the content area.
+// Positioned as a sticky overlay so it stays visible while scrolling chapters.
+// Contains action buttons (Extend, etc.) that operate on the current story.
+const ActionBar = styled('div', {
+    position: 'sticky' as const,
+    bottom: 0,
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 8,
+    padding: '12px 0',
+    zIndex: 5,
+    marginTop: -60,
+    pointerEvents: 'none' as const
+});
+
+// Action button — flat outlined style consistent with the dashboard design
+// language. Secondary surface + hairline border, accent fill on hover.
+const ActionButton = styled('button', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '8px 16px',
+    fontSize: theme.fontSize.body,
+    fontWeight: 600,
+    borderRadius: theme.radiusMd,
+    border: `1px solid ${theme.border}`,
+    backgroundColor: theme.surface2,
+    color: theme.text,
+    cursor: 'pointer',
+    pointerEvents: 'auto' as const,
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}, color ${theme.transition}`
 });
 
 // In-progress status banner — flat solid accent-tinted surface + accent border
@@ -646,6 +696,58 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         store.config.pollIntervalMs
     ]);
 
+    const data = selected?.data ?? { chapters: [], meta: null };
+
+    // Build the complete plotpoints outline text from all chapters.
+    // This is used by the "Extend" button to populate the storyline input
+    // so the user can iterate on the full structure.
+    // NOTE: hooks must be declared before any early returns to satisfy
+    // React's Rules of Hooks (hooks cannot be called conditionally).
+    const buildPlotpointsOutline = React.useCallback((): string => {
+        const chapters = data?.chapters;
+        if (!chapters || chapters.length === 0) return '';
+
+        const storyTitle = selected?.storyName || selected?.title || 'Story';
+        const lines: string[] = [];
+
+        // Heading with story title
+        lines.push(`# ${storyTitle} Extended`);
+        lines.push('');
+
+        chapters.forEach((ch: any, i: number) => {
+            const title = ch.title || `Chapter ${i + 1}`;
+            lines.push(`## ${title}`);
+            if (ch.plotpoints && ch.plotpoints.length > 0) {
+                ch.plotpoints.forEach((pp: string) => {
+                    lines.push(`- ${pp}`);
+                });
+            } else {
+                lines.push('- (no plot points)');
+            }
+            lines.push('');
+        });
+
+        // Closing prompt for the user to continue editing
+        lines.push('');
+        lines.push('> Extend the story with the following plotlines: ');
+        lines.push('');
+        lines.push('');
+
+        return lines.join('\n');
+    }, [data?.chapters, selected?.storyName, selected?.title]);
+
+    const handleExtend = React.useCallback(() => {
+        const outline = buildPlotpointsOutline();
+        if (!outline) return;
+        setStore((prev) => ({ ...prev, pendingStoryline: outline }));
+    }, [buildPlotpointsOutline, setStore]);
+
+    // Whether the Extend button should be enabled: a story must be selected
+    // and have at least one chapter with plotpoints.
+    const hasPlotpoints = (data?.chapters ?? []).some(
+        (ch: any) => ch.plotpoints && ch.plotpoints.length > 0
+    );
+
     // Render hygiene: null-safety on each branch.
     if (!selected) {
         return (
@@ -667,8 +769,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             </PendingSubmitHint>
         );
     }
-
-    const data = selected.data ?? { chapters: [], meta: null };
 
     return (
         <ContentColumn data-testid="content-story" className="sg-scroll">
@@ -767,6 +867,21 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 >
                     Error: {selected.error}
                 </div>
+            )}
+
+            {/* Action bar — pinned bottom-right. Extend button copies the
+                full plotpoints outline into the storyline input for iteration. */}
+            {hasPlotpoints && (
+                <ActionBar data-testid="content-action-bar">
+                    <ActionButton
+                        onClick={handleExtend}
+                        data-testid="extend-plotpoints-button"
+                        className="sg-hover"
+                    >
+                        <ExtendIcon />
+                        Extend
+                    </ActionButton>
+                </ActionBar>
             )}
         </ContentColumn>
     );

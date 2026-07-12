@@ -116,6 +116,34 @@ export const SectionStoryInput: React.FC = React.memo(() => {
     const [isFocused, setIsFocused] = React.useState(false);
     const containerRef = React.useRef<HTMLDivElement>(null);
 
+    // Consume pendingStoryline signal from the store. When a non-empty
+    // pendingStoryline is set (e.g. by the Extend button in SectionStoryContent),
+    // populate the textarea, expand the input area, focus it, and scroll the
+    // cursor to the bottom so the user can immediately continue editing.
+    React.useEffect(() => {
+        const pending = store.pendingStoryline;
+        if (!pending) return;
+
+        setStoryline(pending);
+        setIsFocused(true);
+        setError('');
+
+        // Use rAF to ensure the textarea is rendered and expanded before focusing.
+        // Find the textarea via DOM query since the vendored styled() helper
+        // doesn't support React.forwardRef.
+        requestAnimationFrame(() => {
+            const ta = containerRef.current?.querySelector<HTMLTextAreaElement>('textarea');
+            if (ta) {
+                ta.focus();
+                ta.setSelectionRange(ta.value.length, ta.value.length);
+                ta.scrollTop = ta.scrollHeight;
+            }
+        });
+
+        // Clear the signal so it doesn't re-trigger on next render.
+        setStore((prev) => ({ ...prev, pendingStoryline: undefined }));
+    }, [store.pendingStoryline, setStore]);
+
     // Populate the form with the selected story's storyline and chapterRequested
     // so the user can hit "Generate" to create a new story with the same prompt.
     // Falls back to empty storyline / default 3 chapters when nothing is selected.

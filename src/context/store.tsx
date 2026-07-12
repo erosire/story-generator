@@ -243,6 +243,13 @@ export type StoryStore = {
     // this and shows a small inline warning. Optional because legacy tests /
     // consumers that don't trigger the bootstrap won't set it.
     loadWarning?: string;
+    // Transient cross-component signal: when a non-empty string is set here,
+    // SectionStoryInput picks it up, populates the textarea, focuses it, and
+    // scrolls the cursor to the bottom. The input component then clears this
+    // field so it doesn't re-trigger. Set by content-area action buttons
+    // (e.g. "Extend" in SectionStoryContent) that need to hand off text to
+    // the storyline input without direct component coupling.
+    pendingStoryline?: string;
 };
 
 type StoryStoreContextValue = {
