@@ -234,6 +234,24 @@ const ExtendIcon: React.FC = () => (
     </svg>
 );
 
+// Inline SVG collapse-all icon — two inward-pointing chevrons, used for the
+// collapse-all action button that closes every expanded chapter.
+const CollapseAllIcon: React.FC = () => (
+    <svg
+        width={14}
+        height={14}
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: 'block' }}
+    >
+        {/* Top chevron pointing up */}
+        <path d="M4 6l4-3 4 3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        {/* Bottom chevron pointing down */}
+        <path d="M4 10l4 3 4-3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+);
+
 // Chapters list container — flex column with gap between chapter collapsibles.
 const ChapterListContainer = styled('div', {
     display: 'flex',
@@ -742,6 +760,10 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         setStore((prev) => ({ ...prev, pendingStoryline: outline }));
     }, [buildPlotpointsOutline, setStore]);
 
+    const handleCollapseAll = React.useCallback(() => {
+        setExpandedChaptersState(new Set());
+    }, []);
+
     // Whether the Extend button should be enabled: a story must be selected
     // and have at least one chapter with plotpoints.
     const hasPlotpoints = (data?.chapters ?? []).some(
@@ -869,17 +891,26 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 </div>
             )}
 
-            {/* Action bar — pinned bottom-right. Extend button copies the
-                full plotpoints outline into the storyline input for iteration. */}
+            {/* Action bar — pinned bottom-right. Collapse-all closes every
+                expanded chapter. Extend copies the full plotpoints outline
+                into the storyline input for iteration. */}
             {hasPlotpoints && (
                 <ActionBar data-testid="content-action-bar">
                     <ActionButton
+                        onClick={handleCollapseAll}
+                        data-testid="collapse-all-button"
+                        title="Collapse all chapters"
+                        className="sg-hover"
+                    >
+                        <CollapseAllIcon />
+                    </ActionButton>
+                    <ActionButton
                         onClick={handleExtend}
                         data-testid="extend-plotpoints-button"
+                        title="Extend story with plotpoints outline"
                         className="sg-hover"
                     >
                         <ExtendIcon />
-                        Extend
                     </ActionButton>
                 </ActionBar>
             )}
