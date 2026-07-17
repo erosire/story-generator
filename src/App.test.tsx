@@ -148,9 +148,9 @@ describe('StoryGeneratorApp', () => {
                 title: `Chapter ${i + 1}`,
                 plotpoints: [`Plot point ${i + 1}`],
                 expanded: true,
-                content: `## Chapter ${i + 1}\n\nbody`,
-                length: 1,
-                generationTimeMs: 1000
+                revisions: [
+                    { content: `## Chapter ${i + 1}\n\nbody`, wordCount: 1, generationTimeMs: 1000 }
+                ]
             }));
             return Promise.resolve(mockResponse(200, { chapters, meta: { storyline: 'test', chapterCount: 3, createdAt: '2026-07-01' } }));
         });
@@ -298,9 +298,9 @@ describe('StoryGeneratorApp', () => {
                                 title: 'Ch1',
                                 plotpoints: ['plot'],
                                 expanded: true,
-                                content: '## Ch1\n\nbody',
-                                length: 5,
-                                generationTimeMs: 1000
+                                revisions: [
+                                    { content: '## Ch1\n\nbody', wordCount: 5, generationTimeMs: 1000 }
+                                ]
                             }
                         ],
                         meta: { storyline: 'Remote story', chapterCount: 1, createdAt: '2026-07-03T12:00:00Z' }

@@ -176,8 +176,8 @@ export const cancelPendingStorageWrites = (): void => {
 
 // Shape of a unified chapter as returned by GET /v1/storyboard/generations/:storyId.
 // Each chapter includes its plotpoints and expansion status. If the chapter has
-// been expanded, content/length/generationTimeMs are present; otherwise expanded
-// is false and only plotpoints are available.
+// been expanded, revisions[] is present with one entry per generation attempt;
+// otherwise expanded is false and only plotpoints are available.
 // See storyboard-generations.yml UnifiedChapter schema.
 export type Chapter = {
     chapterNumber: string; // "1", "2", etc.
@@ -186,10 +186,11 @@ export type Chapter = {
     plotpoints: string[]; // plotpoints for this chapter
     expanded: boolean; // true if chapter-XXX.json has non-empty result.content
     canReExpand: boolean; // true if chapter-XXX.json exists (LLM context available for re-expansion)
-    content?: string; // raw markdown (## Title\n\nbody) — only when expanded
-    length?: number; // word count — only when expanded
-    generationTimeMs?: number; // time in ms the LLM took to generate — only when expanded
-    history?: Array<{ title: string; content: string; generationTimeMs: number; wordCount: number }>;
+    revisions?: Array<{
+        content: string; // raw markdown body
+        wordCount: number; // word count for this revision
+        generationTimeMs: number; // time in ms the LLM took to generate
+    }>;
 };
 
 // Shape of the story data returned by the GET endpoint.

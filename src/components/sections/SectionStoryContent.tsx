@@ -349,8 +349,8 @@ const PlotpointsWrapper: React.FC<{
     );
 };
 
-// Word-count + timing chip rendered in the chapter header. Encapsulated so the
-// styling stays consistent and the JSX below stays declarative.
+// Revision count chip rendered in the chapter header. Shows the number of
+// revision attempts for the chapter, replacing the previous word count + time display.
 const ChapterMeta: React.FC<{ chapter: any }> = ({ chapter }) => (
     <span
         style={{
@@ -368,20 +368,69 @@ const ChapterMeta: React.FC<{ chapter: any }> = ({ chapter }) => (
     >
         {chapter.expanded ? (
             <>
-                <span>{chapter.length} words</span>
-                {typeof chapter.generationTimeMs === 'number' && chapter.generationTimeMs > 0 && (
-                    <span style={{ color: theme.accent2 }}>
-                        {chapter.generationTimeMs >= 60000
-                            ? `${(chapter.generationTimeMs / 60000).toFixed(1)}m`
-                            : `${(chapter.generationTimeMs / 1000).toFixed(1)}s`}
-                    </span>
-                )}
+                <span>
+                    {chapter.revisions?.length ?? 0} revision{(chapter.revisions?.length ?? 0) !== 1 ? 's' : ''}
+                </span>
             </>
         ) : (
             <span style={{ color: theme.accent2 }}>Pending</span>
         )}
     </span>
 );
+
+// Tab bar for browsing chapter revisions. Each tab shows the word count and
+// generation time for that revision. The latest revision is selected by default.
+const RevisionTabs: React.FC<{
+    revisions: Array<{ content: string; wordCount: number; generationTimeMs: number }>;
+    activeIndex: number;
+    onSelect: (index: number) => void;
+    testId: string;
+}> = ({ revisions, activeIndex, onSelect, testId }) => {
+    return (
+        <div
+            data-testid={`${testId}-tabs`}
+            style={{
+                display: 'flex',
+                gap: 4,
+                marginBottom: 12,
+                borderBottom: `1px solid ${theme.border}`,
+                paddingBottom: 8,
+                flexWrap: 'wrap'
+            }}
+        >
+            {revisions.map((rev, i) => (
+                <button
+                    key={i}
+                    onClick={() => onSelect(i)}
+                    data-testid={`${testId}-tab-${i}`}
+                    style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '4px 10px',
+                        fontSize: theme.fontSize.sm,
+                        fontWeight: i === activeIndex ? 600 : 400,
+                        color: i === activeIndex ? theme.accent : theme.textMuted,
+                        background: i === activeIndex ? theme.accentSoft : 'transparent',
+                        border: `1px solid ${i === activeIndex ? theme.accent : theme.border}`,
+                        borderRadius: 999,
+                        cursor: 'pointer',
+                        transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}`
+                    }}
+                >
+                    <span>{rev.wordCount} words</span>
+                    {rev.generationTimeMs > 0 && (
+                        <span style={{ color: theme.accent2 }}>
+                            {rev.generationTimeMs >= 60000
+                                ? `${(rev.generationTimeMs / 60000).toFixed(1)}m`
+                                : `${(rev.generationTimeMs / 1000).toFixed(1)}s`}
+                        </span>
+                    )}
+                </button>
+            ))}
+        </div>
+    );
+};
 
 export const SectionStoryContent: React.FC = React.memo(() => {
     const { store, setStore } = useStoryStore();
@@ -397,6 +446,10 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     // localStorage per story so the user returns to the same expansion
     // state after navigating away or reloading.
     const [expandedChapters, setExpandedChaptersState] = React.useState<Set<number>>(new Set());
+
+    // Track which revision tab is active for each chapter.
+    // Keyed by chapter index, value is the revision index (0-based, 0 = oldest).
+    const [activeRevisions, setActiveRevisions] = React.useState<Record<number, number>>({});
 
     // Load expanded chapters from localStorage when the selected story changes.
     React.useEffect(() => {
@@ -453,18 +506,18 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     );
 
     // ── Re-expand chapter state ──────────────────────────────────────────
-    // Tracks which chapter (by display index + original generationTimeMs) is
+    // Tracks which chapter (by display index + previous revision count) is
     // currently being re-expanded. The polling effect below watches this and
-    // polls GET until the chapter's generationTimeMs changes, indicating the
+    // polls GET until the chapter's revisions array grows, indicating the
     // server has finished background re-expansion.
     const [reExpandState, setReExpandState] = React.useState<{
         chapterIndex: number; // 0-based index of the chapter being re-expanded
-        previousGenerationTimeMs?: number; // snapshot before re-expand started
+        previousRevisionCount?: number; // snapshot before re-expand started
     } | null>(null);
 
     // Fire a re-expand PATCH and kick off the completion poller.
     const handleReExpand = React.useCallback(
-        async (chapterIndex: number, previousGenerationTimeMs?: number) => {
+        async (chapterIndex: number, previousRevisionCount?: number) => {
             if (!selected?.storyId) return;
             try {
                 await updateChapter(store.config.baseUrl, selected.storyId, chapterIndex);
@@ -475,7 +528,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         e.id === selected.id ? { ...e, isProcessing: true, error: '' } : e
                     )
                 }));
-                setReExpandState({ chapterIndex, previousGenerationTimeMs });
+                setReExpandState({ chapterIndex, previousRevisionCount });
             } catch (err: any) {
                 setStore((prev) => ({
                     ...prev,
@@ -492,7 +545,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
     // Poll for re-expand completion. Runs while reExpandState is set. On each
     // tick it fetches story data and checks whether the target chapter's
-    // generationTimeMs has changed (indicating the background job finished).
+    // revisions array has grown (indicating the background job finished).
     React.useEffect(() => {
         if (!reExpandState || !selected?.storyId) return;
 
@@ -500,7 +553,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         const storyId = selected.storyId;
         const entryId = selected.id;
         const targetIndex = reExpandState.chapterIndex;
-        const prevMs = reExpandState.previousGenerationTimeMs;
+        const prevCount = reExpandState.previousRevisionCount;
         const intervalMs = store.config.pollIntervalMs;
 
         let cancelled = false;
@@ -516,12 +569,12 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 if (result.status === 'data') {
                     const chapter = result.data.chapters[targetIndex];
                     // Consider it done when the chapter is expanded AND its
-                    // generationTimeMs differs from the pre-reexpand snapshot.
+                    // revisions array has more entries than the pre-reexpand snapshot.
                     // Fall back to "done" if we somehow lost the snapshot.
                     const changed =
                         chapter &&
                         chapter.expanded &&
-                        (prevMs === undefined || chapter.generationTimeMs !== prevMs);
+                        (prevCount === undefined || (chapter.revisions?.length ?? 0) > prevCount);
 
                     if (changed) {
                         setStore((prev) => ({
@@ -832,9 +885,19 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 />
                             )}
 
-                            {/* Chapter expansion content — or pending message */}
+                            {/* Chapter expansion content — revision tabs + active revision */}
                             {ch.expanded ? (
-                                <MarkdownContent>{ch.content ?? ''}</MarkdownContent>
+                                <>
+                                    <RevisionTabs
+                                        revisions={ch.revisions ?? []}
+                                        activeIndex={activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1}
+                                        onSelect={(idx) => setActiveRevisions((prev) => ({ ...prev, [i]: idx }))}
+                                        testId={`chapter-${i}-revisions`}
+                                    />
+                                    <MarkdownContent>
+                                        {ch.revisions?.[activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1]?.content ?? ''}
+                                    </MarkdownContent>
+                                </>
                             ) : (
                                 <PendingExpansion data-testid={`chapter-${i}-pending`}>
                                     This chapter has not been expanded yet.
@@ -847,7 +910,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                             <ChapterActions>
                                 <ChapterActionButton
                                     onClick={() =>
-                                        handleReExpand(ch.chapterIndex, ch.generationTimeMs)
+                                        handleReExpand(ch.chapterIndex, ch.revisions?.length)
                                     }
                                     title={
                                         reExpandState?.chapterIndex === ch.chapterIndex

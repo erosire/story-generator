@@ -97,9 +97,9 @@ describe('fetchStoryData', () => {
                 title: 'The Beginning',
                 plotpoints: ['Opening scene'],
                 expanded: true,
-                content: '## The Beginning\n\nIt was a dark and stormy night...',
-                length: 9,
-                generationTimeMs: 1000
+                revisions: [
+                    { content: '## The Beginning\n\nIt was a dark and stormy night...', wordCount: 9, generationTimeMs: 1000 }
+                ]
             },
             {
                 chapterNumber: '2',
@@ -262,15 +262,15 @@ describe('pollStoryData', () => {
             mockResponse(200, { chapters: [], meta: null }),
             mockResponse(200, {
                 chapters: [
-                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['a'], expanded: true, content: 'a', length: 1 }
+                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['a'], expanded: true, revisions: [{ content: 'a', wordCount: 1, generationTimeMs: 0 }] }
                 ],
                 meta: null
             }),
             mockResponse(200, {
                 chapters: [
-                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['a'], expanded: true, content: 'a', length: 1 },
-                    { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['b'], expanded: true, content: 'b', length: 1 },
-                    { chapterNumber: '3', chapterIndex: 2, title: 'Ch3', plotpoints: ['c'], expanded: true, content: 'c', length: 1 }
+                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['a'], expanded: true, revisions: [{ content: 'a', wordCount: 1, generationTimeMs: 0 }] },
+                    { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['b'], expanded: true, revisions: [{ content: 'b', wordCount: 1, generationTimeMs: 0 }] },
+                    { chapterNumber: '3', chapterIndex: 2, title: 'Ch3', plotpoints: ['c'], expanded: true, revisions: [{ content: 'c', wordCount: 1, generationTimeMs: 0 }] }
                 ],
                 meta: null
             })
@@ -325,7 +325,7 @@ describe('pollStoryData', () => {
             mockResponse(404, {}),
             mockResponse(200, {
                 chapters: [
-                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['x'], expanded: true, content: 'x', length: 1 }
+                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['x'], expanded: true, revisions: [{ content: 'x', wordCount: 1, generationTimeMs: 0 }] }
                 ],
                 meta: null
             })
