@@ -387,47 +387,69 @@ const RevisionTabs: React.FC<{
     testId: string;
 }> = ({ revisions, activeIndex, onSelect, testId }) => {
     return (
+        // Sticky wrapper: pins the revision tabs to the top of the scroll
+        // container (DashboardContent) while reading within a chapter.
+        // position:sticky is bounded by the parent (ChapterCard) content box,
+        // so the tabs scroll away once the chapter is scrolled past — they
+        // never escape the chapter's bounding box.
+        //
+        // The opaque background layers the translucent surface2 over the solid
+        // dashboard bg, reproducing the ChapterCard's effective surface2-over-bg
+        // appearance. This keeps the bar seamless against the card while staying
+        // fully opaque so content scrolling beneath the pinned tabs stays hidden.
+        // paddingBottom (not marginBottom) keeps the gap below the tabs inside
+        // the opaque box, otherwise scrolling content would bleed through the
+        // 12px gap while pinned.
         <div
             data-testid={`${testId}-tabs`}
             style={{
-                display: 'flex',
-                gap: 4,
-                marginBottom: 12,
-                borderBottom: `1px solid ${theme.border}`,
-                paddingBottom: 8,
-                flexWrap: 'wrap'
+                position: 'sticky' as const,
+                top: 0,
+                zIndex: 4,
+                paddingBottom: 12,
+                background: `linear-gradient(${theme.surface2}, ${theme.surface2}), ${theme.bg}`
             }}
         >
-            {revisions.map((rev, i) => (
-                <button
-                    key={i}
-                    onClick={() => onSelect(i)}
-                    data-testid={`${testId}-tab-${i}`}
-                    style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        padding: '4px 10px',
-                        fontSize: theme.fontSize.sm,
-                        fontWeight: i === activeIndex ? 600 : 400,
-                        color: i === activeIndex ? theme.accent : theme.textMuted,
-                        background: i === activeIndex ? theme.accentSoft : 'transparent',
-                        border: `1px solid ${i === activeIndex ? theme.accent : theme.border}`,
-                        borderRadius: 999,
-                        cursor: 'pointer',
-                        transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}`
-                    }}
-                >
-                    <span>{rev.wordCount} words</span>
-                    {rev.generationTimeMs > 0 && (
-                        <span style={{ color: theme.accent2 }}>
-                            {rev.generationTimeMs >= 60000
-                                ? `${(rev.generationTimeMs / 60000).toFixed(1)}m`
-                                : `${(rev.generationTimeMs / 1000).toFixed(1)}s`}
-                        </span>
-                    )}
-                </button>
-            ))}
+            <div
+                style={{
+                    display: 'flex',
+                    gap: 4,
+                    borderBottom: `1px solid ${theme.border}`,
+                    paddingBottom: 8,
+                    flexWrap: 'wrap'
+                }}
+            >
+                {revisions.map((rev, i) => (
+                    <button
+                        key={i}
+                        onClick={() => onSelect(i)}
+                        data-testid={`${testId}-tab-${i}`}
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '4px 10px',
+                            fontSize: theme.fontSize.sm,
+                            fontWeight: i === activeIndex ? 600 : 400,
+                            color: i === activeIndex ? theme.accent : theme.textMuted,
+                            background: i === activeIndex ? theme.accentSoft : 'transparent',
+                            border: `1px solid ${i === activeIndex ? theme.accent : theme.border}`,
+                            borderRadius: 999,
+                            cursor: 'pointer',
+                            transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}`
+                        }}
+                    >
+                        <span>{rev.wordCount} words</span>
+                        {rev.generationTimeMs > 0 && (
+                            <span style={{ color: theme.accent2 }}>
+                                {rev.generationTimeMs >= 60000
+                                    ? `${(rev.generationTimeMs / 60000).toFixed(1)}m`
+                                    : `${(rev.generationTimeMs / 1000).toFixed(1)}s`}
+                            </span>
+                        )}
+                    </button>
+                ))}
+            </div>
         </div>
     );
 };
