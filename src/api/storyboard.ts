@@ -23,10 +23,10 @@
 //       See generation-list-stories.ts.
 //
 //   - PATCH /v1/storyboard/generations/:storyId
-//       body: { storyName?: string, chapterIndex?: number }
-//       returns: { storyId, storyName?, chapterIndex?, chapterNumber?, title?, message }
+//       body: { storyName?: string, expandChapterIndex?: number }
+//       returns: { storyId, storyName?, expandChapterIndex?, chapterNumber?, title?, message }
 //       behavior: Updates story metadata (e.g. storyName) and/or triggers
-//       fire-and-forget re-expansion of a single chapter. When chapterIndex is
+//       fire-and-forget re-expansion of a single chapter. When expandChapterIndex is
 //       provided, the server reads the chapter-XXX.json payload to recover the
 //       conversation context, then calls the LLM to regenerate.
 //       See generation-update-chapter.ts.
@@ -323,7 +323,7 @@ export async function deleteStory(
 // Throws on network failure or non-200 response.
 export type UpdateChapterResponse = {
     storyId: string;
-    chapterIndex: number;
+    expandChapterIndex: number;
     chapterNumber: string;
     title: string;
     message: string;
@@ -338,7 +338,7 @@ export async function updateChapter(
     const response = await fetch(url, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chapterIndex })
+        body: JSON.stringify({ expandChapterIndex: chapterIndex })
     });
 
     if (!response.ok) {

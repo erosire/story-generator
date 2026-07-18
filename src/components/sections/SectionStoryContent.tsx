@@ -161,15 +161,6 @@ const ChapterActionButton: React.FC<{
     </button>
 );
 
-// Row that holds per-chapter action buttons, right-aligned.
-const ChapterActions = styled('div', {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 4,
-    marginTop: 12
-});
-
 // Inline SVG refresh icon — circular arrow used for the re-expand action.
 // Keeps the package icon-free (matches the dashboard convention of inline glyphs).
 const RefreshIcon: React.FC = () => (
@@ -378,16 +369,12 @@ const ChapterMeta: React.FC<{ chapter: any }> = ({ chapter }) => (
     </span>
 );
 
-// Dropdown selector for browsing chapter revisions. Each option shows the
-// word count and generation time for that revision; the latest revision is
-// selected by default. Replaces the previous pill-tab bar — a dropdown scales
-// better when a chapter accumulates many revisions.
-//
-// Renders inside the same sticky wrapper so the selector stays pinned to the
-// top of the scroll container (DashboardContent) while reading within a
-// chapter. position:sticky is bounded by the parent (ChapterCard) content box,
-// so the bar scrolls away once the chapter is scrolled past — it never escapes
-// the chapter's bounding box.
+// Sticky per-chapter bar: revision dropdown on the left + per-chapter action
+// buttons (re-expand / fork) on the right. Pins to the top of the scroll
+// container (DashboardContent) while reading within a chapter so both the
+// revision selector and the actions stay reachable. position:sticky is bounded
+// by the parent (ChapterCard) content box, so the bar scrolls away once the
+// chapter is scrolled past — it never escapes the chapter's bounding box.
 //
 // The opaque background layers the translucent surface2 over the solid dashboard
 // bg, reproducing the ChapterCard's effective surface2-over-bg appearance. This
@@ -395,15 +382,23 @@ const ChapterMeta: React.FC<{ chapter: any }> = ({ chapter }) => (
 // scrolling beneath the pinned bar stays hidden. paddingTop/paddingBottom (not
 // margins) keep the gaps above + below the bar inside the opaque box, otherwise
 // scrolling content would bleed through those gaps while pinned.
-const RevisionSelect: React.FC<{
+//
+// The bar always renders (expanded or not): when the chapter isn't expanded
+// yet, the left side is empty and the right side still carries the expand/fork
+// actions so the user can trigger expansion. When expanded, a native <select>
+// dropdown lists the revisions (word count + generation time per option).
+const ChapterStickyBar: React.FC<{
+    expanded: boolean;
     revisions: Array<{ content: string; wordCount: number; generationTimeMs: number }>;
     activeIndex: number;
     onSelect: (index: number) => void;
+    actions: React.ReactNode;
     testId: string;
-}> = ({ revisions, activeIndex, onSelect, testId }) => {
-    // Format an option label: "Revision N · W words · Ts" (time omitted when 0).
-    const formatOption = (rev: { wordCount: number; generationTimeMs: number }, i: number) => {
-        const parts = [`Revision ${i + 1}`, `${rev.wordCount} words`];
+}> = ({ expanded, revisions, activeIndex, onSelect, actions, testId }) => {
+    // Format an option label: "W words · Ts" (time omitted when 0). No
+    // "Revision N" prefix — the dropdown itself communicates "pick a revision".
+    const formatOption = (rev: { wordCount: number; generationTimeMs: number }) => {
+        const parts = [`${rev.wordCount} words`];
         if (rev.generationTimeMs > 0) {
             parts.push(
                 rev.generationTimeMs >= 60000
@@ -435,20 +430,9 @@ const RevisionSelect: React.FC<{
                     paddingBottom: 8
                 }}
             >
-                <span
-                    style={{
-                        fontSize: theme.fontSize.sm,
-                        fontWeight: 600,
-                        color: theme.textMuted,
-                        textTransform: 'uppercase' as const,
-                        letterSpacing: 0.5,
-                        whiteSpace: 'nowrap' as const,
-                        flex: '0 0 auto'
-                    }}
-                >
-                    Revision
-                </span>
-                {revisions.length > 0 ? (
+                {/* Left: revision dropdown (only when the chapter is expanded
+                    and has revisions). Left-aligned via natural flex order. */}
+                {expanded && revisions.length > 0 && (
                     <select
                         value={activeIndex}
                         onChange={(e) => onSelect(Number(e.target.value))}
@@ -462,22 +446,29 @@ const RevisionSelect: React.FC<{
                             border: `1px solid ${theme.border}`,
                             borderRadius: theme.radiusMd,
                             cursor: 'pointer',
-                            flex: '1 1 auto',
                             maxWidth: 320,
                             outline: 'none'
                         }}
                     >
                         {revisions.map((rev, i) => (
                             <option key={i} value={i}>
-                                {formatOption(rev, i)}
+                                {formatOption(rev)}
                             </option>
                         ))}
                     </select>
-                ) : (
-                    <span style={{ fontSize: theme.fontSize.sm, color: theme.textFaint, fontStyle: 'italic' }}>
-                        No revisions
-                    </span>
                 )}
+                {/* Right: per-chapter actions (re-expand / fork). marginLeft:auto
+                    pushes them to the right edge of the bar. */}
+                <div
+                    style={{
+                        marginLeft: 'auto',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4
+                    }}
+                >
+                    {actions}
+                </div>
             </div>
         </div>
     );
@@ -498,19 +489,43 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     // state after navigating away or reloading.
     const [expandedChapters, setExpandedChaptersState] = React.useState<Set<number>>(new Set());
 
+    // Per-story guard for the auto-expand-latest behaviour (below). Holds the
+    // storyId once the user has interacted (toggled a chapter / collapsed all)
+    // OR once we've loaded saved preferences from localStorage. While the
+    // current story's id is NOT in this ref, the auto-expand effect is allowed
+    // to keep the latest chapter open as chapters stream in from polling.
+    const userInteractedRef = React.useRef<string | null>(null);
+
     // Track which revision tab is active for each chapter.
     // Keyed by chapter index, value is the revision index (0-based, 0 = oldest).
     const [activeRevisions, setActiveRevisions] = React.useState<Record<number, number>>({});
 
     // Load expanded chapters from localStorage when the selected story changes.
+    // If the user had saved preferences, mark them as "interacted" so the
+    // auto-expand effect doesn't override their choices.
     React.useEffect(() => {
         if (!selected?.storyId) {
             setExpandedChaptersState(new Set());
+            userInteractedRef.current = null;
             return;
         }
         const saved = getExpandedChapters(selected.storyId);
         setExpandedChaptersState(new Set(saved));
+        userInteractedRef.current = saved.length > 0 ? selected.storyId : null;
     }, [selected?.storyId]);
+
+    // Auto-expand the latest chapter as chapters stream in from polling, until
+    // the user interacts (toggles a chapter / collapses all). Restores the
+    // pre-controlled `defaultOpen={i === chapters.length - 1}` behaviour: while
+    // generation is in progress the newest chapter stays open so the user can
+    // read along, and once they make a choice we stop overriding them.
+    React.useEffect(() => {
+        if (!selected?.storyId) return;
+        if (userInteractedRef.current === selected.storyId) return;
+        const chapters = selected?.data?.chapters;
+        if (!chapters || chapters.length === 0) return;
+        setExpandedChaptersState(new Set([chapters.length - 1]));
+    }, [selected?.storyId, selected?.data?.chapters?.length]);
 
     // Persist expanded chapters to localStorage whenever they change.
     React.useEffect(() => {
@@ -520,6 +535,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
     /** Toggle a chapter's expanded state and persist to localStorage. */
     const handleChapterToggle = React.useCallback((index: number, open: boolean) => {
+        // Mark this story as interacted so auto-expand stops overriding.
+        userInteractedRef.current = selected?.storyId ?? null;
         setExpandedChaptersState((prev) => {
             const next = new Set(prev);
             if (open) {
@@ -529,7 +546,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             }
             return next;
         });
-    }, []);
+    }, [selected?.storyId]);
 
     // Patch a single record's fields by id. We use functional updates so the
     // updater always targets the latest records array.
@@ -865,8 +882,11 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     }, [buildPlotpointsOutline, setStore]);
 
     const handleCollapseAll = React.useCallback(() => {
+        // Mark this story as interacted so auto-expand doesn't re-open the
+        // latest chapter immediately after the user explicitly collapsed all.
+        userInteractedRef.current = selected?.storyId ?? null;
         setExpandedChaptersState(new Set());
-    }, []);
+    }, [selected?.storyId]);
 
     // Whether the Extend button should be enabled: a story must be selected
     // and have at least one chapter with plotpoints.
@@ -936,54 +956,57 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 />
                             )}
 
-                            {/* Chapter expansion content — revision selector + active revision */}
+                            {/* Sticky per-chapter bar: revision dropdown (left)
+                                + re-expand / fork actions (right). Always shown
+                                so the actions stay reachable; the dropdown only
+                                appears once the chapter is expanded. */}
+                            <ChapterStickyBar
+                                expanded={!!ch.expanded}
+                                revisions={ch.revisions ?? []}
+                                activeIndex={activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1}
+                                onSelect={(idx) => setActiveRevisions((prev) => ({ ...prev, [i]: idx }))}
+                                actions={
+                                    <>
+                                        <ChapterActionButton
+                                            onClick={() =>
+                                                handleReExpand(ch.chapterIndex, ch.revisions?.length)
+                                            }
+                                            title={
+                                                reExpandState?.chapterIndex === ch.chapterIndex
+                                                    ? ch.expanded
+                                                        ? 'Re-expanding…'
+                                                        : 'Expanding…'
+                                                    : ch.expanded
+                                                        ? 'Re-expand Chapter'
+                                                        : 'Expand Chapter'
+                                            }
+                                            data-testid={`chapter-${i}-reexpand`}
+                                        >
+                                            <RefreshIcon />
+                                        </ChapterActionButton>
+                                        <ChapterActionButton
+                                            onClick={() => handleFork(ch.chapterIndex)}
+                                            title="Fork from this chapter"
+                                            data-testid={`chapter-${i}-fork`}
+                                        >
+                                            <ForkIcon />
+                                        </ChapterActionButton>
+                                    </>
+                                }
+                                testId={`chapter-${i}-revisions`}
+                            />
+
+                            {/* Chapter expansion content — active revision body,
+                                or a pending hint when not yet expanded. */}
                             {ch.expanded ? (
-                                <>
-                                    <RevisionSelect
-                                        revisions={ch.revisions ?? []}
-                                        activeIndex={activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1}
-                                        onSelect={(idx) => setActiveRevisions((prev) => ({ ...prev, [i]: idx }))}
-                                        testId={`chapter-${i}-revisions`}
-                                    />
-                                    <MarkdownContent>
-                                        {ch.revisions?.[activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1]?.content ?? ''}
-                                    </MarkdownContent>
-                                </>
+                                <MarkdownContent>
+                                    {ch.revisions?.[activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1]?.content ?? ''}
+                                </MarkdownContent>
                             ) : (
                                 <PendingExpansion data-testid={`chapter-${i}-pending`}>
                                     This chapter has not been expanded yet.
                                 </PendingExpansion>
                             )}
-
-                            {/* Per-chapter action buttons — right-aligned row.
-                                Re-expand: refresh icon. Fork: branch icon.
-                                Always shown regardless of generation state. */}
-                            <ChapterActions>
-                                <ChapterActionButton
-                                    onClick={() =>
-                                        handleReExpand(ch.chapterIndex, ch.revisions?.length)
-                                    }
-                                    title={
-                                        reExpandState?.chapterIndex === ch.chapterIndex
-                                            ? ch.expanded
-                                                ? 'Re-expanding…'
-                                                : 'Expanding…'
-                                            : ch.expanded
-                                                ? 'Re-expand Chapter'
-                                                : 'Expand Chapter'
-                                    }
-                                    data-testid={`chapter-${i}-reexpand`}
-                                >
-                                    <RefreshIcon />
-                                </ChapterActionButton>
-                                <ChapterActionButton
-                                    onClick={() => handleFork(ch.chapterIndex)}
-                                    title="Fork from this chapter"
-                                    data-testid={`chapter-${i}-fork`}
-                                >
-                                    <ForkIcon />
-                                </ChapterActionButton>
-                            </ChapterActions>
                         </ChapterCard>
                     </Collapsible>
                 ))}
