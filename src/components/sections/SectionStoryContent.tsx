@@ -816,7 +816,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     // Open the rewrite dialogue for a specific chapter.
     const openRewriteDialogue = React.useCallback(
         (chapterIndex: number, previousRevisionCount?: number, revisionIndex?: number) => {
-            setRewriteContextInput('');
+            setRewriteContextInput('- The chapter must follow the events of the original chapter exactly from start to end!\n- Write from first person perspective of ');
             setRewriteState({ isOpen: true, chapterIndex, previousRevisionCount, rewriteRevisionIndex: revisionIndex });
         },
         []
@@ -1220,6 +1220,10 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                             onChange={(e) => setRewriteContextInput(e.target.value)}
                             placeholder="e.g. Make the scene more dramatic, add more tension, slow down the pacing..."
                             autoFocus
+                            onFocus={(e) => {
+                                const len = e.target.value.length;
+                                e.target.setSelectionRange(len, len);
+                            }}
                             data-testid="rewrite-context-input"
                         />
                         <RewriteDialogActions>
