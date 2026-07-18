@@ -29,7 +29,7 @@
 import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
-import { pollStoryData, updateChapter, fetchStoryData, createNewStory } from '../../api';
+import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 import { getExpandedChapters, setExpandedChapters } from '../../context/store';
@@ -110,6 +110,61 @@ const PendingExpansion = styled('div', {
     fontSize: theme.fontSize.lg,
     fontStyle: 'italic',
     padding: '8px 0'
+});
+
+// Modal overlay for the rewrite dialogue.
+const RewriteOverlay = styled('div', {
+    position: 'fixed' as const,
+    inset: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000
+});
+
+// Modal dialogue box for rewrite context input.
+const RewriteDialog = styled('div', {
+    background: '#1e2330',
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusLg,
+    padding: 24,
+    width: '90%',
+    maxWidth: 520,
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
+});
+
+const RewriteDialogTitle = styled('h3', {
+    margin: '0 0 12px 0',
+    fontSize: theme.fontSize.lg,
+    fontWeight: 600,
+    color: theme.text
+});
+
+const RewriteTextarea = styled('textarea', {
+    width: '100%',
+    minHeight: 120,
+    padding: '10px 12px',
+    fontSize: theme.fontSize.base,
+    color: theme.text,
+    backgroundColor: theme.surface1,
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusMd,
+    resize: 'vertical' as const,
+    outline: 'none',
+    fontFamily: 'inherit',
+    lineHeight: 1.5,
+    boxSizing: 'border-box' as const,
+    '&:focus': {
+        borderColor: theme.accent
+    }
+});
+
+const RewriteDialogActions = styled('div', {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 16
 });
 
 // Chapter action icon button — compact square button for per-chapter actions
@@ -240,6 +295,22 @@ const CollapseAllIcon: React.FC = () => (
         <path d="M4 6l4-3 4 3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
         {/* Bottom chevron pointing down */}
         <path d="M4 10l4 3 4-3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+);
+
+// Inline SVG plus icon — used for the rewrite chapter action button.
+// A simple "+" glyph indicating "add / rewrite with custom input".
+const RewriteIcon: React.FC = () => (
+    <svg
+        width={14}
+        height={14}
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: 'block' }}
+    >
+        <path d="M8 3v10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <path d="M3 8h10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
     </svg>
 );
 
@@ -393,8 +464,9 @@ const ChapterStickyBar: React.FC<{
     activeIndex: number;
     onSelect: (index: number) => void;
     actions: React.ReactNode;
+    dropdownActions?: React.ReactNode;
     testId: string;
-}> = ({ expanded, revisions, activeIndex, onSelect, actions, testId }) => {
+}> = ({ expanded, revisions, activeIndex, onSelect, actions, dropdownActions, testId }) => {
     // Format an option label: "W words · Ts" (time omitted when 0). No
     // "Revision N" prefix — the dropdown itself communicates "pick a revision".
     const formatOption = (rev: { wordCount: number; generationTimeMs: number }) => {
@@ -457,6 +529,9 @@ const ChapterStickyBar: React.FC<{
                         ))}
                     </select>
                 )}
+                {/* Dropdown actions: sits right next to the dropdown (e.g. rewrite +)
+                    before the right-aligned chapter actions. */}
+                {dropdownActions}
                 {/* Right: per-chapter actions (re-expand / fork). marginLeft:auto
                     pushes them to the right edge of the bar. */}
                 <div
@@ -725,6 +800,64 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         [selected, store.config.baseUrl, setStore]
     );
 
+    // ── Rewrite chapter state ─────────────────────────────────────────────
+    // Tracks whether the rewrite dialogue is open and which chapter is being
+    // rewritten. When the user submits the dialogue, handleRewrite fires the
+    // PATCH and starts the same polling flow as re-expand.
+    const [rewriteState, setRewriteState] = React.useState<{
+        isOpen: boolean;
+        chapterIndex: number;
+        previousRevisionCount?: number;
+    }>({ isOpen: false, chapterIndex: -1 });
+
+    const [rewriteContextInput, setRewriteContextInput] = React.useState('');
+
+    // Open the rewrite dialogue for a specific chapter.
+    const openRewriteDialogue = React.useCallback(
+        (chapterIndex: number, previousRevisionCount?: number) => {
+            setRewriteContextInput('');
+            setRewriteState({ isOpen: true, chapterIndex, previousRevisionCount });
+        },
+        []
+    );
+
+    // Close the rewrite dialogue without submitting.
+    const closeRewriteDialogue = React.useCallback(() => {
+        setRewriteState((prev) => ({ ...prev, isOpen: false }));
+    }, []);
+
+    // Submit the rewrite request.
+    const handleRewrite = React.useCallback(
+        async (chapterIndex: number, rewriteContext: string, previousRevisionCount?: number) => {
+            if (!selected?.storyId || !rewriteContext.trim()) return;
+            try {
+                await rewriteChapter(store.config.baseUrl, selected.storyId, chapterIndex, rewriteContext.trim());
+                // Mark as processing so the tab chip shows the badge.
+                setStore((prev) => ({
+                    ...prev,
+                    records: prev.records.map((e) =>
+                        e.id === selected.id ? { ...e, isProcessing: true, error: '' } : e
+                    )
+                }));
+                // Re-use the reExpandState to trigger the polling effect.
+                // The polling logic is generic — it watches for revision changes.
+                setReExpandState({ chapterIndex, previousRevisionCount });
+                setRewriteState({ isOpen: false, chapterIndex: -1 });
+            } catch (err: any) {
+                setStore((prev) => ({
+                    ...prev,
+                    records: prev.records.map((e) =>
+                        e.id === selected.id
+                            ? { ...e, isProcessing: false, error: err.message || 'Rewrite failed' }
+                            : e
+                    )
+                }));
+                setRewriteState((prev) => ({ ...prev, isOpen: false }));
+            }
+        },
+        [selected, store.config.baseUrl, setStore]
+    );
+
     // Polling effect.
     React.useEffect(() => {
         if (!selected || !selected.storyId) {
@@ -965,6 +1098,17 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 revisions={ch.revisions ?? []}
                                 activeIndex={activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1}
                                 onSelect={(idx) => setActiveRevisions((prev) => ({ ...prev, [i]: idx }))}
+                                dropdownActions={
+                                    <ChapterActionButton
+                                        onClick={() =>
+                                            openRewriteDialogue(ch.chapterIndex, ch.revisions?.length)
+                                        }
+                                        title="Rewrite chapter with custom context"
+                                        data-testid={`chapter-${i}-rewrite`}
+                                    >
+                                        <RewriteIcon />
+                                    </ChapterActionButton>
+                                }
                                 actions={
                                     <>
                                         <ChapterActionButton
@@ -1050,6 +1194,64 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         <ExtendIcon />
                     </ActionButton>
                 </ActionBar>
+            )}
+
+            {/* Rewrite dialogue modal — shown when rewriteState.isOpen is true */}
+            {rewriteState.isOpen && (
+                <RewriteOverlay onClick={closeRewriteDialogue}>
+                    <RewriteDialog onClick={(e) => e.stopPropagation()}>
+                        <RewriteDialogTitle>
+                            Rewrite Chapter {rewriteState.chapterIndex + 1}
+                        </RewriteDialogTitle>
+                        <p
+                            style={{
+                                margin: '0 0 12px 0',
+                                fontSize: theme.fontSize.sm,
+                                color: theme.textMuted,
+                                lineHeight: 1.5
+                            }}
+                        >
+                            Provide instructions for how this chapter should be rewritten.
+                            The full story summary will be used as context.
+                        </p>
+                        <RewriteTextarea
+                            value={rewriteContextInput}
+                            onChange={(e) => setRewriteContextInput(e.target.value)}
+                            placeholder="e.g. Make the scene more dramatic, add more tension, slow down the pacing..."
+                            autoFocus
+                            data-testid="rewrite-context-input"
+                        />
+                        <RewriteDialogActions>
+                            <ActionButton
+                                onClick={closeRewriteDialogue}
+                                data-testid="rewrite-cancel"
+                                style={{ pointerEvents: 'auto' }}
+                            >
+                                Cancel
+                            </ActionButton>
+                            <ActionButton
+                                onClick={() =>
+                                    handleRewrite(
+                                        rewriteState.chapterIndex,
+                                        rewriteContextInput,
+                                        rewriteState.previousRevisionCount
+                                    )
+                                }
+                                disabled={!rewriteContextInput.trim()}
+                                data-testid="rewrite-submit"
+                                style={{
+                                    pointerEvents: 'auto',
+                                    backgroundColor: rewriteContextInput.trim() ? theme.accent : undefined,
+                                    color: rewriteContextInput.trim() ? '#fff' : undefined,
+                                    borderColor: rewriteContextInput.trim() ? theme.accent : undefined,
+                                    opacity: rewriteContextInput.trim() ? 1 : 0.5
+                                }}
+                            >
+                                Rewrite
+                            </ActionButton>
+                        </RewriteDialogActions>
+                    </RewriteDialog>
+                </RewriteOverlay>
             )}
         </ContentColumn>
     );

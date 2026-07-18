@@ -23,12 +23,15 @@
 //       See generation-list-stories.ts.
 //
 //   - PATCH /v1/storyboard/generations/:storyId
-//       body: { storyName?: string, expandChapterIndex?: number }
-//       returns: { storyId, storyName?, expandChapterIndex?, chapterNumber?, title?, message }
-//       behavior: Updates story metadata (e.g. storyName) and/or triggers
-//       fire-and-forget re-expansion of a single chapter. When expandChapterIndex is
-//       provided, the server reads the chapter-XXX.json payload to recover the
-//       conversation context, then calls the LLM to regenerate.
+//       body: { storyName?: string, expandChapterIndex?: number,
+//               rewriteChapter?: number, rewriteContext?: string }
+//       returns: { storyId, storyName?, expandChapterIndex?, rewriteChapter?,
+//                  chapterNumber?, title?, message }
+//       behavior: Updates story metadata (e.g. storyName), triggers
+//       fire-and-forget re-expansion of a single chapter (expandChapterIndex),
+//       or rewrites a chapter with user-provided context (rewriteChapter +
+//       rewriteContext). expandChapterIndex chains to subsequent pending
+//       chapters; rewriteChapter only rewrites the targeted chapter.
 //       See generation-update-chapter.ts.
 //
 // `pollStoryData` repeatedly hits GET until a stop condition is met:
@@ -353,6 +356,45 @@ export async function updateChapter(
     }
 
     return (await response.json()) as UpdateChapterResponse;
+}
+
+// Rewrite a chapter via PATCH with user-provided context. Unlike re-expansion,
+// rewrite uses the full story summary context + user's rewriteContext as the
+// expansion prompt. Only rewrites the single targeted chapter (no chain).
+// Throws on network failure or non-200 response.
+export type RewriteChapterResponse = {
+    storyId: string;
+    rewriteChapter: number;
+    chapterNumber: string;
+    title: string;
+    message: string;
+};
+
+export async function rewriteChapter(
+    baseUrl: string,
+    storyId: string,
+    chapterIndex: number,
+    rewriteContext: string
+): Promise<RewriteChapterResponse> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rewriteChapter: chapterIndex, rewriteContext })
+    });
+
+    if (!response.ok) {
+        let message = `Failed to rewrite chapter (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as RewriteChapterResponse;
 }
 
 // Update story metadata via PATCH. Accepts any writable field (storyName, etc.)
