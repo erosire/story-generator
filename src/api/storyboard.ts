@@ -374,13 +374,18 @@ export async function rewriteChapter(
     baseUrl: string,
     storyId: string,
     chapterIndex: number,
-    rewriteContext: string
+    rewriteContext: string,
+    rewriteRevisionIndex?: number
 ): Promise<RewriteChapterResponse> {
     const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    const body: Record<string, unknown> = { rewriteChapter: chapterIndex, rewriteContext };
+    if (rewriteRevisionIndex !== undefined) {
+        body.rewriteRevisionIndex = rewriteRevisionIndex;
+    }
     const response = await fetch(url, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rewriteChapter: chapterIndex, rewriteContext })
+        body: JSON.stringify(body)
     });
 
     if (!response.ok) {

@@ -808,15 +808,16 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         isOpen: boolean;
         chapterIndex: number;
         previousRevisionCount?: number;
+        rewriteRevisionIndex?: number;
     }>({ isOpen: false, chapterIndex: -1 });
 
     const [rewriteContextInput, setRewriteContextInput] = React.useState('');
 
     // Open the rewrite dialogue for a specific chapter.
     const openRewriteDialogue = React.useCallback(
-        (chapterIndex: number, previousRevisionCount?: number) => {
+        (chapterIndex: number, previousRevisionCount?: number, revisionIndex?: number) => {
             setRewriteContextInput('');
-            setRewriteState({ isOpen: true, chapterIndex, previousRevisionCount });
+            setRewriteState({ isOpen: true, chapterIndex, previousRevisionCount, rewriteRevisionIndex: revisionIndex });
         },
         []
     );
@@ -828,10 +829,10 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
     // Submit the rewrite request.
     const handleRewrite = React.useCallback(
-        async (chapterIndex: number, rewriteContext: string, previousRevisionCount?: number) => {
+        async (chapterIndex: number, rewriteContext: string, previousRevisionCount?: number, rewriteRevisionIndex?: number) => {
             if (!selected?.storyId || !rewriteContext.trim()) return;
             try {
-                await rewriteChapter(store.config.baseUrl, selected.storyId, chapterIndex, rewriteContext.trim());
+                await rewriteChapter(store.config.baseUrl, selected.storyId, chapterIndex, rewriteContext.trim(), rewriteRevisionIndex);
                 // Mark as processing so the tab chip shows the badge.
                 setStore((prev) => ({
                     ...prev,
@@ -1101,7 +1102,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 dropdownActions={
                                     <ChapterActionButton
                                         onClick={() =>
-                                            openRewriteDialogue(ch.chapterIndex, ch.revisions?.length)
+                                            openRewriteDialogue(ch.chapterIndex, ch.revisions?.length, activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1)
                                         }
                                         title="Rewrite chapter with custom context"
                                         data-testid={`chapter-${i}-rewrite`}
@@ -1234,7 +1235,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                     handleRewrite(
                                         rewriteState.chapterIndex,
                                         rewriteContextInput,
-                                        rewriteState.previousRevisionCount
+                                        rewriteState.previousRevisionCount,
+                                        rewriteState.rewriteRevisionIndex
                                     )
                                 }
                                 disabled={!rewriteContextInput.trim()}
