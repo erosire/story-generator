@@ -154,10 +154,7 @@ const RewriteTextarea = styled('textarea', {
     outline: 'none',
     fontFamily: 'inherit',
     lineHeight: 1.5,
-    boxSizing: 'border-box' as const,
-    '&:focus': {
-        borderColor: theme.accent
-    }
+    boxSizing: 'border-box' as const
 });
 
 const RewriteDialogActions = styled('div', {
@@ -1225,6 +1222,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 e.target.setSelectionRange(len, len);
                             }}
                             data-testid="rewrite-context-input"
+                            className="sg-input"
                         />
                         <RewriteDialogActions>
                             <ActionButton
