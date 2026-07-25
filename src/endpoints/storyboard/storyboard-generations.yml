@@ -1,0 +1,567 @@
+openapi: 3.0.3
+info:
+  title: Storyboard Generations API
+  description: >-
+    API for creating and reading AI-generated storyboard stories. POST to create
+    a new story (runs in background), GET with storyId="list" to retrieve all
+    story IDs, or GET with a specific storyId to retrieve a unified list of
+    chapters. Each chapter includes its plotpoints and expansion status —
+    expanded chapters include the full content, while pending chapters show only
+    plotpoints with expanded=false. Story metadata (storyline, chapterCount,
+    createdAt) is also returned. PATCH to update story metadata (e.g. storyName)
+    and/or re-expand a specific chapter using the stored LLM context.
+  version: 1.8.0
+servers:
+  - url: http://127.0.0.1:5000
+    description: Local development server
+paths:
+  /v1/storyboard/generations/{storyId}:
+    post:
+      operationId: createNewStory
+      summary: Create a new story
+      description: >-
+        Starts background story generation. Returns the storyId immediately while
+        generation continues asynchronously. The story is stored at
+        temporary/database/storyboard/{storyId}/ with plotpoint.md and a chapter/
+        subdirectory. The chapter/ directory contains chapter-XXX.md (readable
+        markdown) and chapter-XXX.json (full expansion payload) for each
+        generated chapter.
+      tags:
+        - Storyboard
+      parameters:
+        - name: storyId
+          in: path
+          required: true
+          description: Unique identifier for the story (UUID recommended for easier manipulation)
+          schema:
+            type: string
+            example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStoryRequest'
+            examples:
+              default:
+                summary: Create a 5-chapter sci-fi story
+                value:
+                  storyline: A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.
+                  chapterCount: 5
+      responses:
+        '200':
+          description: Story generation started successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateStoryResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: getStoryOrList
+      summary: List all stories or get a specific story
+      description: >-
+        Dual-purpose endpoint. Use storyId="list" to retrieve all story IDs
+        without detailed data. Use any other storyId (e.g. a UUID) to retrieve
+        the plotlines, generated chapters, and per-chapter expansion payloads
+        for that specific story.
+      tags:
+        - Storyboard
+      parameters:
+        - name: storyId
+          in: path
+          required: true
+          description: >-
+            Set to "list" to return all story IDs, or provide a specific story
+            identifier (UUID) to retrieve its data.
+          schema:
+            type: string
+            enum:
+              - list
+          examples:
+            list:
+              summary: List all stories
+              value: list
+            specific:
+              summary: Get a specific story
+              value: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+      responses:
+        '200':
+          description: >-
+            When storyId is "list", returns an array of story IDs. When storyId
+            is a specific UUID, returns the story data with plotlines, chapters,
+            and per-chapter expansion payloads.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/StoryListResponse'
+                  - $ref: '#/components/schemas/StoryDataResponse'
+              examples:
+                list:
+                  summary: List of all stories
+                  value:
+                    stories:
+                      - storyId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                        chapterRequested: 5
+                        chapterCompleted: 5
+                        createdDate: '2026-07-01T10:00:00.000Z'
+                        status: completed
+                      - storyId: b2c3d4e5-f6a7-8901-bcde-f12345678901
+                        storyName: My Sci-Fi Story
+                        chapterRequested: 10
+                        chapterCompleted: 3
+                        createdDate: '2026-07-02T14:30:00.000Z'
+                        status: generating
+                storyData:
+                  summary: Detailed story data
+                  value:
+                    chapters:
+                      - chapterNumber: '1'
+                        chapterIndex: 0
+                        title: The Arrival
+                        plotpoints:
+                          - Crew lands on Mars
+                          - Discovery of the artifact
+                        expanded: true
+                        content: "## The Arrival\n\nThe shuttle descended..."
+                        length: 5200
+                        generationTimeMs: 45230
+                      - chapterNumber: '2'
+                        chapterIndex: 1
+                        title: The Signal
+                        plotpoints:
+                          - Artifact begins transmitting
+                          - Tension rises
+                        expanded: false
+                    meta:
+                      storyline: A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.
+                      chapterCount: 2
+                      createdAt: '2026-07-01T10:00:00.000Z'
+        '404':
+          description: Story not found (only when storyId is not "list")
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteStory
+      summary: Delete a story
+      description: >-
+        Permanently deletes a story and all its data (plotpoints, chapters,
+        metadata) by removing the entire temporary/database/storyboard/{storyId}/
+        folder. This also aborts any in-progress generation for that story.
+      tags:
+        - Storyboard
+      parameters:
+        - name: storyId
+          in: path
+          required: true
+          description: The story identifier to delete
+          schema:
+            type: string
+            example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+      responses:
+        '200':
+          description: Story deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteStoryResponse'
+        '400':
+          description: Validation error (missing storyId)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Story not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      operationId: patchStory
+      summary: Update story metadata, re-expand, or rewrite a chapter
+      description: >-
+        Updates story metadata (e.g. storyName), re-expands a specific chapter
+        (expandChapterIndex), or rewrites a chapter with user-provided context
+        (rewriteChapter + rewriteContext). When storyName is provided, the
+        story's plotpoint.json is updated immediately. expandChapterIndex
+        re-expands the chapter and chains to subsequent pending chapters.
+        rewriteChapter uses the full story summary + user instructions to
+        rewrite only the targeted chapter (no chain). expandChapterIndex and
+        rewriteChapter are mutually exclusive.
+      tags:
+        - Storyboard
+      parameters:
+        - name: storyId
+          in: path
+          required: true
+          description: The story identifier
+          schema:
+            type: string
+            example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchStoryRequest'
+            examples:
+              rename:
+                summary: Rename a story
+                value:
+                  storyName: My Renamed Story
+              re-expand:
+                summary: Re-expand chapter at index 2
+                value:
+                  expandChapterIndex: 2
+              rewrite:
+                summary: Rewrite chapter at index 2 with custom context
+                value:
+                  rewriteChapter: 2
+                  rewriteContext: Make the scene more dramatic and add more tension
+              both:
+                summary: Rename and re-expand
+                value:
+                  storyName: My Renamed Story
+                  expandChapterIndex: 2
+      responses:
+        '200':
+          description: Story updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatchStoryResponse'
+        '400':
+          description: Validation error (no valid fields provided or invalid value)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Story or chapter not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Chapter payload is missing required context for re-expansion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    CreateStoryRequest:
+      type: object
+      required:
+        - storyline
+        - chapterCount
+      properties:
+        storyline:
+          type: string
+          description: >-
+            The story prompt / outline that drives the AI generation. This is
+            passed as the user message to the LLM.
+          example: A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.
+        chapterCount:
+          type: integer
+          minimum: 1
+          description: Number of chapters to generate
+          example: 5
+    CreateStoryResponse:
+      type: object
+      properties:
+        storyId:
+          type: string
+          description: The story identifier matching the one passed in the path
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+    DeleteStoryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the deletion was successful
+          example: true
+        storyId:
+          type: string
+          description: The story identifier that was deleted
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+    StoryDataResponse:
+      type: object
+      properties:
+        chapters:
+          type: array
+          description: >-
+            Unified array of all chapters for the story, sorted by chapter number.
+            Each chapter includes its plotpoints and expansion status. Chapters
+            that have been expanded include the full content, word count, and
+            generation time. Chapters that have not yet been expanded include only
+            their plotpoints with expanded=false.
+          items:
+            $ref: '#/components/schemas/UnifiedChapter'
+        meta:
+          oneOf:
+            - $ref: '#/components/schemas/StoryMeta'
+            - type: 'null'
+          description: >-
+            Story metadata from story.json (storyline, chapterCount, createdAt).
+            Null if story.json does not exist or is corrupted.
+    UnifiedChapter:
+      type: object
+      description: >-
+        A unified chapter entry that combines the plotpoints (from plotpoint.json)
+        with the expansion data (from chapter-XXX.md/json). Chapters that have not
+        been expanded yet have expanded=false and omit content/length/generationTimeMs.
+      required:
+        - chapterNumber
+        - chapterIndex
+        - title
+        - plotpoints
+        - expanded
+        - canReExpand
+      properties:
+        chapterNumber:
+          type: string
+          description: The chapter number as assigned by the LLM
+          example: '1'
+        chapterIndex:
+          type: integer
+          description: Zero-based index of this chapter
+          example: 0
+        title:
+          type: string
+          description: The chapter title
+          example: The Arrival
+        plotpoints:
+          type: array
+          description: The plotpoints for this chapter
+          items:
+            type: string
+          example:
+            - Crew lands on Mars
+            - Discovery of the artifact
+        expanded:
+          type: boolean
+          description: >-
+            Whether this chapter has been expanded by the LLM. When true,
+            content, length, and generationTimeMs are present. When false,
+            only plotpoints are available and the chapter is still pending expansion.
+          example: true
+        canReExpand:
+          type: boolean
+          description: >-
+            Whether this chapter can be re-expanded via PATCH. True when the
+            chapter-XXX.json payload file exists, which stores the LLM
+            conversation context needed for re-expansion. A chapter may have
+            expanded=true but canReExpand=false if the .json payload is missing.
+          example: true
+        content:
+          type: string
+          description: >-
+            The full markdown content of the expanded chapter (includes the ##
+            title heading). Only present when expanded is true.
+          example: >-
+            ## The Arrival
+
+            The shuttle descended through the rust-colored atmosphere...
+        length:
+          type: integer
+          description: Word count of the expanded chapter content. Only present when expanded is true.
+          example: 5200
+        generationTimeMs:
+          type: integer
+          description: >-
+            Time in milliseconds taken by the LLM to generate this chapter.
+            Only present when expanded is true.
+          example: 45230
+        history:
+          type: array
+          description: >-
+            Array of previous expansions for this chapter, ordered oldest first.
+            Each entry preserves the content and metadata from a past expansion.
+            Only present when expanded is true. Empty array on first expansion.
+          items:
+            $ref: '#/components/schemas/ExpansionHistoryEntry'
+    ExpansionHistoryEntry:
+      type: object
+      description: A single previous expansion of a chapter.
+      properties:
+        title:
+          type: string
+          description: The chapter title at the time of this expansion.
+          example: The Arrival
+        content:
+          type: string
+          description: The full markdown content of this past expansion.
+          example: "## The Arrival\n\nThe shuttle descended..."
+        generationTimeMs:
+          type: integer
+          description: Time in milliseconds taken by the LLM for this expansion.
+          example: 42000
+        wordCount:
+          type: integer
+          description: Word count of the content at the time of this expansion.
+          example: 5100
+    StoryMeta:
+      type: object
+      description: Story metadata stored in story.json
+      properties:
+        storyId:
+          type: string
+          description: The story identifier
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        storyline:
+          type: string
+          description: The original storyline prompt
+          example: A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.
+        chapterCount:
+          type: integer
+          description: Number of chapters requested
+          example: 5
+        createdAt:
+          type: string
+          description: ISO 8601 timestamp of when the story was created
+          example: '2026-07-01T10:00:00.000Z'
+    StoryListResponse:
+      type: object
+      properties:
+        stories:
+          type: array
+          description: >-
+            Array of story metadata objects. Each entry includes story
+            identifiers and summary information (chapterRequested,
+            chapterCompleted, createdDate, status) without detailed chapter
+            data. Use GET with a specific storyId to retrieve chapter data.
+          items:
+            $ref: '#/components/schemas/StoryListEntry'
+          example:
+            - storyId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              chapterRequested: 5
+              chapterCompleted: 5
+              createdDate: '2026-07-01T10:00:00.000Z'
+              status: completed
+            - storyId: b2c3d4e5-f6a7-8901-bcde-f12345678901
+              storyName: My Sci-Fi Story
+              chapterRequested: 10
+              chapterCompleted: 3
+              createdDate: '2026-07-02T14:30:00.000Z'
+              status: generating
+    StoryListEntry:
+      type: object
+      description: >-
+        Minimal story metadata returned by the /list endpoint. Maps from
+        plotpoint.json fields: createdAt → createdDate, chapterCount →
+        chapterRequested. chapterCompleted is derived by counting expanded
+        chapter files. status is derived from plotpoint.json status + chapter
+        completion (all expanded → 'completed', otherwise 'generating' or
+        'failed').
+      properties:
+        storyId:
+          type: string
+          description: The story identifier (directory name)
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        storyName:
+          type: string
+          description: Optional human-readable name for the story
+          example: My Sci-Fi Story
+        chapterRequested:
+          type: integer
+          description: Number of chapters requested for generation
+          example: 5
+        chapterCompleted:
+          type: integer
+          description: Number of chapters that have been expanded (have content)
+          example: 3
+        createdDate:
+          type: string
+          description: ISO 8601 timestamp of when the story was created
+          example: '2026-07-01T10:00:00.000Z'
+        status:
+          type: string
+          description: >-
+            Generation status derived from plotpoint.json + chapter completion.
+            'generating' when still in progress, 'completed' when all chapters
+            are expanded, 'failed' when generation encountered an error.
+          enum:
+            - generating
+            - completed
+            - failed
+          example: completed
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: storyline is required
+    PatchStoryRequest:
+      type: object
+      properties:
+        storyName:
+          type: string
+          description: >-
+            New name for the story. Updates storyName in plotpoint.json.
+            Must be a non-empty string if provided.
+          example: My Renamed Story
+        expandChapterIndex:
+          type: integer
+          minimum: 0
+          description: >-
+            Zero-based index of the chapter to re-expand. Must correspond to
+            an existing chapter that has a chapter-XXX.json payload. Chains to
+            subsequent pending chapters. Mutually exclusive with rewriteChapter.
+          example: 2
+        rewriteChapter:
+          type: integer
+          minimum: 0
+          description: >-
+            Zero-based index of the chapter to rewrite. Uses the full story
+            summary context + rewriteContext as the expansion prompt. Only
+            rewrites the targeted chapter (no chain). Mutually exclusive with
+            expandChapterIndex. Requires rewriteContext.
+          example: 2
+        rewriteContext:
+          type: string
+          description: >-
+            User-provided rewrite instructions for the chapter. Required when
+            rewriteChapter is provided. Combined with preset rewrite prompt
+            to form the full expansion request.
+          example: Make the scene more dramatic and add more tension
+    PatchStoryResponse:
+      type: object
+      properties:
+        storyId:
+          type: string
+          description: The story identifier
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        storyName:
+          type: string
+          description: The updated story name (if storyName was provided in the request)
+          example: My Renamed Story
+        expandChapterIndex:
+          type: integer
+          description: The zero-based index of the chapter being re-expanded (if expandChapterIndex was provided)
+          example: 2
+        rewriteChapter:
+          type: integer
+          description: The zero-based index of the chapter being rewritten (if rewriteChapter was provided)
+          example: 2
+        chapterNumber:
+          type: string
+          description: The chapter number as assigned by the LLM (if expandChapterIndex or rewriteChapter was provided)
+          example: '3'
+        title:
+          type: string
+          description: The current title of the chapter being re-expanded or rewritten
+          example: The Discovery
+        message:
+          type: string
+          description: Human-readable status message
+          example: Chapter 2 re-expansion started
