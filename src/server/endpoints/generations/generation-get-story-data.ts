@@ -1,12 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
+import { resolveProjectRoot, resolveStoryboardDir } from './story-utils';
+import { DATABASE_BASE_DIR } from './generation-config';
 
 export const generationGetStoryData = asHandlerMethod(async (_, parameters) => {
-    // Resolve project root from this file's location:
-    // generations -> storyboard -> endpoints -> service -> runtime -> root (5 levels up)
-    // This works regardless of process.cwd() (server vs test contexts)
-    const projectRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
+    const projectRoot = resolveProjectRoot();
 
     // Get the storyId from the path parameters
     const storyId = parameters.path.storyId;
@@ -23,7 +22,7 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters) => {
     // temporary/database/storyboard/). No chapter/plotlines data is included —
     // callers must issue a second GET with a specific storyId for details.
     if (storyId === 'list') {
-        const storyboardRoot = path.join(projectRoot, 'temporary', 'database', 'storyboard');
+        const storyboardRoot = path.join(projectRoot, DATABASE_BASE_DIR);
         let stories: string[] = [];
         if (fs.existsSync(storyboardRoot)) {
             // readdirSync with { withFileTypes: true } returns Dirent objects; we
@@ -41,7 +40,7 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters) => {
     }
 
     // Resolve the storyboard directory for a specific storyId
-    const databaseDir = path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);
+    const databaseDir = resolveStoryboardDir(storyId);
 
     if (!fs.existsSync(databaseDir)) {
         return {

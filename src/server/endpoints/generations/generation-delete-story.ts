@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
+import { resolveStoryboardDir } from './story-utils';
 
 export const generationDeleteStory = asHandlerMethod(async (_, parameters) => {
     const { path: pathParams } = parameters;
@@ -14,9 +15,7 @@ export const generationDeleteStory = asHandlerMethod(async (_, parameters) => {
         };
     }
 
-    // Resolve project root from this file's location
-    const projectRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
-    const databaseDir = path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);
+    const databaseDir = resolveStoryboardDir(storyId);
 
     if (!fs.existsSync(databaseDir)) {
         return {

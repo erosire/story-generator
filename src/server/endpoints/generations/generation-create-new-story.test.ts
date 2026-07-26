@@ -99,10 +99,10 @@ vi.mock('@presource/core', async (importOriginal) => {
 import { CLIENT } from './generation-config';
 import { generationCreateNewStory } from './generation-create-new-story';
 import { MIN_WORDS_PER_CHAPTER, EXPAND_TIMEOUT_MS } from './generation-config';
+import { resolveProjectRoot } from './story-utils';
 
-// Resolve project root from this file's location:
-// generations -> storyboard -> endpoints -> service -> runtime -> root (5 levels up)
-const projectRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
+// Use the same resolution as production code (single source of truth)
+const projectRoot = resolveProjectRoot();
 
 // Helper to resolve the storyboard directory for a given storyId
 const getStoryboardDir = (storyId: string) => path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);

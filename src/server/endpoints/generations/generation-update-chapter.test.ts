@@ -54,10 +54,10 @@ vi.mock('@runtime/data/prompts', () => ({
 // Import handler AFTER mocks are set up
 import { CLIENT } from './generation-config';
 import { generationUpdateChapter } from './generation-update-chapter';
+import { resolveProjectRoot } from './story-utils';
 
-// Resolve project root from this file's location:
-// generations -> storyboard -> endpoints -> service -> runtime -> root (5 levels up)
-const projectRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
+// Use the same resolution as production code (single source of truth)
+const projectRoot = resolveProjectRoot();
 
 // Helper to resolve the storyboard directory for a given storyId
 const getStoryboardDir = (storyId: string) => path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);

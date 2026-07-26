@@ -1,10 +1,16 @@
+/**
+ * @vitest-environment node
+ * This test imports resolveProjectRoot from story-utils which transitively
+ * imports @runtime/secret/private — that module creates an OpenAI client
+ * that throws in jsdom browser-like environments.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import { generationGetStoryData } from './generation-get-story-data';
+import { resolveProjectRoot } from './story-utils';
 
-// Resolve project root from this file's location:
-// generations -> storyboard -> endpoints -> service -> runtime -> root (5 levels up)
-const projectRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
+// Use the same resolution as production code (single source of truth)
+const projectRoot = resolveProjectRoot();
 
 // Helper to resolve the storyboard directory for a given storyId
 const getStoryboardDir = (storyId: string) => path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);

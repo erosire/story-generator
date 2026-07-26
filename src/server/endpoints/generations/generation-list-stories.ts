@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
+import { resolveProjectRoot } from './story-utils';
+import { DATABASE_BASE_DIR } from './generation-config';
 
 // Story metadata shape returned by the /list endpoint.
 // Field names differ from what is stored in plotpoint.json:
@@ -73,13 +75,10 @@ const deriveStatus = (
 // Each entry includes the story metadata (chapterRequested, chapterCompleted, createdDate, status)
 // from plotpoint.json if available, otherwise falls back to just the storyId
 export const generationListStories = asHandlerMethod(async (_, parameters) => {
-    // Resolve project root from this file's location:
-    // generations -> storyboard -> endpoints -> service -> runtime -> root (5 levels up)
-    // This works regardless of process.cwd() (server vs test contexts)
-    const projectRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
+    const projectRoot = resolveProjectRoot();
 
     // Resolve the storyboard database directory
-    const databaseDir = path.join(projectRoot, 'temporary', 'database', 'storyboard');
+    const databaseDir = path.join(projectRoot, DATABASE_BASE_DIR);
 
     // Check if the storyboard directory exists
     if (!fs.existsSync(databaseDir)) {

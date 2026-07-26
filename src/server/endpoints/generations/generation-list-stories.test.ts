@@ -1,13 +1,19 @@
+/**
+ * @vitest-environment node
+ * This test imports resolveProjectRoot from story-utils which transitively
+ * imports @runtime/secret/private — that module creates an OpenAI client
+ * that throws in jsdom browser-like environments.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, afterAll } from 'vitest';
 import { generationListStories } from './generation-list-stories';
+import { resolveProjectRoot } from './story-utils';
+import { DATABASE_BASE_DIR } from './generation-config';
 
-// Helper to resolve the storyboard directory for a given storyId
-// This file is at: runtime/service/endpoints/storyboard/generations/
-// Project root is 5 levels up from __dirname
-const projectRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
-const getStoryboardDir = (storyId: string) => path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);
+// Use the same resolution as production code (single source of truth)
+const projectRoot = resolveProjectRoot();
+const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 
 // Mock context object (not used by the handler but required by the type)
 const mockContext = {} as any;
@@ -37,7 +43,7 @@ const writeChapterPayload = (storyDir: string, chapterNumber: number, expanded: 
     fs.writeFileSync(path.join(chapterDir, `chapter-${padded}.json`), JSON.stringify(payload, null, 2), 'utf-8');
 };
 
-describe('generationListStories', () => {
+describe('generationListStories', { timeout: 30_000 }, () => {
     // Track created test directories for cleanup
     const createdStoryIds: string[] = [];
 

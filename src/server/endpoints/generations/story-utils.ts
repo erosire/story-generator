@@ -52,7 +52,7 @@ export const callStructured = <T extends TSchema>(
  * Works regardless of process.cwd() (server vs test contexts).
  */
 export const resolveProjectRoot = (): string => {
-    return path.resolve(__dirname, '..', '..', '..', '..', '..');
+    return path.resolve(__dirname, '..', '..', '..', '..', '..', '..');
 };
 
 /**
