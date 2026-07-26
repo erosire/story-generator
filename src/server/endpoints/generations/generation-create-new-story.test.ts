@@ -98,14 +98,13 @@ vi.mock('@presource/core', async (importOriginal) => {
 // Import handler AND mock target AFTER mocks are set up
 import { CLIENT } from './generation-config';
 import { generationCreateNewStory } from './generation-create-new-story';
-import { MIN_WORDS_PER_CHAPTER, EXPAND_TIMEOUT_MS } from './generation-config';
-import { resolveProjectRoot } from './story-utils';
+import { MIN_WORDS_PER_CHAPTER, EXPAND_TIMEOUT_MS, DATABASE_BASE_DIR } from './generation-config';
 
-// Use the same resolution as production code (single source of truth)
-const projectRoot = resolveProjectRoot();
+// Use process.cwd() as the project root (service will pass this via variables)
+const projectRoot = process.cwd();
 
 // Helper to resolve the storyboard directory for a given storyId
-const getStoryboardDir = (storyId: string) => path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);
+const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 
 const TEST_STORYLINE = 'A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.';
 const TEST_CHAPTER_COUNT = 3;
@@ -152,7 +151,7 @@ describe('generationCreateNewStory', () => {
             chapterCount: TEST_CHAPTER_COUNT
         });
 
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
 
         // Should return the storyId that was passed in the path
         expect(result.status).toBe(200);
@@ -175,7 +174,7 @@ describe('generationCreateNewStory', () => {
             chapterCount: TEST_CHAPTER_COUNT
         });
 
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
         expect(result.status).toBe(200);
         expect(result.response.storyId).toBe(storyId);
 
@@ -251,7 +250,7 @@ describe('generationCreateNewStory', () => {
         // Empty body — storyline is missing
         const parameters = createMockParameters(storyId, {});
 
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
@@ -266,7 +265,7 @@ describe('generationCreateNewStory', () => {
             body: { storyline: TEST_STORYLINE, chapterCount: TEST_CHAPTER_COUNT }
         };
 
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
@@ -282,7 +281,7 @@ describe('generationCreateNewStory', () => {
             chapterCount: -1
         });
 
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
@@ -339,7 +338,7 @@ describe('generationCreateNewStory', () => {
         });
 
         // Handler returns immediately (200) — generation runs in background
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
         expect(result.status).toBe(200);
 
         // Let microtasks settle (plotpoint generation starts)
@@ -429,7 +428,7 @@ describe('generationCreateNewStory', () => {
             chapterCount: 1
         });
 
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
         expect(result.status).toBe(200);
 
         // Wait for background generation to complete
@@ -516,7 +515,7 @@ describe('generationCreateNewStory', () => {
             chapterCount: 3
         });
 
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
         expect(result.status).toBe(200);
 
         // Wait for the initial story to exhaust validation retries and fire retry
@@ -600,7 +599,7 @@ describe('generationCreateNewStory', () => {
             chapterCount: 3
         });
 
-        const result = await generationCreateNewStory(mockContext, parameters);
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
         expect(result.status).toBe(200);
 
         // Wait long enough for: original → retry-1 → retry-2 to all exhaust and fail

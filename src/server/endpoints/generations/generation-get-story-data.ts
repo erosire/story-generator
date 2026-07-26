@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
-import { resolveProjectRoot, resolveStoryboardDir } from './story-utils';
+import { resolveStoryboardDir } from './story-utils';
 import { DATABASE_BASE_DIR } from './generation-config';
 
-export const generationGetStoryData = asHandlerMethod(async (_, parameters) => {
-    const projectRoot = resolveProjectRoot();
+export const generationGetStoryData = asHandlerMethod(async (_, parameters, variables) => {
+    const { root: projectRoot } = variables;
 
     // Get the storyId from the path parameters
     const storyId = parameters.path.storyId;
@@ -40,7 +40,7 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters) => {
     }
 
     // Resolve the storyboard directory for a specific storyId
-    const databaseDir = resolveStoryboardDir(storyId);
+    const databaseDir = resolveStoryboardDir(projectRoot, storyId);
 
     if (!fs.existsSync(databaseDir)) {
         return {

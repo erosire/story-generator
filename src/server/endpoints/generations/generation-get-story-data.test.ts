@@ -1,19 +1,19 @@
 /**
  * @vitest-environment node
- * This test imports resolveProjectRoot from story-utils which transitively
- * imports @runtime/secret/private — that module creates an OpenAI client
- * that throws in jsdom browser-like environments.
+ * This test imports from story-utils which transitively imports @runtime/secret/private
+ * — that module creates an OpenAI client that throws in jsdom browser-like environments.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { generationGetStoryData } from './generation-get-story-data';
-import { resolveProjectRoot } from './story-utils';
+import { resolveStoryboardDir } from './story-utils';
+import { DATABASE_BASE_DIR } from './generation-config';
 
-// Use the same resolution as production code (single source of truth)
-const projectRoot = resolveProjectRoot();
+// Use process.cwd() as the project root (service will pass this via variables)
+const projectRoot = process.cwd();
 
 // Helper to resolve the storyboard directory for a given storyId
-const getStoryboardDir = (storyId: string) => path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);
+const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 
 // Mock context object (not used by the handler but required by the type)
 const mockContext = {} as any;
@@ -49,7 +49,7 @@ describe('generationGetStoryData', () => {
     it('should return 400 when storyId is missing', async () => {
         const parameters = { path: {}, query: {}, body: {} };
 
-        const result = await generationGetStoryData(mockContext, parameters);
+        const result = await generationGetStoryData(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
@@ -61,7 +61,7 @@ describe('generationGetStoryData', () => {
         createdStoryIds.push(nonexistentStoryId);
 
         const parameters = createMockParameters(nonexistentStoryId);
-        const result = await generationGetStoryData(mockContext, parameters);
+        const result = await generationGetStoryData(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(404);
         expect(result.response).toHaveProperty('error');
@@ -130,7 +130,7 @@ describe('generationGetStoryData', () => {
 
         // Call the handler directly
         const parameters = createMockParameters(storyId);
-        const result = await generationGetStoryData(mockContext, parameters);
+        const result = await generationGetStoryData(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
 
@@ -197,7 +197,7 @@ describe('generationGetStoryData', () => {
         // Do NOT create chapter/ directory or any .md/.json files
 
         const parameters = createMockParameters(storyId);
-        const result = await generationGetStoryData(mockContext, parameters);
+        const result = await generationGetStoryData(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response.chapters.length).toBe(2);
@@ -222,7 +222,7 @@ describe('generationGetStoryData', () => {
         fs.mkdirSync(emptyDir, { recursive: true });
 
         const parameters = createMockParameters(emptyStoryId);
-        const result = await generationGetStoryData(mockContext, parameters);
+        const result = await generationGetStoryData(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
 
@@ -246,7 +246,7 @@ describe('generationGetStoryData', () => {
         fs.mkdirSync(dirB, { recursive: true });
 
         const parameters = createMockParameters('list');
-        const result = await generationGetStoryData(mockContext, parameters);
+        const result = await generationGetStoryData(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response).toHaveProperty('stories');

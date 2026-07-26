@@ -23,12 +23,11 @@ import {
     expandChapter,
     readChapterPayload,
     readPlotpointData,
-    resolveProjectRoot,
     writeChapterFiles,
     writeChapterPayload
 } from './story-utils';
 
-export const generationUpdateChapter = asHandlerMethod(async (_, parameters) => {
+export const generationUpdateChapter = asHandlerMethod(async (_, parameters, variables) => {
     const { path: pathParams, body } = parameters;
 
     const storyId = pathParams.storyId;
@@ -41,7 +40,7 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters) => 
     }
 
     // Resolve the project root and story directory
-    const projectRoot = resolveProjectRoot();
+    const projectRoot = variables.root;
     const databaseDir = path.join(projectRoot, DATABASE_BASE_DIR, storyId);
     const chapterDir = path.join(databaseDir, 'chapter');
 

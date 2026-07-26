@@ -3,7 +3,7 @@ import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
 import { resolveStoryboardDir } from './story-utils';
 
-export const generationDeleteStory = asHandlerMethod(async (_, parameters) => {
+export const generationDeleteStory = asHandlerMethod(async (_, parameters, variables) => {
     const { path: pathParams } = parameters;
 
     const storyId = pathParams.storyId;
@@ -15,7 +15,7 @@ export const generationDeleteStory = asHandlerMethod(async (_, parameters) => {
         };
     }
 
-    const databaseDir = resolveStoryboardDir(storyId);
+    const databaseDir = resolveStoryboardDir(variables.root, storyId);
 
     if (!fs.existsSync(databaseDir)) {
         return {

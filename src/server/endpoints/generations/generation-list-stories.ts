@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
-import { resolveProjectRoot } from './story-utils';
 import { DATABASE_BASE_DIR } from './generation-config';
 
 // Story metadata shape returned by the /list endpoint.
@@ -74,8 +73,8 @@ const deriveStatus = (
 // List all stories in the storyboard database directory
 // Each entry includes the story metadata (chapterRequested, chapterCompleted, createdDate, status)
 // from plotpoint.json if available, otherwise falls back to just the storyId
-export const generationListStories = asHandlerMethod(async (_, parameters) => {
-    const projectRoot = resolveProjectRoot();
+export const generationListStories = asHandlerMethod(async (_, parameters, variables) => {
+    const projectRoot = variables.root;
 
     // Resolve the storyboard database directory
     const databaseDir = path.join(projectRoot, DATABASE_BASE_DIR);

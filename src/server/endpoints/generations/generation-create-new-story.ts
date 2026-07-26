@@ -20,7 +20,6 @@ import {
     callStructured,
     createStoryClient,
     expandChapter,
-    resolveProjectRoot,
     writeChapterFiles,
     writeChapterPayload
 } from './story-utils';
@@ -33,15 +32,13 @@ const generateStory = async (options: {
     storyline: string;
     chapterCount: number;
     attempt?: number;
+    root: string;
 }) => {
-    const { storyId, storyName, storyline, chapterCount } = options;
+    const { storyId, storyName, storyline, chapterCount, root: projectRoot } = options;
     const attempt = options.attempt ?? 1;
     // Create a fresh client for each generation to prevent memory leaks
     const client = createStoryClient();
 
-    // Resolve project root from this file's location: generations/storyboard/endpoints/service/runtime -> root
-    // This works regardless of process.cwd() (server vs test contexts)
-    const projectRoot = resolveProjectRoot();
     const databaseDir = path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 
     // Helper: check if story folder still exists (user may have deleted the story)
@@ -274,7 +271,8 @@ const generateStory = async (options: {
                 storyName: retryStoryName,
                 storyline,
                 chapterCount,
-                attempt: attempt + 1
+                attempt: attempt + 1,
+                root: projectRoot
             }).catch((err) => {
                 console.error(`Retry story generation failed for ${retryStoryId}:`, err);
             });
@@ -655,8 +653,9 @@ const generateStory = async (options: {
     console.log(`Story generation complete for storyId: ${storyId}`);
 };
 
-export const generationCreateNewStory = asHandlerMethod(async (_, parameters) => {
+export const generationCreateNewStory = asHandlerMethod(async (_, parameters, variables) => {
     const { path, body } = parameters;
+    const { root: projectRoot } = variables;
 
     // Get the storyId from the path parameters
     const storyId = path.storyId;
@@ -690,7 +689,7 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters) =>
         }
 
         // Start fork in the background (fire-and-forget)
-        forkStory({ newStoryId: storyId, sourceStoryId, chapterIndex }).catch((err) => {
+        forkStory({ newStoryId: storyId, sourceStoryId, chapterIndex, root: projectRoot }).catch((err) => {
             console.error(`Story fork failed for storyId ${storyId}:`, err);
         });
 
@@ -722,7 +721,7 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters) =>
     const storyName = storyline.split('\n')[0].trim().slice(0, 120) || storyline.slice(0, 120);
 
     // Start story generation in the background (fire-and-forget)
-    generateStory({ storyId, storyName, storyline, chapterCount }).catch((err) => {
+    generateStory({ storyId, storyName, storyline, chapterCount, root: projectRoot }).catch((err) => {
         console.error(`Story generation failed for storyId ${storyId}:`, err);
     });
 

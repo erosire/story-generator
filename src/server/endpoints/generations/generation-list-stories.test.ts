@@ -1,18 +1,16 @@
 /**
  * @vitest-environment node
- * This test imports resolveProjectRoot from story-utils which transitively
- * imports @runtime/secret/private — that module creates an OpenAI client
- * that throws in jsdom browser-like environments.
+ * This test imports from story-utils which transitively imports @runtime/secret/private
+ * — that module creates an OpenAI client that throws in jsdom browser-like environments.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, afterAll } from 'vitest';
 import { generationListStories } from './generation-list-stories';
-import { resolveProjectRoot } from './story-utils';
 import { DATABASE_BASE_DIR } from './generation-config';
 
-// Use the same resolution as production code (single source of truth)
-const projectRoot = resolveProjectRoot();
+// Use process.cwd() as the project root (service will pass this via variables)
+const projectRoot = process.cwd();
 const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 
 // Mock context object (not used by the handler but required by the type)
@@ -97,7 +95,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         );
 
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response).toHaveProperty('stories');
@@ -145,7 +143,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         fs.writeFileSync(path.join(dir, 'plotpoint.md'), '> Legacy chapter\n\n- Legacy plotpoint', 'utf-8');
 
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
 
@@ -162,7 +160,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
 
     it('should return an empty list when no stories exist', async () => {
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response).toHaveProperty('stories');
@@ -185,7 +183,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         fs.writeFileSync(path.join(chapterDir, 'chapter-001.md'), '## Chapter 1\n\nContent', 'utf-8');
 
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response).toHaveProperty('stories');
@@ -236,7 +234,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         );
 
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         const storyIds = result.response.stories.map((s: any) => s.storyId);
         const oldIdx = storyIds.indexOf(storyOld);
@@ -250,7 +248,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
 
     it('should handle the storyboard directory not existing', async () => {
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response).toHaveProperty('stories');
@@ -292,7 +290,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         writeChapterPayload(dir, 3, false);
 
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         const found = result.response.stories.find((s: any) => s.storyId === storyId);
         expect(found).toBeDefined();
@@ -331,7 +329,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         writeChapterPayload(dir, 2, true);
 
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         const found = result.response.stories.find((s: any) => s.storyId === storyId);
         expect(found).toBeDefined();
@@ -365,7 +363,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         );
 
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         const found = result.response.stories.find((s: any) => s.storyId === storyId);
         expect(found).toBeDefined();
@@ -406,7 +404,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         writeChapterPayload(dir, 1, true);
 
         const parameters = createMockParameters();
-        const result = await generationListStories(mockContext, parameters);
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
         const found = result.response.stories.find((s: any) => s.storyId === storyId);
         expect(found).toBeDefined();

@@ -15,7 +15,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MIN_WORDS_PER_CHAPTER, PREVIOUS_EXPANDED_CHAPTERS, STORY_REQUEST_MESSAGE, DATABASE_BASE_DIR } from './generation-config';
 import {
-    resolveProjectRoot,
     createStoryClient,
     expandChapter,
     buildExpandRequest,
@@ -29,6 +28,7 @@ export type ForkStoryOptions = {
     newStoryId: string;
     sourceStoryId: string;
     chapterIndex: number;
+    root: string;
 };
 
 /**
@@ -36,9 +36,8 @@ export type ForkStoryOptions = {
  * from the fork chapter onwards. Runs in the background (fire-and-forget).
  */
 export const forkStory = async (options: ForkStoryOptions) => {
-    const { newStoryId, sourceStoryId, chapterIndex } = options;
+    const { newStoryId, sourceStoryId, chapterIndex, root: projectRoot } = options;
 
-    const projectRoot = resolveProjectRoot();
     const sourceDir = path.join(projectRoot, DATABASE_BASE_DIR, sourceStoryId);
     const newDir = path.join(projectRoot, DATABASE_BASE_DIR, newStoryId);
 

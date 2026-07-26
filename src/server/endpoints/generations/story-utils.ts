@@ -48,19 +48,11 @@ export const callStructured = <T extends TSchema>(
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the project root from the generations directory.
- * Works regardless of process.cwd() (server vs test contexts).
- */
-export const resolveProjectRoot = (): string => {
-    return path.resolve(__dirname, '..', '..', '..', '..', '..', '..');
-};
-
-/**
  * Resolve the storyboard directory for a given storyId.
+ * @param root - The root directory where the service is being executed from.
  */
-export const resolveStoryboardDir = (storyId: string): string => {
-    const projectRoot = resolveProjectRoot();
-    return path.join(projectRoot, DATABASE_BASE_DIR, storyId);
+export const resolveStoryboardDir = (root: string, storyId: string): string => {
+    return path.join(root, DATABASE_BASE_DIR, storyId);
 };
 
 /**

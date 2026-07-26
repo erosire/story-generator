@@ -54,13 +54,13 @@ vi.mock('@runtime/data/prompts', () => ({
 // Import handler AFTER mocks are set up
 import { CLIENT } from './generation-config';
 import { generationUpdateChapter } from './generation-update-chapter';
-import { resolveProjectRoot } from './story-utils';
+import { DATABASE_BASE_DIR } from './generation-config';
 
-// Use the same resolution as production code (single source of truth)
-const projectRoot = resolveProjectRoot();
+// Use process.cwd() as the project root (service will pass this via variables)
+const projectRoot = process.cwd();
 
 // Helper to resolve the storyboard directory for a given storyId
-const getStoryboardDir = (storyId: string) => path.join(projectRoot, 'temporary', 'database', 'storyboard', storyId);
+const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 
 // Mock context object (not used by the handler but required by the type)
 const mockContext = {} as any;
@@ -101,7 +101,7 @@ describe('generationUpdateChapter', () => {
             body: { expandChapterIndex: 0 }
         };
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
@@ -122,7 +122,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, {});
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
@@ -143,7 +143,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: -1 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
@@ -156,7 +156,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: 0 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(404);
         expect(result.response).toHaveProperty('error');
@@ -172,7 +172,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: 0 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(404);
         expect(result.response).toHaveProperty('error');
@@ -204,7 +204,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: 0 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(404);
         expect(result.response).toHaveProperty('error');
@@ -250,7 +250,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: 0 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(500);
         expect(result.response).toHaveProperty('error');
@@ -306,7 +306,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: 0 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         // Should return 200 immediately (background re-expansion)
         expect(result.status).toBe(200);
@@ -450,7 +450,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: 0 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response.expandChapterIndex).toBe(0);
@@ -507,7 +507,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: 'not-a-number' });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
@@ -537,7 +537,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { storyName: 'Updated Story Name' });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response).toHaveProperty('storyId');
@@ -589,7 +589,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { storyName: 'Renamed Story', expandChapterIndex: 0 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(200);
         expect(result.response.storyId).toBe(storyId);
@@ -659,7 +659,7 @@ describe('generationUpdateChapter', () => {
 
         const parameters = createMockParameters(storyId, { expandChapterIndex: 0 });
 
-        const result = await generationUpdateChapter(mockContext, parameters);
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
         expect(result.status).toBe(200);
 
         // Wait for background re-expansion (chain expansion of chapter 1 + chapter 2)
