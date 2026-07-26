@@ -221,7 +221,8 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         }
 
         // Build the rewrite request: preset rewrite instructions + user context
-        const rewriteRequest = buildRewriteRequest(rewriteChapterNumber, rewriteChapterTitle, rewriteContext);
+        // rewriteContext is guaranteed non-empty by the guard above
+        const rewriteRequest = buildRewriteRequest(rewriteChapterNumber, rewriteChapterTitle, rewriteContext!);
 
         // Fire-and-forget: rewrite the single chapter (no chain expansion)
         rewriteChapterBg({
@@ -255,7 +256,13 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         };
     }
 
-    if (expandChapterIndex < 0) {
+    // ── Re-expansion path ─────────────────────────────────────────────────
+    // expandChapterIndex is guaranteed to be defined here: we returned early
+    // if both expandChapterIndex and rewriteChapterIndex were undefined (line 110),
+    // and the rewrite path above already returned if rewriteChapterIndex was defined.
+    const expandIdx = expandChapterIndex!;
+
+    if (expandIdx < 0) {
         return {
             status: 400,
             response: { error: 'expandChapterIndex must be a non-negative integer' }
@@ -263,12 +270,12 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     }
 
     // ── Re-expansion path ─────────────────────────────────────────────────
-    const chapterPayload = readChapterPayload(chapterDir, expandChapterIndex);
+    const chapterPayload = readChapterPayload(chapterDir, expandIdx);
 
     if (!chapterPayload) {
         return {
             status: 404,
-            response: { error: `Chapter ${expandChapterIndex} not found for story '${storyId}'` }
+            response: { error: `Chapter ${expandIdx} not found for story '${storyId}'` }
         };
     }
 
@@ -282,7 +289,7 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         return {
             status: 500,
             response: {
-                error: `Chapter ${expandChapterIndex} payload is missing context.appending. Cannot re-expand without the original conversation context.`
+                error: `Chapter ${expandIdx} payload is missing context.appending. Cannot re-expand without the original conversation context.`
             }
         };
     }
@@ -291,7 +298,7 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         return {
             status: 500,
             response: {
-                error: `Chapter ${expandChapterIndex} payload is missing context.request. Cannot re-expand without the original request prompt.`
+                error: `Chapter ${expandIdx} payload is missing context.request. Cannot re-expand without the original request prompt.`
             }
         };
     }
@@ -309,7 +316,7 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         storyId,
         storyline: storyMeta.storyline,
         chapterCount: storyMeta.chapterCount,
-        chapterIndex: expandChapterIndex,
+        chapterIndex: expandIdx,
         chapterNumber,
         chapterTitle,
         plotpoints: Array.isArray(plotpoints) ? plotpoints : [],
@@ -319,7 +326,7 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         databaseDir,
         chapterDir
     }).catch((err) => {
-        console.error(`Chapter re-expansion failed for storyId ${storyId} chapter ${expandChapterIndex}:`, err);
+        console.error(`Chapter re-expansion failed for storyId ${storyId} chapter ${expandIdx}:`, err);
     });
 
     // Return immediately while re-expansion runs in the background
@@ -328,10 +335,10 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         response: {
             storyId,
             ...updatedMeta,
-            expandChapterIndex,
+            expandChapterIndex: expandIdx,
             chapterNumber,
             title: chapterTitle,
-            message: `Chapter ${expandChapterIndex} re-expansion started`
+            message: `Chapter ${expandIdx} re-expansion started`
         }
     };
 });

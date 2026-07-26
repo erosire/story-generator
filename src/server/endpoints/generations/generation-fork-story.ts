@@ -75,6 +75,10 @@ export const forkStory = async (options: ForkStoryOptions) => {
 
     const createdAt = new Date().toISOString();
 
+    // ── Copy chapters before the fork point ────────────────────────────────
+    // Chapters 0..chapterIndex-1 are copied verbatim (both .json and .md).
+    const sourceChapterDir = path.join(sourceDir, 'chapter');
+
     // Count how many of the copied chapters are already expanded (have finalized
     // revisions). This sets the initial chapterCompleted so the list endpoint
     // doesn't need to scan chapter files.
@@ -122,10 +126,6 @@ export const forkStory = async (options: ForkStoryOptions) => {
         })
         .join('\n\n---\n\n');
     fs.writeFileSync(path.join(newDir, 'plotpoint.md'), plotpointContent, 'utf-8');
-
-    // ── Copy chapters before the fork point ────────────────────────────────
-    // Chapters 0..chapterIndex-1 are copied verbatim (both .json and .md).
-    const sourceChapterDir = path.join(sourceDir, 'chapter');
 
     for (let i = 0; i < chapterIndex; i++) {
         const padded = String(i + 1).padStart(3, '0');
