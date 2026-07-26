@@ -75,12 +75,37 @@ export const forkStory = async (options: ForkStoryOptions) => {
 
     const createdAt = new Date().toISOString();
 
+    // Count how many of the copied chapters are already expanded (have finalized
+    // revisions). This sets the initial chapterCompleted so the list endpoint
+    // doesn't need to scan chapter files.
+    let copiedCompletedCount = 0;
+    for (let i = 0; i < chapterIndex; i++) {
+        const padded = String(i + 1).padStart(3, '0');
+        const srcJson = path.join(sourceChapterDir, `chapter-${padded}.json`);
+        if (fs.existsSync(srcJson)) {
+            try {
+                const data = JSON.parse(fs.readFileSync(srcJson, 'utf-8'));
+                const revisions = data?.revisions;
+                if (
+                    Array.isArray(revisions) &&
+                    revisions.length > 0 &&
+                    revisions.some((r: any) => typeof r.content === 'string' && r.content.length > 0)
+                ) {
+                    copiedCompletedCount++;
+                }
+            } catch {
+                // Corrupted JSON — skip
+            }
+        }
+    }
+
     // Write plotpoint.json for the new story (new storyId, same metadata)
     const newPlotpointData = {
         storyId: newStoryId,
         storyName,
         storyline,
         chapterCount,
+        chapterCompleted: copiedCompletedCount,
         chapters: plotpointChapters,
         createdAt
     };

@@ -7,7 +7,8 @@ import { DATABASE_BASE_DIR } from './generation-config';
 // Field names differ from what is stored in plotpoint.json:
 //   - plotpoint.json stores `createdAt` and `chapterCount` (written by generation-create-new-story)
 //   - The API response renames them to `createdDate` and `chapterRequested` per the spec
-//   - `chapterCompleted` is derived by counting expanded chapter files in the chapter/ subdirectory
+//   - `chapterCompleted` is denormalized in plotpoint.json by writeChapterFiles (story-utils.ts)
+//     and read directly here instead of scanning every chapter JSON file.
 //   - `status` is derived from the plotpoint.json `status` field ('generating', 'failed')
 //     combined with chapter completion (all chapters expanded → 'completed')
 //
@@ -21,38 +22,6 @@ type StoryMeta = {
     chapterCompleted: number;
     createdDate: string;
     status: 'generating' | 'completed' | 'failed';
-};
-
-// Count how many chapters have been expanded (have non-empty revisions[] in chapter-XXX.json)
-// This scans the chapter/ subdirectory and reads each .json payload to determine expansion status.
-const countCompletedChapters = (storyDir: string): number => {
-    const chapterDir = path.join(storyDir, 'chapter');
-    if (!fs.existsSync(chapterDir)) return 0;
-
-    // Read all .json files from the chapter directory — each represents one chapter
-    const jsonFiles = fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json'));
-    let completed = 0;
-
-    for (const f of jsonFiles) {
-        try {
-            const raw = fs.readFileSync(path.join(chapterDir, f), 'utf-8');
-            const payload = JSON.parse(raw);
-            // A chapter is "completed" when revisions[] has at least one entry
-            // with non-empty content (matches the expanded check in generation-get-story-data.ts)
-            const revisions = payload?.revisions;
-            if (
-                Array.isArray(revisions) &&
-                revisions.length > 0 &&
-                revisions.some((r: any) => typeof r.content === 'string' && r.content.length > 0)
-            ) {
-                completed++;
-            }
-        } catch {
-            // Corrupted JSON — skip, don't count as completed
-        }
-    }
-
-    return completed;
 };
 
 // Derive the final status from the raw plotpoint.json status + chapter completion.
@@ -103,8 +72,10 @@ export const generationListStories = asHandlerMethod(async (_, parameters, varia
                 const raw = fs.readFileSync(plotpointJsonPath, 'utf-8');
                 const data = JSON.parse(raw);
 
-                // Compute chapterCompleted by scanning the chapter/ subdirectory
-                const chapterCompleted = countCompletedChapters(storyDir);
+                // Read chapterCompleted directly from plotpoint.json (denormalized field)
+                // instead of scanning every chapter JSON file. This field is maintained
+                // by writeChapterFiles() in story-utils.ts whenever a chapter is first expanded.
+                const chapterCompleted = typeof data.chapterCompleted === 'number' ? data.chapterCompleted : 0;
                 const chapterRequested = data.chapterCount ?? 0;
 
                 stories.push({

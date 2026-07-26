@@ -415,6 +415,22 @@ export const readChapterPayload = (chapterDir: string, chapterIndex: number): Re
 };
 
 /**
+ * Increment the chapterCompleted counter in plotpoint.json.
+ * Called when a chapter transitions from incomplete (no finalized revisions)
+ * to complete (at least one finalized revision).
+ */
+export const incrementPlotpointChapterCompleted = (databaseDir: string): void => {
+    const plotpointJsonPath = path.join(databaseDir, 'plotpoint.json');
+    try {
+        const data = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        data.chapterCompleted = (data.chapterCompleted ?? 0) + 1;
+        fs.writeFileSync(plotpointJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch {
+        // If plotpoint.json is missing or corrupted, skip silently
+    }
+};
+
+/**
  * Read the plotpoint.json for a story.
  * Returns null if the file doesn't exist or is corrupted.
  */
@@ -581,6 +597,13 @@ export const writeChapterFiles = (opts: {
         // Corrupted or unreadable — start with fresh revisions
     }
 
+    // Check if this chapter was previously incomplete (no finalized revisions).
+    // If so, this write transitions it to "complete" and we need to increment
+    // the chapterCompleted counter in plotpoint.json.
+    const wasPreviouslyComplete = revisions.some(
+        (r: { generationTimeMs?: number }) => typeof r.generationTimeMs === 'number' && r.generationTimeMs > 0
+    );
+
     // Finalize the latest revision: if the last entry is a streaming entry
     // (generationTimeMs === 0), update it in place with the final values.
     // Otherwise, append as a new revision.
@@ -597,6 +620,14 @@ export const writeChapterFiles = (opts: {
     } else {
         // Append as a new revision
         revisions.push(newRevision);
+    }
+
+    // If this chapter just became complete for the first time, increment the
+    // chapterCompleted counter in plotpoint.json. This avoids the list endpoint
+    // having to scan every chapter JSON file to count completions.
+    if (!wasPreviouslyComplete) {
+        const databaseDir = path.dirname(chapterDir);
+        incrementPlotpointChapterCompleted(databaseDir);
     }
 
     // Write the full payload JSON file — revisions[] is the sole source of truth.

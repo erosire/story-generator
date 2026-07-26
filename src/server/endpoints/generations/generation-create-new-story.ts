@@ -64,6 +64,7 @@ const generateStory = async (options: {
         storyName,
         storyline,
         chapterCount,
+        chapterCompleted: 0,
         createdAt,
         chapters: [],
         status: 'generating'

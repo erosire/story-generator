@@ -41,6 +41,15 @@ const writeChapterPayload = (storyDir: string, chapterNumber: number, expanded: 
     fs.writeFileSync(path.join(chapterDir, `chapter-${padded}.json`), JSON.stringify(payload, null, 2), 'utf-8');
 };
 
+// Helper to update chapterCompleted in a story's plotpoint.json.
+// This simulates what writeChapterFiles() does in production.
+const updatePlotpointChapterCompleted = (storyDir: string, chapterCompleted: number) => {
+    const plotpointJsonPath = path.join(storyDir, 'plotpoint.json');
+    const data = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+    data.chapterCompleted = chapterCompleted;
+    fs.writeFileSync(plotpointJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+};
+
 describe('generationListStories', { timeout: 30_000 }, () => {
     // Track created test directories for cleanup
     const createdStoryIds: string[] = [];
@@ -73,6 +82,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
                 storyName: 'A Space Opera',
                 storyline: 'A space opera about aliens.',
                 chapterCount: 5,
+                chapterCompleted: 0,
                 chapters: [],
                 createdAt: '2026-01-01T00:00:00.000Z'
             }),
@@ -88,6 +98,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
                 storyId: story2,
                 storyline: 'A fantasy quest.',
                 chapterCount: 3,
+                chapterCompleted: 0,
                 chapters: [],
                 createdAt: '2026-02-01T00:00:00.000Z'
             }),
@@ -213,6 +224,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
                 storyId: storyOld,
                 storyline: 'Old story',
                 chapterCount: 1,
+                chapterCompleted: 0,
                 chapters: [],
                 createdAt: '2020-01-01T00:00:00.000Z'
             }),
@@ -227,6 +239,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
                 storyId: storyNew,
                 storyline: 'New story',
                 chapterCount: 2,
+                chapterCompleted: 0,
                 chapters: [],
                 createdAt: '2026-07-03T00:00:00.000Z'
             }),
@@ -259,14 +272,14 @@ describe('generationListStories', { timeout: 30_000 }, () => {
 
     // ── chapterCompleted / status tests ────────────────────────────────
 
-    it('should count chapterCompleted from expanded chapter JSON files', async () => {
+    it('should read chapterCompleted from plotpoint.json', async () => {
         const storyId = `test-list-completed-${Date.now()}`;
         createdStoryIds.push(storyId);
 
         const dir = getStoryboardDir(storyId);
         fs.mkdirSync(dir, { recursive: true });
 
-        // 3 chapters requested, 2 expanded (content present), 1 skeleton (empty content)
+        // 3 chapters requested, 2 completed (denormalized in plotpoint.json)
         fs.writeFileSync(
             path.join(dir, 'plotpoint.json'),
             JSON.stringify({
@@ -274,6 +287,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
                 storyName: 'Partial Story',
                 storyline: 'A story with partial chapters.',
                 chapterCount: 3,
+                chapterCompleted: 2,
                 chapters: [
                     { number: '1', title: 'Ch 1', plotpoints: ['a'] },
                     { number: '2', title: 'Ch 2', plotpoints: ['b'] },
@@ -283,11 +297,6 @@ describe('generationListStories', { timeout: 30_000 }, () => {
             }),
             'utf-8'
         );
-
-        // Write chapter JSON payloads — 2 expanded, 1 skeleton
-        writeChapterPayload(dir, 1, true);
-        writeChapterPayload(dir, 2, true);
-        writeChapterPayload(dir, 3, false);
 
         const parameters = createMockParameters();
         const result = await generationListStories(mockContext, parameters, { root: projectRoot });
@@ -315,6 +324,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
                 storyName: 'Done Story',
                 storyline: 'A fully generated story.',
                 chapterCount: 2,
+                chapterCompleted: 2,
                 chapters: [
                     { number: '1', title: 'Ch 1', plotpoints: ['a'] },
                     { number: '2', title: 'Ch 2', plotpoints: ['b'] }
@@ -323,10 +333,6 @@ describe('generationListStories', { timeout: 30_000 }, () => {
             }),
             'utf-8'
         );
-
-        // All chapters expanded
-        writeChapterPayload(dir, 1, true);
-        writeChapterPayload(dir, 2, true);
 
         const parameters = createMockParameters();
         const result = await generationListStories(mockContext, parameters, { root: projectRoot });
@@ -354,6 +360,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
                 storyName: 'Failed Story',
                 storyline: 'A story that failed.',
                 chapterCount: 5,
+                chapterCompleted: 0,
                 chapters: [],
                 status: 'failed',
                 validation: { valid: false, reason: 'refusal detected' },
@@ -388,6 +395,7 @@ describe('generationListStories', { timeout: 30_000 }, () => {
                 storyName: 'Generating Story',
                 storyline: 'A story being generated.',
                 chapterCount: 4,
+                chapterCompleted: 1,
                 chapters: [
                     { number: '1', title: 'Ch 1', plotpoints: ['a'] },
                     { number: '2', title: 'Ch 2', plotpoints: ['b'] },
@@ -400,9 +408,6 @@ describe('generationListStories', { timeout: 30_000 }, () => {
             'utf-8'
         );
 
-        // Only 1 of 4 chapters expanded
-        writeChapterPayload(dir, 1, true);
-
         const parameters = createMockParameters();
         const result = await generationListStories(mockContext, parameters, { root: projectRoot });
 
@@ -413,5 +418,37 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         expect(found.status).toBe('generating');
 
         console.log('Generating story:', { chapterRequested: found.chapterRequested, chapterCompleted: found.chapterCompleted, status: found.status });
+    });
+
+    it('should default chapterCompleted to 0 for plotpoint.json without the field', async () => {
+        // Legacy plotpoint.json that doesn't have chapterCompleted (backward compat)
+        const storyId = `test-list-nofield-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const dir = getStoryboardDir(storyId);
+        fs.mkdirSync(dir, { recursive: true });
+
+        fs.writeFileSync(
+            path.join(dir, 'plotpoint.json'),
+            JSON.stringify({
+                storyId,
+                storyline: 'Legacy story without chapterCompleted field.',
+                chapterCount: 3,
+                chapters: [],
+                createdAt: '2026-07-01T00:00:00.000Z'
+            }),
+            'utf-8'
+        );
+
+        const parameters = createMockParameters();
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
+
+        const found = result.response.stories.find((s: any) => s.storyId === storyId);
+        expect(found).toBeDefined();
+        expect(found.chapterRequested).toBe(3);
+        expect(found.chapterCompleted).toBe(0);
+        expect(found.status).toBe('generating');
+
+        console.log('Legacy plotpoint.json without chapterCompleted:', found);
     });
 });
