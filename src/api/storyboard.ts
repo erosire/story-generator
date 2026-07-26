@@ -1,26 +1,28 @@
 // API client for the storyboard generations endpoints.
 //
-// Two endpoints (see runtime/service/endpoints/storyboard/generations/):
-//   - GET /v1/storyboard/generations/
-//       returns: { stories: StoryMeta[] }
-//       Each entry includes metadata (storyId, chapterRequested, chapterCompleted,
-//       createdDate, status). Storyline is intentionally omitted
-//       because it is free-form user text not needed by the sidebar.
-//       See generation-list-stories.ts.
+// Two routes (see src/server/endpoints/story-generator.yml):
 //
+// Route 1 — Collection: GET /v1/storyboard/generations
+//   returns: { stories: StoryMeta[] }
+//   Each entry includes metadata (storyId, chapterRequested, chapterCompleted,
+//   createdDate, status). Storyline is intentionally omitted
+//   because it is free-form user text not needed by the sidebar.
+//   See generation-list-stories.ts.
+//
+// Route 2 — Story-specific: /v1/storyboard/generations/:storyId
 //   - POST /v1/storyboard/generations/:storyId
 //       body: { storyline: string, chapterCount: number }
 //       returns: { storyId: string }
 //       behavior: fire-and-forget background generation; the server writes
 //       plotpoint.json immediately and chapter-NNN.md/json files one at a time.
-//       See generation-create-new-story.ts:236 (background task) and :241 (return).
+//       See generation-create-new-story.ts.
 //
 //   - GET /v1/storyboard/generations/:storyId
 //       returns: { chapters: Chapter[], meta: StoryMeta | null }
 //       Each chapter includes plotpoints and expansion status. Expanded chapters
 //       include content/length/generationTimeMs; pending chapters have expanded=false.
 //       404 if the storyId dir doesn't exist yet (no POST issued / generation
-//       hasn't started creating files). See generation-get-story-data.ts:19-24.
+//       hasn't started creating files). See generation-get-story-data.ts.
 //
 //   - PATCH /v1/storyboard/generations/:storyId
 //       body: { storyName?: string, expandChapterIndex?: number,
@@ -34,7 +36,12 @@
 //       chapters; rewriteChapter only rewrites the targeted chapter.
 //       See generation-update-chapter.ts.
 //
-// `pollStoryData` repeatedly hits GET until a stop condition is met:
+//   - DELETE /v1/storyboard/generations/:storyId
+//       returns: { success: boolean, storyId: string }
+//       behavior: Permanently deletes a story and all its data.
+//       See generation-delete-story.ts.
+//
+// `pollStoryData` repeatedly hits GET /generations/:storyId until a stop condition is met:
 //   - chapter count reaches the requested chapterRequested, OR
 //   - the response is a 404 (treated as "not started yet", keep polling), OR
 //   - a non-200/non-404 error occurs, OR
@@ -46,7 +53,7 @@
 import type { StoryData } from '../context';
 
 // Story metadata returned by GET /v1/storyboard/generations/.
-// Matches the server's StoryListEntry schema in storyboard-generations.yml.
+// Matches the server's StoryListEntry schema in story-generator.yml.
 // Each entry corresponds to a directory under temporary/database/storyboard/
 // and includes summary information derived from plotpoint.json by generation-list-stories.
 // Note: storyline is intentionally omitted from the list response — it is
@@ -140,7 +147,7 @@ export async function fetchStoryData(
     return { status: 'data', data };
 }
 
-// Fetch the list of all stories via GET /v1/storyboard/generations/.
+// Fetch the list of all stories via GET /v1/storyboard/generations.
 //
 // The server returns { stories: StoryMeta[] } where each entry contains
 // story metadata (storyId, chapterRequested, chapterCompleted, createdDate,

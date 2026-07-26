@@ -5,7 +5,7 @@
 // it (store.selected = entry) so the content area displays that story.
 //
 // No remove button — the list is read-only. No manual refresh button — the
-// sidebar auto-refreshes periodically by polling GET /v1/storyboard/generations/ to pick up stories
+// sidebar auto-refreshes periodically by polling GET /v1/storyboard/generations to pick up stories
 // created by other sessions/devices.
 //
 // Auto-refresh behavior:

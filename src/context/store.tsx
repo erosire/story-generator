@@ -178,7 +178,7 @@ export const cancelPendingStorageWrites = (): void => {
 // Each chapter includes its plotpoints and expansion status. If the chapter has
 // been expanded, revisions[] is present with one entry per generation attempt;
 // otherwise expanded is false and only plotpoints are available.
-// See storyboard-generations.yml UnifiedChapter schema.
+// See story-generator.yml UnifiedChapter schema.
 export type Chapter = {
     chapterNumber: string; // "1", "2", etc.
     chapterIndex: number; // 0-based index
@@ -222,8 +222,8 @@ export type StoryEntry = {
     data: StoryData | null;
     isProcessing: boolean; // true while polling for new chapters
     error: string; // populated if create or fetch failed
-    // True for entries that came from the server's GET /v1/storyboard/generations/ endpoint (BootstrapLayer
-    // or Refresh). The list endpoint returns metadata (storyId, chapterRequested,
+    // True for entries that came from the server's GET /v1/storyboard/generations endpoint (BootstrapLayer
+    // or Refresh). The collection endpoint returns metadata (storyId, chapterRequested,
     // createdDate, status) but not storyline (which is free-form user text). Remote
     // entries are seeded with the server's chapterRequested but have an empty storyline.
     // Locally-added entries (Add button / SectionStoryInput) have isRemote = false

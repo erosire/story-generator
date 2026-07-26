@@ -456,7 +456,7 @@ components:
     StoryListEntry:
       type: object
       description: >-
-        Minimal story metadata returned by the /list endpoint. Maps from
+        Minimal story metadata returned by the collection endpoint. Maps from
         plotpoint.json fields: createdAt → createdDate, chapterCount →
         chapterRequested. chapterCompleted is derived by counting expanded
         chapter files. status is derived from plotpoint.json status + chapter

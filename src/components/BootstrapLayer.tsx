@@ -20,8 +20,8 @@ import { useStoryStore } from '../context';
 import { fetchStoryList, type StoryMeta } from '../api';
 import { getLastStoryId, loadRecordsFromStorage } from '../context/store';
 
-// Build a StoryEntry from a StoryMeta object returned by GET /v1/storyboard/generations/.
-// The list endpoint now returns full metadata (storyId, storyName, chapterRequested,
+// Build a StoryEntry from a StoryMeta object returned by GET /v1/storyboard/generations.
+// The collection endpoint returns full metadata (storyId, storyName, chapterRequested,
 // chapterCompleted, createdDate, status) so we can seed the entry with the server's
 // values. storyName is used as the display title when available; falls back to the
 // first 8 chars of storyId (matches AddNewButton's convention in SectionStoryTabs.tsx).

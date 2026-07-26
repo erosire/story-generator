@@ -3,7 +3,8 @@
 // This replaces the distribution-template counter demo. The dashboard is a
 // one-column layout (header / scrollable content / footer) backed by a
 // story-store context that talks to the storyboard generations endpoints
-// (POST /new, GET /data) via polling.
+// (GET /generations for listing, POST/GET/PATCH/DELETE /generations/:storyId)
+// via polling.
 //
 // See src/components/StoryGeneratorApp.tsx for the composition and
 // src/api/storyboard.ts for the wire protocol.
