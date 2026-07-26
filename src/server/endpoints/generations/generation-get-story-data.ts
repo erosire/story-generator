@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
 import { resolveStoryboardDir } from './story-utils';
-import { DATABASE_BASE_DIR } from './generation-config';
 
 export const generationGetStoryData = asHandlerMethod(async (_, parameters, variables) => {
     const { root: projectRoot } = variables;
@@ -14,28 +13,6 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters, vari
         return {
             status: 400,
             response: { error: 'storyId is required' }
-        };
-    }
-
-    // Dual-purpose endpoint per storyboard-generations.yml: when storyId is the
-    // reserved literal "list", return all story IDs (directory names from
-    // temporary/database/storyboard/). No chapter/plotlines data is included —
-    // callers must issue a second GET with a specific storyId for details.
-    if (storyId === 'list') {
-        const storyboardRoot = path.join(projectRoot, DATABASE_BASE_DIR);
-        let stories: string[] = [];
-        if (fs.existsSync(storyboardRoot)) {
-            // readdirSync with { withFileTypes: true } returns Dirent objects; we
-            // filter to directories only so stray files don't get reported as stories.
-            stories = fs
-                .readdirSync(storyboardRoot, { withFileTypes: true })
-                .filter((entry) => entry.isDirectory())
-                .map((entry) => entry.name)
-                .sort();
-        }
-        return {
-            status: 200,
-            response: { stories }
         };
     }
 

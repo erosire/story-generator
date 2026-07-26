@@ -2,19 +2,52 @@ openapi: 3.0.3
 info:
   title: Storyboard Generations API
   description: >-
-    API for creating and reading AI-generated storyboard stories. POST to create
-    a new story (runs in background), GET with storyId="list" to retrieve all
-    story IDs, or GET with a specific storyId to retrieve a unified list of
-    chapters. Each chapter includes its plotpoints and expansion status —
-    expanded chapters include the full content, while pending chapters show only
-    plotpoints with expanded=false. Story metadata (storyline, chapterCount,
-    createdAt) is also returned. PATCH to update story metadata (e.g. storyName)
-    and/or re-expand a specific chapter using the stored LLM context.
+    API for creating and reading AI-generated storyboard stories. GET the
+    collections endpoint to list all stories. POST to create a new story
+    (runs in background), GET with a specific storyId to retrieve a unified
+    list of chapters. Each chapter includes its plotpoints and expansion
+    status — expanded chapters include the full content, while pending
+    chapters show only plotpoints with expanded=false. Story metadata
+    (storyline, chapterCount, createdAt) is also returned. PATCH to update
+    story metadata (e.g. storyName) and/or re-expand a specific chapter
+    using the stored LLM context.
   version: 1.8.0
 servers:
   - url: http://127.0.0.1:5000
     description: Local development server
 paths:
+  /v1/storyboard/generations:
+    get:
+      operationId: listStories
+      summary: List all stories
+      description: >-
+        Returns all stories in the storyboard database directory. Each entry
+        includes metadata (storyId, storyName, chapterRequested,
+        chapterCompleted, createdDate, status) derived from each story's
+        plotpoint.json. Stories are sorted by createdDate descending (newest
+        first). Storyline is intentionally omitted from the list response.
+      tags:
+        - Storyboard
+      responses:
+        '200':
+          description: List of all stories
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoryListResponse'
+              example:
+                stories:
+                  - storyId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                    chapterRequested: 5
+                    chapterCompleted: 5
+                    createdDate: '2026-07-01T10:00:00.000Z'
+                    status: completed
+                  - storyId: b2c3d4e5-f6a7-8901-bcde-f12345678901
+                    storyName: My Sci-Fi Story
+                    chapterRequested: 10
+                    chapterCompleted: 3
+                    createdDate: '2026-07-02T14:30:00.000Z'
+                    status: generating
   /v1/storyboard/generations/{storyId}:
     post:
       operationId: createNewStory
@@ -62,88 +95,55 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
-      operationId: getStoryOrList
-      summary: List all stories or get a specific story
+      operationId: getStoryData
+      summary: Get a specific story
       description: >-
-        Dual-purpose endpoint. Use storyId="list" to retrieve all story IDs
-        without detailed data. Use any other storyId (e.g. a UUID) to retrieve
-        the plotlines, generated chapters, and per-chapter expansion payloads
-        for that specific story.
+        Returns the plotlines, generated chapters, and per-chapter expansion
+        payloads for a specific story by its storyId.
       tags:
         - Storyboard
       parameters:
         - name: storyId
           in: path
           required: true
-          description: >-
-            Set to "list" to return all story IDs, or provide a specific story
-            identifier (UUID) to retrieve its data.
+          description: The story identifier (UUID)
           schema:
             type: string
-            enum:
-              - list
-          examples:
-            list:
-              summary: List all stories
-              value: list
-            specific:
-              summary: Get a specific story
-              value: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+            example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       responses:
         '200':
           description: >-
-            When storyId is "list", returns an array of story IDs. When storyId
-            is a specific UUID, returns the story data with plotlines, chapters,
-            and per-chapter expansion payloads.
+            Returns the story data with plotlines, chapters, and per-chapter
+            expansion payloads.
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/StoryListResponse'
-                  - $ref: '#/components/schemas/StoryDataResponse'
-              examples:
-                list:
-                  summary: List of all stories
-                  value:
-                    stories:
-                      - storyId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
-                        chapterRequested: 5
-                        chapterCompleted: 5
-                        createdDate: '2026-07-01T10:00:00.000Z'
-                        status: completed
-                      - storyId: b2c3d4e5-f6a7-8901-bcde-f12345678901
-                        storyName: My Sci-Fi Story
-                        chapterRequested: 10
-                        chapterCompleted: 3
-                        createdDate: '2026-07-02T14:30:00.000Z'
-                        status: generating
-                storyData:
-                  summary: Detailed story data
-                  value:
-                    chapters:
-                      - chapterNumber: '1'
-                        chapterIndex: 0
-                        title: The Arrival
-                        plotpoints:
-                          - Crew lands on Mars
-                          - Discovery of the artifact
-                        expanded: true
-                        content: "## The Arrival\n\nThe shuttle descended..."
-                        length: 5200
-                        generationTimeMs: 45230
-                      - chapterNumber: '2'
-                        chapterIndex: 1
-                        title: The Signal
-                        plotpoints:
-                          - Artifact begins transmitting
-                          - Tension rises
-                        expanded: false
-                    meta:
-                      storyline: A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.
-                      chapterCount: 2
-                      createdAt: '2026-07-01T10:00:00.000Z'
+                $ref: '#/components/schemas/StoryDataResponse'
+              example:
+                chapters:
+                  - chapterNumber: '1'
+                    chapterIndex: 0
+                    title: The Arrival
+                    plotpoints:
+                      - Crew lands on Mars
+                      - Discovery of the artifact
+                    expanded: true
+                    content: "## The Arrival\n\nThe shuttle descended..."
+                    length: 5200
+                    generationTimeMs: 45230
+                  - chapterNumber: '2'
+                    chapterIndex: 1
+                    title: The Signal
+                    plotpoints:
+                      - Artifact begins transmitting
+                      - Tension rises
+                    expanded: false
+                meta:
+                  storyline: A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.
+                  chapterCount: 2
+                  createdAt: '2026-07-01T10:00:00.000Z'
         '404':
-          description: Story not found (only when storyId is not "list")
+          description: Story not found
           content:
             application/json:
               schema:

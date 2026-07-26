@@ -233,25 +233,4 @@ describe('generationGetStoryData', () => {
         // meta should be null when no story.json exists
         expect(result.response.meta).toBeNull();
     });
-
-    it('should return all story IDs when storyId is "list"', async () => {
-        // Create a couple of test story directories
-        const storyA = `test-list-a-${Date.now()}`;
-        const storyB = `test-list-b-${Date.now()}`;
-        createdStoryIds.push(storyA, storyB);
-
-        const dirA = getStoryboardDir(storyA);
-        const dirB = getStoryboardDir(storyB);
-        fs.mkdirSync(dirA, { recursive: true });
-        fs.mkdirSync(dirB, { recursive: true });
-
-        const parameters = createMockParameters('list');
-        const result = await generationGetStoryData(mockContext, parameters, { root: projectRoot });
-
-        expect(result.status).toBe(200);
-        expect(result.response).toHaveProperty('stories');
-        expect(Array.isArray(result.response.stories)).toBe(true);
-        expect(result.response.stories).toContain(storyA);
-        expect(result.response.stories).toContain(storyB);
-    });
 });

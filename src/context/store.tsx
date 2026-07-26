@@ -213,7 +213,7 @@ export type StoryEntry = {
     storyline: string;
     chapterRequested: number;
     chapterCompleted: number;
-    createdDate: string; // ISO 8601 timestamp from the server's /list endpoint
+    createdDate: string; // ISO 8601 timestamp from the server's collection endpoint
     status: 'generating' | 'completed' | 'failed';
     // Progressive data fetched via GET polling. Starts as an empty story (status 200
     // returns { chapters: [], meta: null } for an existing-but-empty dir — see
@@ -222,7 +222,7 @@ export type StoryEntry = {
     data: StoryData | null;
     isProcessing: boolean; // true while polling for new chapters
     error: string; // populated if create or fetch failed
-    // True for entries that came from the server's GET /list endpoint (BootstrapLayer
+    // True for entries that came from the server's GET /v1/storyboard/generations/ endpoint (BootstrapLayer
     // or Refresh). The list endpoint returns metadata (storyId, chapterRequested,
     // createdDate, status) but not storyline (which is free-form user text). Remote
     // entries are seeded with the server's chapterRequested but have an empty storyline.

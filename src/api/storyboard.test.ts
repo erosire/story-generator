@@ -164,7 +164,7 @@ describe('fetchStoryList', () => {
         const result = await fetchStoryList(BASE_URL);
 
         expect(result).toEqual({ stories: metas });
-        expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/list`);
+        expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}`);
         expect((fetch as any).mock.calls[0][1]).toEqual({ method: 'GET' });
     });
 

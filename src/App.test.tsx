@@ -26,7 +26,7 @@ const mockResponse = (status: number, body: unknown) =>
     }) as any;
 
 describe('StoryGeneratorApp', () => {
-    // Default fetch mock: GET /list returns an empty story list. Individual
+    // Default fetch mock: GET / returns an empty story list. Individual
     // tests override specific calls as needed. Setting a sane default avoids
     // BootstrapLayer catch-paths and the act() warnings that come from
     // an unresolved promise firing setState after the test completes.
@@ -242,11 +242,11 @@ describe('StoryGeneratorApp', () => {
         expect(postCalls).toEqual([]);
     });
 
-    // Bootstrap: GET /list returns existing story metadata on mount → seeded as sidebar items.
-    it('loads existing stories from the /list endpoint on mount and selects the first', async () => {
+    // Bootstrap: GET / returns existing story metadata on mount → seeded as sidebar items.
+    it('loads existing stories from the collection endpoint on mount and selects the first', async () => {
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
-                if (url.endsWith('/list')) {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
                     return Promise.resolve(
                         mockResponse(200, {
                             stories: [
@@ -280,7 +280,7 @@ describe('StoryGeneratorApp', () => {
     it('polls the selected remote story until chapters are stable', async () => {
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
-                if (url.endsWith('/list')) {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
                     return Promise.resolve(
                         mockResponse(200, {
                             stories: [
@@ -332,7 +332,7 @@ describe('StoryGeneratorApp', () => {
         let listResponse = { stories: [{ storyId: 'first-uuid', chapterRequested: 2, chapterCompleted: 0, createdDate: '2026-07-03T12:00:00Z', status: 'generating' }] };
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
-                if (url.endsWith('/list')) {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
                     return Promise.resolve(mockResponse(200, listResponse));
                 }
                 return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
@@ -372,10 +372,10 @@ describe('StoryGeneratorApp', () => {
     });
 
     // BootstrapLayer failure (server down) sets a non-blocking loadWarning.
-    it('shows a load warning when the initial /list fetch fails, but the dashboard is still usable', async () => {
+    it('shows a load warning when the collection endpoint fetch fails, but the dashboard is still usable', async () => {
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (!init || init.method === 'GET') {
-                if (url.endsWith('/list')) {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
                     return Promise.resolve(mockResponse(500, { error: 'server on fire' }));
                 }
                 return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));

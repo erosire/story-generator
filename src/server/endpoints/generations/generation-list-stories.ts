@@ -3,7 +3,7 @@ import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
 import { DATABASE_BASE_DIR } from './generation-config';
 
-// Story metadata shape returned by the /list endpoint.
+// Story metadata shape returned by the collection endpoint.
 // Field names differ from what is stored in plotpoint.json:
 //   - plotpoint.json stores `createdAt` and `chapterCount` (written by generation-create-new-story)
 //   - The API response renames them to `createdDate` and `chapterRequested` per the spec

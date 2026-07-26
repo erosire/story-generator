@@ -1,6 +1,13 @@
 // API client for the storyboard generations endpoints.
 //
 // Two endpoints (see runtime/service/endpoints/storyboard/generations/):
+//   - GET /v1/storyboard/generations/
+//       returns: { stories: StoryMeta[] }
+//       Each entry includes metadata (storyId, chapterRequested, chapterCompleted,
+//       createdDate, status). Storyline is intentionally omitted
+//       because it is free-form user text not needed by the sidebar.
+//       See generation-list-stories.ts.
+//
 //   - POST /v1/storyboard/generations/:storyId
 //       body: { storyline: string, chapterCount: number }
 //       returns: { storyId: string }
@@ -14,13 +21,6 @@
 //       include content/length/generationTimeMs; pending chapters have expanded=false.
 //       404 if the storyId dir doesn't exist yet (no POST issued / generation
 //       hasn't started creating files). See generation-get-story-data.ts:19-24.
-//
-//   - GET /v1/storyboard/generations/list
-//       returns: { stories: StoryMeta[] }
-//       Each entry includes metadata (storyId, chapterRequested, chapterCompleted,
-//       createdDate, status). Storyline is intentionally omitted
-//       because it is free-form user text not needed by the sidebar.
-//       See generation-list-stories.ts.
 //
 //   - PATCH /v1/storyboard/generations/:storyId
 //       body: { storyName?: string, expandChapterIndex?: number,
@@ -45,7 +45,7 @@
 
 import type { StoryData } from '../context';
 
-// Story metadata returned by GET /v1/storyboard/generations/list.
+// Story metadata returned by GET /v1/storyboard/generations/.
 // Matches the server's StoryListEntry schema in storyboard-generations.yml.
 // Each entry corresponds to a directory under temporary/database/storyboard/
 // and includes summary information derived from plotpoint.json by generation-list-stories.
@@ -140,7 +140,7 @@ export async function fetchStoryData(
     return { status: 'data', data };
 }
 
-// Fetch the list of all stories via GET .../list.
+// Fetch the list of all stories via GET /v1/storyboard/generations/.
 //
 // The server returns { stories: StoryMeta[] } where each entry contains
 // story metadata (storyId, chapterRequested, chapterCompleted, createdDate,
@@ -153,9 +153,7 @@ export async function fetchStoryData(
 //
 // Throws on network failure or non-200 so the caller can surface a load error.
 export async function fetchStoryList(baseUrl: string): Promise<{ stories: StoryMeta[] }> {
-    // URL-encode 'list' for safety even though it has no special chars — keeps
-    // the helper consistent with fetchStoryData.
-    const url = `${baseUrl}/${encodeURIComponent('list')}`;
+    const url = `${baseUrl}`;
     const response = await fetch(url, { method: 'GET' });
 
     if (!response.ok) {

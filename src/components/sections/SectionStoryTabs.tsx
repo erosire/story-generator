@@ -5,12 +5,12 @@
 // it (store.selected = entry) so the content area displays that story.
 //
 // No remove button — the list is read-only. No manual refresh button — the
-// sidebar auto-refreshes periodically by polling GET /list to pick up stories
+// sidebar auto-refreshes periodically by polling GET /v1/storyboard/generations/ to pick up stories
 // created by other sessions/devices.
 //
 // Auto-refresh behavior:
-//   - On mount, fetches /list once (via BootstrapLayer) to seed the store.
-//   - A useEffect runs every REFRESH_INTERVAL_MS (30s) to re-fetch /list
+//   - On mount, fetches the collection once (via BootstrapLayer) to seed the store.
+//   - A useEffect runs every REFRESH_INTERVAL_MS (30s) to re-fetch the collection
 //     and merge new entries while preserving the current selection and any
 //     locally-cached chapter data.
 //   - Errors surface as a non-blocking loadWarning (same as BootstrapLayer).
@@ -152,7 +152,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
     const { store, setStore } = useStoryStore();
     const { records, selected } = store;
 
-    // Auto-refresh: periodically fetch /list to pick up new stories.
+    // Auto-refresh: periodically fetch collection to pick up new stories.
     React.useEffect(() => {
         const baseUrl = store.config.baseUrl;
 
