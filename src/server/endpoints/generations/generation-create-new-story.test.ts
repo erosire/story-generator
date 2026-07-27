@@ -4,8 +4,9 @@
  * which transitively imports OpenAI SDK — that SDK throws in jsdom browser-like environments.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 
 // Mock the config module — this is the single source of truth for all generation settings.
 // Importing it here keeps the test in sync with config changes.
@@ -100,8 +101,10 @@ import { CLIENT } from './generation-config';
 import { generationCreateNewStory } from './generation-create-new-story';
 import { MIN_WORDS_PER_CHAPTER, EXPAND_TIMEOUT_MS, DATABASE_BASE_DIR } from './generation-config';
 
-// Use process.cwd() as the project root (service will pass this via variables)
-const projectRoot = process.cwd();
+// Use an isolated temp directory as the project root so tests never pollute the
+// source tree. The service normally passes the monorepo root via variables.root,
+// but tests must not assume any particular on-disk location.
+const projectRoot = path.join(os.tmpdir(), `story-gen-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 // Helper to resolve the storyboard directory for a given storyId
 const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
@@ -138,6 +141,10 @@ describe('generationCreateNewStory', () => {
             }
         }
         createdStoryIds.length = 0;
+        // Remove the entire isolated temp root so no residual dirs leak
+        if (fs.existsSync(projectRoot)) {
+            fs.rmSync(projectRoot, { recursive: true, force: true });
+        }
         vi.useRealTimers(); // Ensure timers are always restored
         vi.restoreAllMocks();
     });

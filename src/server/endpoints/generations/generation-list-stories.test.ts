@@ -4,13 +4,15 @@
  * — that module creates an OpenAI client that throws in jsdom browser-like environments.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, afterAll } from 'vitest';
 import { generationListStories } from './generation-list-stories';
 import { DATABASE_BASE_DIR } from './generation-config';
 
-// Use process.cwd() as the project root (service will pass this via variables)
-const projectRoot = process.cwd();
+// Use an isolated temp directory as the project root so tests never pollute the
+// source tree. The service normally passes the monorepo root via variables.root.
+const projectRoot = path.join(os.tmpdir(), `story-gen-list-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 
 // Mock context object (not used by the handler but required by the type)
@@ -61,6 +63,10 @@ describe('generationListStories', { timeout: 30_000 }, () => {
             if (fs.existsSync(dir)) {
                 fs.rmSync(dir, { recursive: true, force: true });
             }
+        }
+        // Remove the entire isolated temp root so no residual dirs leak
+        if (fs.existsSync(projectRoot)) {
+            fs.rmSync(projectRoot, { recursive: true, force: true });
         }
     });
 

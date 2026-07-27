@@ -4,6 +4,7 @@
  * which transitively imports OpenAI SDK — that SDK throws in jsdom browser-like environments.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -56,8 +57,9 @@ import { CLIENT } from './generation-config';
 import { generationUpdateChapter } from './generation-update-chapter';
 import { DATABASE_BASE_DIR } from './generation-config';
 
-// Use process.cwd() as the project root (service will pass this via variables)
-const projectRoot = process.cwd();
+// Use an isolated temp directory as the project root so tests never pollute the
+// source tree. The service normally passes the monorepo root via variables.root.
+const projectRoot = path.join(os.tmpdir(), `story-gen-update-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 // Helper to resolve the storyboard directory for a given storyId
 const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
@@ -91,6 +93,10 @@ describe('generationUpdateChapter', () => {
             }
         }
         createdStoryIds.length = 0;
+        // Remove the entire isolated temp root so no residual dirs leak
+        if (fs.existsSync(projectRoot)) {
+            fs.rmSync(projectRoot, { recursive: true, force: true });
+        }
         vi.restoreAllMocks();
     });
 
