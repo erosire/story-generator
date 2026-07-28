@@ -109,14 +109,15 @@ export const DATABASE_BASE_DIR = 'temporary/database/storyboard';
  */
 export const useApiMethod: 'structure' | 'format' = 'format';
 
-import { GLM52_CLIENT, LIGHTNING_CLIENT, NVIDIA_CLIENT, OPENCODE_CLIENT } from '@runtime/secret/private';
+import { GLM52_CLIENT, KIMI3_CLIENT, LIGHTNING_CLIENT, NVIDIA_CLIENT, OPENCODE_CLIENT } from '@runtime/secret/private';
 
 // List of possible clients
 export const CLIENTS = {
     Nvidia: NVIDIA_CLIENT.clone({ model: 'z-ai/glm-5.2' }),
     OpenCode: OPENCODE_CLIENT.clone({ model: 'glm-5.2' }),
     Lightning: LIGHTNING_CLIENT.clone({ model: 'anthropic/claude-opus-4-7' }),
-    Modal: GLM52_CLIENT
+    GLM52: GLM52_CLIENT,
+    KIMIK3: KIMI3_CLIENT
 };
 
-export const CLIENT = CLIENTS.Nvidia;
+export const CLIENT = CLIENTS.KIMIK3;
