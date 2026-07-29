@@ -10,6 +10,9 @@
 // Conversation Priming
 // ---------------------------------------------------------------------------
 
+import { MAKORA_CLIENT } from '@runtime/secret/private/makora';
+import { GLM52_CLIENT, KIMI3_CLIENT, LIGHTNING_CLIENT, NVIDIA_CLIENT, OPENCODE_CLIENT } from '@runtime/secret/private';
+
 /** First user message seeded into the conversation history. */
 export const OPENING_USER_MESSAGE = 'Hey ENI';
 
@@ -107,9 +110,7 @@ export const DATABASE_BASE_DIR = 'temporary/database/storyboard';
  *   - "structure" — tool-calling (works with all providers)
  *   - "format"    — native structured output / response_format (stricter, fewer retries)
  */
-export const useApiMethod: 'structure' | 'format' = 'format';
-
-import { GLM52_CLIENT, KIMI3_CLIENT, LIGHTNING_CLIENT, NVIDIA_CLIENT, OPENCODE_CLIENT } from '@runtime/secret/private';
+export const useApiMethod: 'structure' | 'format' = 'structure';
 
 // List of possible clients
 export const CLIENTS = {
@@ -117,7 +118,8 @@ export const CLIENTS = {
     OpenCode: OPENCODE_CLIENT.clone({ model: 'glm-5.2' }),
     Lightning: LIGHTNING_CLIENT.clone({ model: 'anthropic/claude-opus-4-7' }),
     GLM52: GLM52_CLIENT,
-    KIMIK3: KIMI3_CLIENT
+    KIMIK3: KIMI3_CLIENT,
+    Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4' })
 };
 
-export const CLIENT = CLIENTS.KIMIK3;
+export const CLIENT = CLIENTS.Nvidia;
