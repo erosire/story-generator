@@ -11,7 +11,14 @@
 // ---------------------------------------------------------------------------
 
 import { MAKORA_CLIENT } from '@runtime/secret/private/makora';
-import { GLM52_CLIENT, KIMI3_CLIENT, LIGHTNING_CLIENT, NVIDIA_CLIENT, OPENCODE_CLIENT } from '@runtime/secret/private';
+import {
+    GLM52_CLIENT,
+    KIMI3_CLIENT,
+    LIGHTNING_CLIENT,
+    NVIDIA_CLIENT,
+    OPENCODE_CLIENT,
+    OPENROUTER_CLIENT
+} from '@runtime/secret/private';
 
 /** First user message seeded into the conversation history. */
 export const OPENING_USER_MESSAGE = 'Hey ENI';
@@ -110,16 +117,17 @@ export const DATABASE_BASE_DIR = 'temporary/database/storyboard';
  *   - "structure" — tool-calling (works with all providers)
  *   - "format"    — native structured output / response_format (stricter, fewer retries)
  */
-export const useApiMethod: 'structure' | 'format' = 'structure';
+export const useApiMethod: 'structure' | 'format' = 'format';
 
 // List of possible clients
 export const CLIENTS = {
     Nvidia: NVIDIA_CLIENT.clone({ model: 'z-ai/glm-5.2' }),
-    OpenCode: OPENCODE_CLIENT.clone({ model: 'glm-5.2' }),
+    OpenCode: OPENCODE_CLIENT.clone({ model: 'deepseek-v4-flash' }),
     Lightning: LIGHTNING_CLIENT.clone({ model: 'anthropic/claude-opus-4-7' }),
     GLM52: GLM52_CLIENT,
     KIMIK3: KIMI3_CLIENT,
-    Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4' })
+    Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4' }),
+    Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731' })
 };
 
 export const CLIENT = CLIENTS.Nvidia;
