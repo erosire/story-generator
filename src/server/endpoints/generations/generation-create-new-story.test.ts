@@ -71,7 +71,7 @@ vi.mock('./generation-config', () => {
         TARGET_WORD_COUNT_PROMPT: '15,000 words',
         MIN_PLOTPOINTS_PER_CHAPTER: 10,
         REFUSAL_PATTERNS: ['I cannot fulfill', 'I will not'],
-        DATABASE_BASE_DIR: 'temporary/database/storyboard',
+        DATABASE_BASE_DIR: 'storyboard',
         CLIENT: createMockClient()
     };
 });
@@ -102,7 +102,7 @@ import { generationCreateNewStory } from './generation-create-new-story';
 import { MIN_WORDS_PER_CHAPTER, EXPAND_TIMEOUT_MS, DATABASE_BASE_DIR } from './generation-config';
 
 // Use an isolated temp directory as the project root so tests never pollute the
-// source tree. The service normally passes the monorepo root via variables.root,
+// source tree. The service normally passes temporary/database via variables.root,
 // but tests must not assume any particular on-disk location.
 const projectRoot = path.join(os.tmpdir(), `story-gen-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
@@ -168,7 +168,7 @@ describe('generationCreateNewStory', () => {
         expect(result.response.storyId.length).toBeGreaterThan(0);
     });
 
-    it('should create the storyboard directory in temporary/database/storyboard', async () => {
+    it('should create the storyboard directory below the injected database root', async () => {
         const storyId = `test-story-dir-${Date.now()}`;
         createdStoryIds.push(storyId);
         const storyboardDir = getStoryboardDir(storyId);

@@ -39,7 +39,7 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         };
     }
 
-    // Resolve the project root and story directory
+    // Resolve the shared database root and the story-generator-owned directory.
     const projectRoot = variables.root;
     const databaseDir = path.join(projectRoot, DATABASE_BASE_DIR, storyId);
     const chapterDir = path.join(databaseDir, 'chapter');

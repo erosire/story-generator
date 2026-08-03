@@ -102,11 +102,11 @@ export const PLOTPOINT_STALL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 export const MAX_STORY_ATTEMPTS = 3;
 
 // ---------------------------------------------------------------------------
-// File System Paths (relative to project root)
+// File System Paths (relative to the injected temporary/database root)
 // ---------------------------------------------------------------------------
 
-/** Root directory where generated story data is persisted. */
-export const DATABASE_BASE_DIR = 'temporary/database/storyboard';
+/** Distribution-owned directory where generated story data is persisted. */
+export const DATABASE_BASE_DIR = 'storyboard';
 
 // ---------------------------------------------------------------------------
 // Pre-configured LLM Client

@@ -49,7 +49,7 @@ export const callStructured = <T extends TSchema>(
 
 /**
  * Resolve the storyboard directory for a given storyId.
- * @param root - The root directory where the service is being executed from.
+ * @param root - The shared temporary/database root injected by the service.
  */
 export const resolveStoryboardDir = (root: string, storyId: string): string => {
     return path.join(root, DATABASE_BASE_DIR, storyId);

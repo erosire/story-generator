@@ -39,7 +39,7 @@ const deriveStatus = (
     return 'generating';
 };
 
-// List all stories in the storyboard database directory
+// List all stories in the storyboard directory below the shared database root.
 // Each entry includes the story metadata (chapterRequested, chapterCompleted, createdDate, status)
 // from plotpoint.json if available, otherwise falls back to just the storyId
 export const generationListStories = asHandlerMethod(async (_, parameters, variables) => {

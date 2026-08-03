@@ -11,7 +11,7 @@ import { generationListStories } from './generation-list-stories';
 import { DATABASE_BASE_DIR } from './generation-config';
 
 // Use an isolated temp directory as the project root so tests never pollute the
-// source tree. The service normally passes the monorepo root via variables.root.
+// source tree. The service normally passes temporary/database via variables.root.
 const projectRoot = path.join(os.tmpdir(), `story-gen-list-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 const getStoryboardDir = (storyId: string) => path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 

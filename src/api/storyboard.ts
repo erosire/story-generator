@@ -54,7 +54,7 @@ import type { StoryData } from '../context';
 
 // Story metadata returned by GET /v1/storyboard/generations/.
 // Matches the server's StoryListEntry schema in story-generator.yml.
-// Each entry corresponds to a directory under temporary/database/storyboard/
+// Each entry corresponds to a directory under the service's temporary/database/storyboard/
 // and includes summary information derived from plotpoint.json by generation-list-stories.
 // Note: storyline is intentionally omitted from the list response — it is
 // free-form user text that can be arbitrarily long and is not needed by the
