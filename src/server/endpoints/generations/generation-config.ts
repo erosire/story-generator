@@ -112,6 +112,21 @@ export const DATABASE_BASE_DIR = 'storyboard';
 // Pre-configured LLM Client
 // ---------------------------------------------------------------------------
 
+// SGLang-compatible defaults for the GLM-5.2 API. These values are attached to
+// every story-generation client so plotpoint, validation, chapter expansion,
+// retry, fork, and rewrite requests all use the same sampling behavior.
+// `max_tokens` is intentionally omitted because the deployment leaves the
+// completion limit unset unless a caller supplies one explicitly.
+export const DEFAULT_SAMPLING_PARAMS = {
+    temperature: 1.0,
+    top_p: 0.95,
+    top_k: -1,
+    min_p: 0.0,
+    presence_penalty: 0.0,
+    frequency_penalty: 0.0,
+    repetition_penalty: 1.0
+} as const;
+
 /**
  * Which client method to use for structured output.
  *   - "structure" — tool-calling (works with all providers)
@@ -121,13 +136,13 @@ export const useApiMethod: 'structure' | 'format' = 'format';
 
 // List of possible clients
 export const CLIENTS = {
-    Nvidia: NVIDIA_CLIENT.clone({ model: 'z-ai/glm-5.2' }),
-    OpenCode: OPENCODE_CLIENT.clone({ model: 'deepseek-v4-flash' }),
-    Lightning: LIGHTNING_CLIENT.clone({ model: 'anthropic/claude-opus-4-7' }),
-    GLM52: GLM52_CLIENT,
-    KIMIK3: KIMI3_CLIENT,
-    Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4' }),
-    Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731' })
+    Nvidia: NVIDIA_CLIENT.clone({ model: 'z-ai/glm-5.2', sampling: DEFAULT_SAMPLING_PARAMS }),
+    OpenCode: OPENCODE_CLIENT.clone({ model: 'deepseek-v4-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
+    Lightning: LIGHTNING_CLIENT.clone({ model: 'anthropic/claude-opus-4-7', sampling: DEFAULT_SAMPLING_PARAMS }),
+    GLM52: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
+    KIMIK3: KIMI3_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
+    Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4', sampling: DEFAULT_SAMPLING_PARAMS }),
+    Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
 export const CLIENT = CLIENTS.Nvidia;
