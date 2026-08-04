@@ -32,14 +32,29 @@ const generateStory = async (options: {
     storyline: string;
     chapterCount: number;
     attempt?: number;
+    retryIndex?: number;
     root: string;
 }) => {
     const { storyId, storyName, storyline, chapterCount, root: projectRoot } = options;
     const attempt = options.attempt ?? 1;
-    // Create a fresh client for each generation to prevent memory leaks
-    const client = createStoryClient();
+    // Keep the retry number independent from the logical attempt number so a
+    // pre-existing retry directory can be skipped without reusing its path.
+    const retryIndex = options.retryIndex ?? Number(storyId.match(/-retry-(\d+)$/)?.[1] ?? 0);
 
     const databaseDir = path.join(projectRoot, DATABASE_BASE_DIR, storyId);
+
+    // Reserve the story directory before any asynchronous work begins. A
+    // duplicate POST or a racing retry must never reopen an existing story,
+    // especially a failed story whose plotpoints are being kept for manual use.
+    // The non-recursive mkdir is the filesystem-level guard that prevents two
+    // same-ID generators from both passing an existsSync check.
+    fs.mkdirSync(path.dirname(databaseDir), { recursive: true });
+    fs.mkdirSync(databaseDir, { recursive: false });
+
+    // Create a fresh client only after the new story entry has been reserved.
+    // This prevents duplicate requests from consuming an LLM client while the
+    // original story directory remains the sole owner of the generation.
+    const client = createStoryClient();
 
     // Helper: check if story folder still exists (user may have deleted the story)
     const assertStoryExists = () => {
@@ -86,7 +101,25 @@ const generateStory = async (options: {
     let plotpointLastWriteTime = 0;
     let progressiveError: Error | null = null;
 
+    // Keep the latest parsed stream result so a failed generation retains
+    // usable partial chapters instead of replacing them with an empty array.
+    let chapters: Array<{ number: string; title: string; plotpoints: string[] }> = [];
+    let plotAttempts = 0;
+
+    // Once failure is committed, every late callback from the failed LLM call
+    // must become a no-op; the failed directory is then immutable until a user
+    // explicitly edits or expands it.
+    let storyFailed = false;
+
+    // Each streamed plot request receives a token. A timed-out request may
+    // continue emitting callbacks after Promise.race rejects, so callbacks from
+    // older request tokens must not write over the current story state.
+    let activePlotCallId = 0;
+
     const progressivePlotpointWrite = async (rawContent: string) => {
+        // A completed failure is intentionally terminal for this story entry.
+        if (storyFailed) return;
+
         const now = Date.now();
         if (now - plotpointLastWriteTime < PROGRESSIVE_BUFFER_MS) return;
         const parsed = jsonComplete(rawContent);
@@ -116,6 +149,17 @@ const generateStory = async (options: {
                   plotpoints: Array.isArray(ch.plotpoints) ? ch.plotpoints : []
               }))
             : [];
+
+        // Capture the latest complete partial response so markCompleteAndRetry
+        // can preserve the plotpoints that were available before the failure.
+        if (Array.isArray(parsed.chapters)) {
+            chapters = partialChapters;
+        }
+
+        // The stream can yield control through an async callback boundary. Check
+        // the terminal flag again immediately before touching the failed entry.
+        if (storyFailed) return;
+
         const plotpointJson = {
             storyId,
             storyName,
@@ -194,13 +238,31 @@ const generateStory = async (options: {
         let stallAttempts = 0;
         while (true) {
             resetStallTracking();
+            const callId = ++activePlotCallId;
             const stall = createStallDetector();
+            // Wrap the stream callback so a previous stalled call cannot write
+            // into the story while its replacement request is running.
+            const requestConfig = {
+                ...config,
+                onUpdate: config.onUpdate
+                    ? async (update: string) => {
+                          if (storyFailed || activePlotCallId !== callId) return;
+                          await config.onUpdate?.(update);
+                      }
+                    : undefined
+            };
             try {
-                const result = await Promise.race([callStructured(client, config), stall.promise]);
+                const result = await Promise.race([callStructured(client, requestConfig), stall.promise]);
                 stall.cancel();
+                // Invalidate callbacks that arrive after the structured result
+                // has resolved but before the client has fully unwound its stream.
+                if (activePlotCallId === callId) activePlotCallId = 0;
                 return result;
             } catch (err) {
                 stall.cancel();
+                // Invalidate the rejected/stalled request before starting a new
+                // one, preventing late SSE updates from being treated as fresh.
+                if (activePlotCallId === callId) activePlotCallId = 0;
                 if (err instanceof Error && err.message.includes('stalled')) {
                     stallAttempts++;
                     console.error(`[STALL] ${err.message} (attempt ${stallAttempts}/${MAX_STALL_RETRIES})`);
@@ -227,14 +289,18 @@ const generateStory = async (options: {
     // as "complete" (without chapter expansion) and spin up a new story
     // entry for the next attempt. This preserves the failed story in the
     // list so it can be inspected, forked, or expanded manually.
-    let chapters: Array<{ number: string; title: string; plotpoints: string[] }> = [];
-    let plotAttempts = 0;
-
     /**
      * Mark the current story as complete (without chapter expansion) and
      * spin up a new story entry for the next attempt, if attempts remain.
      */
     const markCompleteAndRetry = (reason: string) => {
+        // Failure handling can be reached by more than one asynchronous path
+        // when a stream races a timeout. Commit it once so no retry can rewrite
+        // the failed entry or create duplicate retry entries.
+        if (storyFailed) return;
+        storyFailed = true;
+        activePlotCallId = 0;
+
         assertStoryExists();
         const completedPlotpoint = {
             storyId,
@@ -264,15 +330,25 @@ const generateStory = async (options: {
         if (attempt < MAX_STORY_ATTEMPTS) {
             const baseStoryId = storyId.replace(/-retry-\d+$/, '');
             const baseStoryName = storyName.replace(/\s*\[retry \d+\]$/, '');
-            const retryStoryId = `${baseStoryId}-retry-${attempt}`;
-            const retryStoryName = `${baseStoryName} [retry ${attempt}]`;
-            console.log(`Spinning up retry story ${retryStoryId} (attempt ${attempt + 1}/${MAX_STORY_ATTEMPTS})`);
+            // Never reuse a directory, including one left by an earlier failed
+            // run. This preserves both the current failure and old retry history.
+            let nextRetryIndex = Math.max(attempt, retryIndex + 1);
+            let retryStoryId = `${baseStoryId}-retry-${nextRetryIndex}`;
+            while (fs.existsSync(path.join(projectRoot, DATABASE_BASE_DIR, retryStoryId))) {
+                nextRetryIndex++;
+                retryStoryId = `${baseStoryId}-retry-${nextRetryIndex}`;
+            }
+            const retryStoryName = `${baseStoryName} [retry ${nextRetryIndex}]`;
+            console.log(
+                `Spinning up retry story ${retryStoryId} (attempt ${attempt + 1}/${MAX_STORY_ATTEMPTS})`
+            );
             generateStory({
                 storyId: retryStoryId,
                 storyName: retryStoryName,
                 storyline,
                 chapterCount,
                 attempt: attempt + 1,
+                retryIndex: nextRetryIndex,
                 root: projectRoot
             }).catch((err) => {
                 console.error(`Retry story generation failed for ${retryStoryId}:`, err);
@@ -354,6 +430,9 @@ const generateStory = async (options: {
     // so it can be inspected even when validation fails.
     // NOTE: plotpoint.md is only written for manual debugging — the API reads .json only.
     const writePlotpointFile = (validationStatus?: { valid: boolean; reason?: string; attempt: number }) => {
+        // A late validation callback must not turn a committed failed entry
+        // back into a generating entry or replace its preserved output.
+        if (storyFailed) return;
         assertStoryExists();
 
         // Write plotpoint.json — single source of truth for story metadata + chapters
@@ -536,6 +615,20 @@ const generateStory = async (options: {
 
         // Override plotpoint file with the new response
         writePlotpointFile();
+    }
+
+    // A response with the requested chapter count is still unusable when one
+    // or more chapters has no plotpoints. Treat exhaustion of outline retries
+    // as a terminal plot failure so the incomplete outline remains inspectable
+    // and a separate story entry receives the next generation attempt.
+    const missingPlotpointChapters = chapters.filter(
+        (chapter) => !Array.isArray(chapter.plotpoints) || chapter.plotpoints.length === 0
+    );
+    if (missingPlotpointChapters.length > 0) {
+        markCompleteAndRetry(
+            `Plotpoint generation exhausted retries with ${missingPlotpointChapters.length} chapter(s) missing plotpoints`
+        );
+        return;
     }
 
     // appending[] holds the context entries for each chapter.

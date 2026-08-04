@@ -74,54 +74,103 @@ const ToggleButton = styled('button', {
     transition: `background-color ${theme.transition}, border-color ${theme.transition}`
 });
 
-// Dialog overlay — semi-transparent backdrop for the rename modal.
+// Dialog overlay — opaque enough to isolate the rename task from the dashboard
+// while preserving the surrounding page as context. The padding prevents the
+// fixed dialog from touching narrow viewport edges.
 const DialogOverlay = styled('div', {
     position: 'fixed',
     inset: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    backgroundColor: 'rgba(0, 0, 0, 0.74)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 1000
+    padding: 16,
+    boxSizing: 'border-box' as const,
+    zIndex: 1000,
+    animation: 'sg-dialog-fade-in 140ms ease both'
 });
 
-// Dialog box — floating card for the rename input.
+// Dialog box — an opaque, elevated surface with a stronger border than normal
+// dashboard panels so the edit state reads as a deliberate focused task.
 const DialogBox = styled('div', {
-    background: theme.surface2,
-    border: `1px solid ${theme.border}`,
+    width: '100%',
+    maxWidth: 400,
+    boxSizing: 'border-box' as const,
+    backgroundColor: theme.surfaceDialog,
+    border: `1px solid ${theme.borderStrong}`,
     borderRadius: theme.radiusLg,
-    padding: 24,
-    minWidth: 320,
+    padding: 26,
     display: 'flex',
     flexDirection: 'column',
-    gap: 14
+    gap: 16,
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.48)'
 });
 
+// Dialog label — provides a high-contrast task heading above the editable field.
 const DialogLabel = styled('label', {
-    fontSize: theme.fontSize.md,
-    fontWeight: 600,
-    color: theme.textMuted,
-    textTransform: 'uppercase' as const,
-    letterSpacing: 0.5
+    fontSize: theme.fontSize.lg,
+    fontWeight: 700,
+    lineHeight: 1.3,
+    color: theme.text,
+    letterSpacing: 0.1
 });
 
+// Dialog input — keeps the editor visually substantial and uses a class-based
+// focus ring so interaction feedback does not rely on inline event styling.
+const DialogInput = styled('input', {
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    padding: '12px 14px',
+    fontFamily: theme.fontSans,
+    fontSize: theme.fontSize.body,
+    lineHeight: 1.4,
+    borderRadius: theme.radiusMd,
+    border: `1px solid ${theme.borderStrong}`,
+    backgroundColor: theme.bg,
+    color: theme.text,
+    outline: 'none',
+    transition: `border-color ${theme.transition}, box-shadow ${theme.transition}, background-color ${theme.transition}`
+});
+
+// Dialog actions — aligns the low-emphasis cancel action and high-emphasis
+// rename action without allowing the buttons to collapse on small screens.
 const DialogActions = styled('div', {
     display: 'flex',
     justifyContent: 'flex-end',
-    gap: 8,
-    marginTop: 4
+    gap: 10,
+    marginTop: 2
 });
 
+// Shared dialog button base — both actions use the same dimensions for a stable
+// footer even when the primary action becomes disabled.
 const DialogButton = styled('button', {
+    minHeight: 36,
     padding: '8px 16px',
+    fontFamily: theme.fontSans,
     fontSize: theme.fontSize.md,
-    fontWeight: 600,
+    fontWeight: 700,
     borderRadius: theme.radiusMd,
     cursor: 'pointer',
     border: `1px solid ${theme.border}`,
     backgroundColor: theme.surface1,
     color: theme.textMuted,
     transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}`
+});
+
+// Primary dialog button — uses the accent as a solid action surface so the
+// confirm affordance remains visible against the opaque dialog panel.
+const DialogConfirmButton = styled('button', {
+    minHeight: 36,
+    padding: '8px 16px',
+    fontFamily: theme.fontSans,
+    fontSize: theme.fontSize.md,
+    fontWeight: 700,
+    borderRadius: theme.radiusMd,
+    cursor: 'pointer',
+    border: `1px solid ${theme.accent}`,
+    backgroundColor: theme.accent,
+    color: '#ffffff',
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
 });
 
 // App title text in the header. Slightly larger, brighter, and tracked out
@@ -241,7 +290,7 @@ const HeaderControls: React.FC<{
             <HeaderTitle
                 onClick={openRename}
                 data-testid="story-title"
-                style={{ cursor: selected ? 'pointer' : 'default' }}
+                className={selected ? 'sg-title-action' : undefined}
                 title={selected ? 'Click to rename' : undefined}
             >
                 {selected?.storyName || selected?.title || 'Story Generator'}
@@ -259,57 +308,52 @@ const HeaderControls: React.FC<{
 
             {/* Rename dialog */}
             {renaming && (
-                <DialogOverlay onClick={closeRename} data-testid="rename-overlay">
-                    <DialogBox onClick={(e) => e.stopPropagation()} data-testid="rename-dialog">
-                        <DialogLabel>Story Name</DialogLabel>
-                        <input
+                <DialogOverlay
+                    onClick={closeRename}
+                    data-testid="rename-overlay"
+                    role="presentation"
+                >
+                    <DialogBox
+                        onClick={(e) => e.stopPropagation()}
+                        data-testid="rename-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="rename-dialog-title"
+                    >
+                        <DialogLabel
+                            id="rename-dialog-title"
+                            htmlFor="rename-input"
+                        >
+                            Rename story
+                        </DialogLabel>
+                        <DialogInput
                             autoFocus
                             value={renameValue}
                             onChange={(e) => setRenameValue(e.target.value)}
                             onKeyDown={handleRenameKeyDown}
                             placeholder="Enter story name"
                             data-testid="rename-input"
-                            style={{
-                                padding: '10px 14px',
-                                fontSize: theme.fontSize.body,
-                                borderRadius: theme.radiusMd,
-                                border: `1px solid ${theme.border}`,
-                                backgroundColor: theme.surface1,
-                                color: theme.text,
-                                outline: 'none'
-                            }}
-                            onFocus={(e) => { e.currentTarget.style.borderColor = theme.accent; }}
-                            onBlur={(e) => { e.currentTarget.style.borderColor = theme.border; }}
+                            id="rename-input"
+                            className="sg-dialog-input"
                         />
                         <DialogActions>
-                            <DialogButton onClick={closeRename} data-testid="rename-cancel">
+                            <DialogButton
+                                type="button"
+                                onClick={closeRename}
+                                data-testid="rename-cancel"
+                                className="sg-hover"
+                            >
                                 Cancel
                             </DialogButton>
-                            <button
+                            <DialogConfirmButton
+                                type="button"
                                 onClick={handleRename}
                                 disabled={!renameValue.trim()}
                                 data-testid="rename-confirm"
-                                style={{
-                                    padding: '8px 16px',
-                                    fontSize: theme.fontSize.md,
-                                    fontWeight: 600,
-                                    borderRadius: theme.radiusMd,
-                                    cursor: !renameValue.trim() ? 'not-allowed' : 'pointer',
-                                    border: `1px solid ${theme.accent}`,
-                                    backgroundColor: theme.accent,
-                                    color: '#ffffff',
-                                    opacity: !renameValue.trim() ? 0.5 : 1,
-                                    transition: `background-color ${theme.transition}`
-                                }}
-                                onMouseEnter={(e) => {
-                                    if (renameValue.trim()) e.currentTarget.style.backgroundColor = theme.accentHover;
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = theme.accent;
-                                }}
+                                className="sg-dialog-confirm"
                             >
                                 Rename
-                            </button>
+                            </DialogConfirmButton>
                         </DialogActions>
                     </DialogBox>
                 </DialogOverlay>

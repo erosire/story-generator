@@ -8,6 +8,11 @@ export default defineConfig({
     plugins: [react()],
     // Relative base path so the build works on GitHub Pages subpaths
     base: './',
+    // Keep local development on the agreed localhost port instead of Vite's
+    // default 5173 so frontend and API development use a predictable URL.
+    server: {
+        port: 8000
+    },
     build: {
         outDir: 'dist',
     },

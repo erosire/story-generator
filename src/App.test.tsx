@@ -84,6 +84,66 @@ describe('StoryGeneratorApp', () => {
         });
     });
 
+    it('opens a solid rename dialog with accessible controls for the selected story', async () => {
+        // Seed one complete local entry so the title action is available without
+        // depending on bootstrap timing or a server-provided story list.
+        const story = {
+            id: 1,
+            storyId: 'rename-story-1',
+            storyName: 'Original title',
+            title: 'Original title',
+            storyline: 'A story to rename.',
+            // No chapters are needed for this header-only interaction, and a
+            // zero request count keeps the content poller out of the test.
+            chapterRequested: 0,
+            chapterCompleted: 0,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'generating' as const,
+            // Content is empty but initialized so SectionStoryContent can read
+            // its chapter count while the rename interaction is under test.
+            data: { chapters: [], meta: null },
+            isProcessing: false,
+            error: '',
+            isRemote: false
+        };
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // Clicking the selected header title opens the focused rename surface.
+        fireEvent.click(screen.getByTestId('story-title'));
+
+        const dialog = screen.getByTestId('rename-dialog');
+        const input = screen.getByTestId('rename-input') as HTMLInputElement;
+        const confirm = screen.getByTestId('rename-confirm') as HTMLButtonElement;
+
+        // The dialog exposes its modal relationship and starts with the selected
+        // title, while the input and primary action use their dedicated styles.
+        expect(dialog.getAttribute('role')).toBe('dialog');
+        expect(dialog.getAttribute('aria-modal')).toBe('true');
+        expect(dialog.getAttribute('aria-labelledby')).toBe('rename-dialog-title');
+        expect(input.value).toBe('Original title');
+        expect(input.className).toBe('sg-dialog-input');
+        expect(confirm.className).toBe('sg-dialog-confirm');
+        expect(confirm.disabled).toBe(false);
+
+        // Whitespace-only input is not a valid title and disables confirmation.
+        fireEvent.change(input, { target: { value: '   ' } });
+        expect(confirm.disabled).toBe(true);
+
+        // A non-empty title restores the primary action, and cancel closes the
+        // dialog without changing the title shown in the header.
+        fireEvent.change(input, { target: { value: 'Renamed story' } });
+        expect(confirm.disabled).toBe(false);
+        fireEvent.click(screen.getByTestId('rename-cancel'));
+        expect(screen.queryByTestId('rename-dialog')).toBeNull();
+        expect(screen.getByTestId('story-title').textContent).toBe('Original title');
+    });
+
     it('creates a new story when Generate is clicked with valid input', async () => {
         const fetchMock = globalThis.fetch as any;
         fetchMock.mockImplementation((url: string, init?: any) => {

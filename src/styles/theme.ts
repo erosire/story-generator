@@ -21,6 +21,9 @@ export const theme = {
     surface1: 'rgba(255, 255, 255, 0.04)',
     surface2: 'rgba(255, 255, 255, 0.07)',
     surface3: 'rgba(255, 255, 255, 0.10)',
+    // The rename dialog uses an opaque surface so the form stays visually
+    // grounded above the dimmed dashboard instead of blending into the overlay.
+    surfaceDialog: '#151b29',
 
     // Border hairlines. Stronger on hover/focus.
     border: 'rgba(255, 255, 255, 0.15)',

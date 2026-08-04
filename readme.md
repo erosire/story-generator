@@ -6,7 +6,7 @@ AI-powered storyboard story generator. Creates multi-chapter stories via backgro
 
 ```bash
 npm install
-npm run dev        # Vite dev server (default port 5173)
+npm run dev        # Vite dev server at http://localhost:8000
 npm run test       # Run all tests
 npm run build      # Production build to dist/
 ```

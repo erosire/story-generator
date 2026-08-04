@@ -645,4 +645,292 @@ describe('generationCreateNewStory', () => {
         expect(retry2StoryId).toBe(`${storyId}-retry-2`);
         expect(retry2StoryId).not.toContain('retry-retry');
     }, 30000);
+
+    it('should create a separate retry when outline retries exhaust with missing plotpoints', async () => {
+        const storyId = `test-story-outline-failure-${Date.now()}`;
+        const retryStoryId = `${storyId}-retry-1`;
+        createdStoryIds.push(storyId, retryStoryId);
+
+        let formatCalls = 0;
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                formatCalls++;
+
+                if (request.includes('Expand the chapter')) {
+                    return Promise.resolve({
+                        response: {
+                            title: 'Recovered Chapter',
+                            content: 'Recovered chapter content. ' + 'word '.repeat(3500)
+                        }
+                    });
+                }
+
+                // The original story returns the correct chapter count but never
+                // supplies plotpoints for chapter two, exhausting outline retries.
+                if (formatCalls <= 4) {
+                    return Promise.resolve({
+                        response: {
+                            chapters: [
+                                { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+                                { number: '2', title: 'Chapter Two', plotpoints: [] }
+                            ]
+                        }
+                    });
+                }
+
+                // The separate retry receives a complete outline and can expand.
+                return Promise.resolve({
+                    response: {
+                        chapters: [
+                            { number: '1', title: 'Chapter One', plotpoints: ['Retry Plot A'] },
+                            { number: '2', title: 'Chapter Two', plotpoints: ['Retry Plot B'] }
+                        ]
+                    }
+                });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 2 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        const originalPlotpointPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(fs.existsSync(originalPlotpointPath)).toBe(true);
+                expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).status).toBe('failed');
+                expect(fs.existsSync(getStoryboardDir(retryStoryId))).toBe(true);
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).chapters).toEqual([
+            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+            { number: '2', title: 'Chapter Two', plotpoints: [] }
+        ]);
+    }, 30000);
+
+    it('should keep a failed story immutable when a late plot stream callback arrives', async () => {
+        const storyId = `test-story-late-failure-${Date.now()}`;
+        const retryStoryId = `${storyId}-retry-1`;
+        createdStoryIds.push(storyId, retryStoryId);
+
+        let formatCalls = 0;
+        let latePlotUpdate: ((update: string) => Promise<void>) | undefined;
+
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                formatCalls++;
+
+                // The retry story must finish its chapter so the test covers
+                // the real fire-and-forget retry path, not only directory setup.
+                if (request.includes('Expand the chapter')) {
+                    return Promise.resolve({
+                        response: {
+                            title: 'Recovered Chapter',
+                            content: 'Recovered chapter content. ' + 'word '.repeat(3500)
+                        }
+                    });
+                }
+
+                if (formatCalls === 1) {
+                    // Capture the wrapped callback and reject the initial plot
+                    // request. Calling it after failure simulates a late SSE
+                    // update from a request that could not be cancelled.
+                    latePlotUpdate = config.onUpdate;
+                    return Promise.reject(new Error('Initial plot request failed'));
+                }
+
+                return Promise.resolve({
+                    response: {
+                        chapters: [{ number: '1', title: 'Recovered Plot', plotpoints: ['Recovered plot point'] }]
+                    }
+                });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 1 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        const originalPlotpointPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(fs.existsSync(originalPlotpointPath)).toBe(true);
+                expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).status).toBe('failed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        expect(latePlotUpdate).toBeDefined();
+        const failedSnapshot = fs.readFileSync(originalPlotpointPath, 'utf-8');
+
+        // This callback would previously rewrite the failed plotpoint.json with
+        // status="generating" and partial chapters after the retry started.
+        await latePlotUpdate!(JSON.stringify({ chapters: [{ number: '1', title: 'Late', plotpoints: ['Late'] }] }));
+
+        expect(fs.readFileSync(originalPlotpointPath, 'utf-8')).toBe(failedSnapshot);
+        expect(fs.existsSync(getStoryboardDir(retryStoryId))).toBe(true);
+    }, 30000);
+
+    it('should skip an existing retry directory instead of overwriting its failed output', async () => {
+        const storyId = `test-story-retry-collision-${Date.now()}`;
+        const existingRetryId = `${storyId}-retry-1`;
+        const nextRetryId = `${storyId}-retry-2`;
+        createdStoryIds.push(storyId, existingRetryId, nextRetryId);
+
+        // Simulate a failed retry from an earlier generation chain. Its exact
+        // bytes are asserted after the new chain selects the next free ID.
+        const existingRetryDir = getStoryboardDir(existingRetryId);
+        fs.mkdirSync(existingRetryDir, { recursive: true });
+        const existingRetryData = {
+            storyId: existingRetryId,
+            status: 'failed',
+            validation: { valid: false, reason: 'preserve this retry' },
+            chapters: [{ number: '1', title: 'Old failure', plotpoints: ['Old plot'] }]
+        };
+        const existingRetryPath = path.join(existingRetryDir, 'plotpoint.json');
+        fs.writeFileSync(existingRetryPath, JSON.stringify(existingRetryData, null, 2), 'utf-8');
+
+        let formatCalls = 0;
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                formatCalls++;
+
+                if (request.includes('Expand the chapter')) {
+                    return Promise.resolve({
+                        response: {
+                            title: 'Recovered Chapter',
+                            content: 'Recovered chapter content. ' + 'word '.repeat(3500)
+                        }
+                    });
+                }
+
+                if (formatCalls === 1) {
+                    return Promise.reject(new Error('Initial plot request failed'));
+                }
+
+                return Promise.resolve({
+                    response: {
+                        chapters: [{ number: '1', title: 'Recovered Plot', plotpoints: ['Recovered plot point'] }]
+                    }
+                });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 1 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        const originalPlotpointPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(fs.existsSync(originalPlotpointPath)).toBe(true);
+                expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).status).toBe('failed');
+                expect(fs.existsSync(getStoryboardDir(nextRetryId))).toBe(true);
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        expect(JSON.parse(fs.readFileSync(existingRetryPath, 'utf-8'))).toEqual(existingRetryData);
+        expect(fs.existsSync(getStoryboardDir(existingRetryId))).toBe(true);
+        expect(fs.existsSync(getStoryboardDir(nextRetryId))).toBe(true);
+    }, 30000);
+
+    it('should keep the failed story unchanged when the same story request is submitted again', async () => {
+        const storyId = `test-story-duplicate-request-${Date.now()}`;
+        const retryStoryId = `${storyId}-retry-1`;
+        createdStoryIds.push(storyId, retryStoryId);
+
+        let formatCalls = 0;
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                formatCalls++;
+
+                if (request.includes('Expand the chapter')) {
+                    return Promise.resolve({
+                        response: {
+                            title: 'Recovered Chapter',
+                            content: 'Recovered chapter content. ' + 'word '.repeat(3500)
+                        }
+                    });
+                }
+
+                if (formatCalls === 1) {
+                    return Promise.reject(new Error('Initial plot request failed'));
+                }
+
+                return Promise.resolve({
+                    response: {
+                        chapters: [{ number: '1', title: 'Recovered Plot', plotpoints: ['Recovered plot point'] }]
+                    }
+                });
+            })
+        } as any);
+
+        const firstResult = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 1 }),
+            { root: projectRoot }
+        );
+        expect(firstResult.status).toBe(200);
+
+        const originalPlotpointPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(fs.existsSync(originalPlotpointPath)).toBe(true);
+                expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).status).toBe('failed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        const failedSnapshot = fs.readFileSync(originalPlotpointPath, 'utf-8');
+
+        // A repeated POST for the same ID must not restart generation in the
+        // failed directory. The handler remains idempotent at the HTTP boundary,
+        // while the reserved directory protects the persisted failure.
+        const duplicateResult = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 1 }),
+            { root: projectRoot }
+        );
+        expect(duplicateResult.status).toBe(200);
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(fs.readFileSync(originalPlotpointPath, 'utf-8')).toBe(failedSnapshot);
+        expect(fs.existsSync(getStoryboardDir(retryStoryId))).toBe(true);
+    }, 30000);
 });

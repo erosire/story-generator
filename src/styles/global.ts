@@ -51,6 +51,28 @@ const sheet = `
 .sg-input:focus { outline: none; border-color: ${theme.accent}; background-color: ${theme.surface3}; }
 .sg-input:disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* Rename dialog — a stronger input focus treatment makes the active editor
+   unambiguous while leaving the dialog's opaque surface visually stable. */
+.sg-dialog-input:focus {
+    border-color: ${theme.accent};
+    background-color: ${theme.surface1};
+    box-shadow: 0 0 0 3px ${theme.accentRing};
+}
+
+/* Rename dialog primary action — only enabled buttons receive hover feedback;
+   disabled confirmation remains visibly unavailable and cannot look clickable. */
+.sg-dialog-confirm:hover:not(:disabled) {
+    background-color: ${theme.accentHover};
+    border-color: ${theme.accentHover};
+}
+.sg-dialog-confirm:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* The header title is interactive only when a story is selected. */
+.sg-title-action { cursor: pointer; }
+
 /* Story pill — unselected rows get a flat solid hover surface. */
 .sg-story-item:hover { background-color: ${theme.surface2}; }
 
@@ -105,6 +127,13 @@ const sheet = `
     to   { opacity: 1; }
 }
 .sg-fade-in { animation: sg-fade-in 160ms ease both; }
+
+/* Dialog entrance is opacity-only so the focused task appears immediately
+   without adding a distracting movement effect. */
+@keyframes sg-dialog-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
 
 /* Scrollbar styling — flat thin dark-native scrollbars. */
 .sg-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
