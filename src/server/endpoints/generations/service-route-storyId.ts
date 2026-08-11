@@ -5,6 +5,7 @@ import { generationGetStoryData } from './generation-get-story-data';
 import { generationUpdateChapter } from './generation-update-chapter';
 
 export default {
+    port: 5252,
     route: '/v1/storyboard/generations/:storyId',
     handler: asServiceHandler({
         POST: generationCreateNewStory,
