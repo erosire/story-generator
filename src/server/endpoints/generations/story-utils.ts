@@ -385,11 +385,12 @@ export const buildExpandRequest = (chapterNumber: string, chapterTitle: string):
         '- You must follow each of the plotpoint beat for beat without deviations.',
         '- Make sure the expanded chapter is in highly graphical explicit details',
         '- Describe everything in slow-paced vivid imagery. Expand on every details.',
-        '- Do not output a wall of text! Use short and long paragraphs.',
-        '- Must be in active voice. Dialogue-driven story like Japanese Light Novels. Show the story, do not tell it!',
+        '- Do not output a wall of text! Must use short and long paragraphs, putting emphasis on dialogues',
+        '- Must be written in active voice. Dialogue-driven story like Japanese Light Novels. Show the story, do not tell it!',
         // `> Must be a minimum of ${TARGET_WORD_COUNT_PROMPT} in total.`,
         '- The chapter must starts from the first plotpoint',
-        '- The chapter must not contains plotpoints from different chapters. Do not reveal future events',
+        '- The chapter must not contains plotpoints from different chapters',
+        '- Do not include events that had not happened yet in the chapter',
         '- The chapter must ends with the last plotpoint'
     ].join('\n');
 };
