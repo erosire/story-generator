@@ -12,6 +12,7 @@
 
 import { MAKORA_CLIENT } from '@runtime/secret/private/makora';
 import { GLM52_CLIENT, KIMI3_CLIENT, NVIDIA_CLIENT, OPENROUTER_CLIENT } from '@runtime/secret/private';
+import { TELNYX_CLIENT } from '@runtime/secret/private/telnyx';
 
 /** First user message seeded into the conversation history. */
 export const OPENING_USER_MESSAGE = 'Hey ENI';
@@ -125,7 +126,7 @@ export const DEFAULT_SAMPLING_PARAMS = {
  *   - "structure" — tool-calling (works with all providers)
  *   - "format"    — native structured output / response_format (stricter, fewer retries)
  */
-export const useApiMethod: 'structure' | 'format' = 'format';
+export const useApiMethod: 'structure' | 'format' = 'structure';
 
 // List of possible clients
 export const CLIENTS = {
@@ -133,7 +134,8 @@ export const CLIENTS = {
     Modal: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMIK3: KIMI3_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4', sampling: DEFAULT_SAMPLING_PARAMS }),
-    Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS })
+    Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS }),
+    Telnyx: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
-export const CLIENT = CLIENTS.Nvidia;
+export const CLIENT = CLIENTS.Telnyx;
