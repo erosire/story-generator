@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { MAKORA_CLIENT } from '@runtime/secret/private/makora';
-import { GLM52_CLIENT, KIMI3_CLIENT, NVIDIA_CLIENT, OPENROUTER_CLIENT } from '@runtime/secret/private';
+import { GLM52_CLIENT, KIMI3_CLIENT, NVIDIA_CLIENT, OPENROUTER_CLIENT, QWEN3_8_CLIENT } from '@runtime/secret/private';
 import { TELNYX_CLIENT } from '@runtime/secret/private/telnyx';
 
 /** First user message seeded into the conversation history. */
@@ -114,12 +114,34 @@ export const DATABASE_BASE_DIR = 'storyboard';
 export const DEFAULT_SAMPLING_PARAMS = {
     temperature: 1.0,
     top_p: 0.95,
+    // -1 is NOT a bug / not a truncation to 1 token. In SGLang (and older
+    // vLLM) sampling semantics, top_k = -1 is the sentinel for "top-k
+    // filtering disabled" — the full vocabulary is considered, leaving nucleus
+    // sampling (top_p = 0.95 above) as the only truncation mechanism. A
+    // positive value (e.g. 20, as used in deployment/kaggle/modal scripts)
+    // would restrict sampling to the k most likely tokens instead.
+    // WARNING: some backends reject -1 (they require top_k >= 0 and use 0 as
+    // the "disabled" sentinel) — see QWEN3_8_SAMPLING_PARAMS below for that
+    // variant. The value is passed through verbatim into the chat request body
+    // by simple-client.ts (SimpleClientSamplingParams, line 83); passthrough
+    // asserted at simple-client.test.ts:1348 / :1398.
     top_k: -1,
     min_p: 0.0,
     presence_penalty: 0.0,
     frequency_penalty: 0.0,
     repetition_penalty: 1.0
 } as const;
+
+// Qwen3_8 runs on a ninfer backend whose OpenAI-compatible endpoint validates
+// top_k >= 0 and rejects the -1 sentinel with HTTP 400 ("top_k must be
+// nonnegative"). Use 0 instead — vLLM semantics define top_k = 0 as "consider
+// all tokens" ("Set to 0 (or -1) to consider all tokens" in vllm/
+// sampling_params.py), so generation behavior is identical to the SGLang
+// default above; only the wire encoding differs.
+export const QWEN3_8_SAMPLING_PARAMS = {
+    ...DEFAULT_SAMPLING_PARAMS,
+    top_k: 0
+};
 
 /**
  * Which client method to use for structured output.
@@ -133,9 +155,12 @@ export const CLIENTS = {
     Nvidia: NVIDIA_CLIENT.clone({ model: 'z-ai/glm-5.2', sampling: DEFAULT_SAMPLING_PARAMS }),
     Modal: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMIK3: KIMI3_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
+    // Uses QWEN3_8_SAMPLING_PARAMS (top_k: 0) because the ninfer backend
+    // rejects the SGLang-style top_k: -1 sentinel; all other values unchanged.
+    Qwen3_8: QWEN3_8_CLIENT.clone({ sampling: QWEN3_8_SAMPLING_PARAMS }),
     Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4', sampling: DEFAULT_SAMPLING_PARAMS }),
     Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS }),
     Telnyx: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
-export const CLIENT = CLIENTS.Telnyx;
+export const CLIENT = CLIENTS.Qwen3_8;
