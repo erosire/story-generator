@@ -147,6 +147,19 @@ export const QWEN3_8_SAMPLING_PARAMS = {
  * Which client method to use for structured output.
  *   - "structure" — tool-calling (works with all providers)
  *   - "format"    — native structured output / response_format (stricter, fewer retries)
+ *
+ * Backend constraint (Qwen3_8 / ninfer deployment): 'format' is NOT usable —
+ * the ninfer engine hard-rejects any response_format other than {type:"text"}
+ * with HTTP 400 response_format_not_supported (no constrained decoding exists
+ * upstream), which surfaces as "400 only response_format {type:text} is
+ * supported". Tool-call STREAMING on that backend is restored by a proxy
+ * polyfill (deployment/qwen3_8/modal_qwen3_8_rtx6000_ninfer.py,
+ * _rewrite_body_for_tool_streaming): the engine itself buffers tool calls
+ * post-generation, so the proxy strips tools upstream, streams the model's
+ * <tool_call> content immediately, and re-emits it as incremental OpenAI
+ * delta.tool_calls[].function.arguments chunks — keeping progressive
+ * onUpdate (plotpoint writes + stall detection) functional with
+ * useApiMethod = 'structure'.
  */
 export const useApiMethod: 'structure' | 'format' = 'structure';
 
@@ -163,4 +176,4 @@ export const CLIENTS = {
     Telnyx: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
-export const CLIENT = CLIENTS.Qwen3_8;
+export const CLIENT = CLIENTS.Telnyx;
