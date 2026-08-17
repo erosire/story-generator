@@ -172,8 +172,9 @@ export const CLIENTS = {
     // rejects the SGLang-style top_k: -1 sentinel; all other values unchanged.
     Qwen3_8: QWEN3_8_CLIENT.clone({ sampling: QWEN3_8_SAMPLING_PARAMS }),
     Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4', sampling: DEFAULT_SAMPLING_PARAMS }),
+    // Makora: MAKORA_CLIENT.clone({ model: 'deepseek-ai/DeepSeek-V4-Flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS }),
     Telnyx: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
-export const CLIENT = CLIENTS.Telnyx;
+export const CLIENT = CLIENTS.Qwen3_8;
