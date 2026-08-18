@@ -184,27 +184,6 @@ const HeaderTitle = styled('span', {
     userSelect: 'none' as const
 });
 
-// Delete button — appears in the header top right when a story is selected.
-// Modern destructive button: translucent danger surface, danger border, hover
-// lifts to a stronger red-filled state.
-const DeleteButton = styled('button', {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 30,
-    padding: '0 12px',
-    borderRadius: theme.radiusMd,
-    border: `1px solid ${theme.dangerBorder}`,
-    backgroundColor: theme.dangerSoft,
-    color: theme.danger,
-    cursor: 'pointer',
-    fontSize: theme.fontSize.base,
-    fontWeight: 600,
-    lineHeight: 1,
-    marginLeft: 'auto',
-    transition: `background-color ${theme.transition}, border-color ${theme.transition}`
-});
-
 // Composed dashboard. Accepts optional store overrides (used by tests and by
 // future callers that want to point at a different storyboard base URL).
 export type StoryGeneratorAppProps = {
@@ -217,24 +196,10 @@ const HeaderControls: React.FC<{
     sidebarOpen: boolean;
     onToggleSidebar: () => void;
 }> = React.memo(({ sidebarOpen, onToggleSidebar }) => {
-    const { store, setStore, deleteStory } = useStoryStore();
+    const { store, setStore } = useStoryStore();
     const { selected } = store;
-    const [deleting, setDeleting] = React.useState(false);
     const [renaming, setRenaming] = React.useState(false);
     const [renameValue, setRenameValue] = React.useState('');
-
-    const handleDelete = React.useCallback(async () => {
-        if (!selected || deleting) return;
-        if (!window.confirm(`Delete story "${selected.title}"? This cannot be undone.`)) return;
-        setDeleting(true);
-        try {
-            await deleteStory(selected.storyId);
-        } catch (err) {
-            console.error('Failed to delete story:', err);
-        } finally {
-            setDeleting(false);
-        }
-    }, [selected, deleting, deleteStory]);
 
     const openRename = React.useCallback(() => {
         if (!selected) return;
@@ -295,16 +260,6 @@ const HeaderControls: React.FC<{
             >
                 {selected?.storyName || selected?.title || 'Story Generator'}
             </HeaderTitle>
-            {selected && (
-                <DeleteButton
-                    onClick={handleDelete}
-                    disabled={deleting}
-                    data-testid="delete-story-button"
-                    className="sg-danger"
-                >
-                    {deleting ? 'Deleting...' : 'Delete'}
-                </DeleteButton>
-            )}
 
             {/* Rename dialog */}
             {renaming && (

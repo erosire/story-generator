@@ -1,12 +1,14 @@
 // Sidebar section: vertical list of all stories in order.
 //
-// Replaces the previous horizontal tab bar. Each item shows the story title,
-// a chapter-count badge, and a processing indicator. Clicking an item selects
-// it (store.selected = entry) so the content area displays that story.
+// Replaces the previous horizontal tab bar. Each tile shows the story title,
+// a chapter-count badge, a processing indicator, and an "x" delete control
+// pinned to the tile's top-right corner. Clicking the tile body selects it
+// (store.selected = entry) so the content area displays that story; clicking
+// the "x" permanently deletes that story (identified DELETE).
 //
-// No remove button — the list is read-only. No manual refresh button — the
-// sidebar auto-refreshes periodically by polling GET /v1/storyboard/generations to pick up stories
-// created by other sessions/devices.
+// No manual refresh button — the sidebar auto-refreshes periodically by polling
+// GET /v1/storyboard/generations to pick up stories created by other
+// sessions/devices.
 //
 // Auto-refresh behavior:
 //   - On mount, fetches the collection once (via BootstrapLayer) to seed the store.
@@ -51,16 +53,28 @@ const SectionLabel = styled('div', {
     letterSpacing: 1
 });
 
+// Positioning context for each story tile. Holds the select button (fills the
+// tile) and the "x" delete control (absolutely pinned to the tile's top-right
+// corner) as SIBLINGS — the x is not nested in the select button (nested
+// interactive elements are invalid HTML, and clicks would bubble into a story
+// selection). Mirrors the chat-assistant sidebar's ChatEntry +
+// ConversationDeleteButton pattern.
+const StoryEntry = styled('div', {
+    position: 'relative',
+    margin: '2px 8px'
+});
+
 // Individual story item in the list. Pill-like row with hover tint applied via
 // the `sg-story-item` class hook (global.ts) on unselected items only — the
-// selected item uses its own elevated accent surface below.
+// selected item uses its own elevated accent surface below. The deep right
+// padding keeps a long title/badges from sliding under the overlaid "x" delete
+// control pinned to the tile's top-right corner.
 const StoryItem = styled('button', {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-    width: 'calc(100% - 16px)',
-    margin: '2px 8px',
-    padding: '9px 12px',
+    width: '100%',
+    padding: '9px 32px 9px 12px',
     border: 'none',
     borderRadius: theme.radiusMd,
     backgroundColor: 'transparent',
@@ -85,9 +99,10 @@ const StoryItemSelected = styled('button', {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-    width: 'calc(100% - 16px)',
-    margin: '2px 8px',
-    padding: '9px 12px 9px 16px',
+    width: '100%',
+    // Deep right padding so title/badges never slide under the overlaid "x"
+    // delete control in the tile's top-right corner.
+    padding: '9px 32px 9px 16px',
     border: 'none',
     borderRadius: theme.radiusMd,
     cursor: 'pointer',
@@ -103,6 +118,31 @@ const StoryItemSelected = styled('button', {
     color: '#ffffff',
     // Flat: no shadow. The active rail (::before) supplies the visual emphasis.
     transition: `background-color ${theme.transition}, color ${theme.transition}`
+});
+
+// The "x" delete control: absolutely pinned to the top-right corner of a story
+// tile (StoryEntry is its positioning context). It is a SIBLING of the select
+// button inside the entry — not nested in it — so clicking the x deletes the
+// story without triggering its selection. Muted by default, reusing the
+// `sg-danger` class hook (global.ts) for destructive hover + disabled dimming.
+const StoryDeleteButton = styled('button', {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 22,
+    minHeight: 22,
+    padding: 0,
+    border: 'none',
+    borderRadius: theme.radiusSm,
+    backgroundColor: 'transparent',
+    color: theme.textMuted,
+    cursor: 'pointer',
+    fontSize: '14px',
+    lineHeight: 1,
+    transition: `background-color ${theme.transition}, color ${theme.transition}, opacity ${theme.transition}`
 });
 
 // Title text — truncated if too long.
@@ -149,8 +189,28 @@ const EmptyMessage = styled('div', {
 });
 
 export const SectionStoryTabs: React.FC = React.memo(() => {
-    const { store, setStore } = useStoryStore();
+    const { store, setStore, deleteStory } = useStoryStore();
     const { records, selected } = store;
+
+    // Single in-flight delete guard, mirroring the chat-assistant sidebar:
+    // while any delete request is outstanding, every tile's "x" is disabled so
+    // a second delete cannot race the active identified DELETE request.
+    const [deleting, setDeleting] = React.useState(false);
+
+    const handleDelete = React.useCallback(
+        async (storyId: string) => {
+            if (deleting) return;
+            setDeleting(true);
+            try {
+                await deleteStory(storyId);
+            } catch (err) {
+                console.error('Failed to delete story:', err);
+            } finally {
+                setDeleting(false);
+            }
+        },
+        [deleting, deleteStory]
+    );
 
     // Auto-refresh: periodically fetch collection to pick up new stories.
     React.useEffect(() => {
@@ -228,7 +288,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 };
 
                 return (
-                    <React.Fragment key={entry.id}>
+                    <StoryEntry key={entry.id}>
                         {isSelected ? (
                             <StoryItemSelected {...itemProps} className="sg-story-selected">
                                 <StoryTitle>{entry.title}</StoryTitle>
@@ -242,7 +302,19 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                                 {processingBadge && <Badge>{processingBadge}</Badge>}
                             </StoryItem>
                         )}
-                    </React.Fragment>
+                        {/* "x" delete — absolutely pinned to the tile's top-right
+                            corner as a SIBLING of the select button above. */}
+                        <StoryDeleteButton
+                            onClick={() => void handleDelete(entry.storyId)}
+                            disabled={deleting}
+                            className="sg-danger"
+                            aria-label={`Delete story ${entry.title}`}
+                            title={`Delete story ${entry.title}`}
+                            data-testid={`story-delete-${entry.storyId}`}
+                        >
+                            ×
+                        </StoryDeleteButton>
+                    </StoryEntry>
                 );
             })}
             {/* Load warning — shown if BootstrapLayer or auto-refresh failed. */}
