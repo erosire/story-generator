@@ -217,11 +217,20 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 selected: entry
             }));
 
-            // POST to the server.
-            await createNewStory(store.config.baseUrl, storyId, {
-                storyline: storyline.trim(),
-                chapterCount
-            });
+            // POST to the server. clientId is the top-right dropdown selection
+            // (persisted in store.config.clientId, default 'Qwen3_8') — the
+            // server validates it against its CLIENTS map and applies it to
+            // this generation only; it is never stored with the story.
+            await createNewStory(
+                store.config.baseUrl,
+                storyId,
+                {
+                    storyline: storyline.trim(),
+                    chapterCount
+                },
+                undefined,
+                store.config.clientId
+            );
 
             setIsFocused(false);
         } catch (err: any) {

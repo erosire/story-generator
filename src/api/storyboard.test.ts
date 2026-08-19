@@ -2,15 +2,28 @@
 //
 // Covers:
 //   - createNewStory: success path (200 + { storyId }) and error path (400 with
-//     { error }) matching the server's validation responses.
+//     { error }) matching the server's validation responses. Also the per-request
+//     clientId field in both the plain-body and forkFrom branches.
 //   - fetchStoryData: 200 data, 404 not-found, and other-error branches.
 //   - fetchStoryList: 200 with StoryMeta[] (new shape), 200 with empty array,
 //     and error branches.
+//   - updateChapter / rewriteChapter: PATCH payloads (incl. clientId) and
+//     error branches.
+//   - fetchClientOptions: URL derivation from the generations baseUrl,
+//     200 list, malformed-body fallback, and error branches.
 //   - pollStoryData: terminates when chapters reach expectedChapterCount, stops
 //     cleanly when shouldStop returns true, and surfaces a hard error.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createNewStory, fetchStoryData, fetchStoryList, pollStoryData } from './storyboard';
+import {
+    createNewStory,
+    fetchStoryData,
+    fetchStoryList,
+    fetchClientOptions,
+    pollStoryData,
+    updateChapter,
+    rewriteChapter
+} from './storyboard';
 import type { StoryMeta } from './storyboard';
 
 const BASE_URL = 'http://test.local/v1/storyboard/generations';
@@ -41,12 +54,62 @@ describe('createNewStory', () => {
             chapterCount: 3
         });
 
+        // No clientId argument → the field is omitted entirely, keeping the
+        // legacy wire shape for callers without a client selection.
         expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-abc`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ storyline: 'A sci-fi adventure.', chapterCount: 3 })
         });
         expect(result).toEqual({ storyId: 'story-abc' });
+    });
+
+    it('includes clientId in the POST body when provided', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { storyId: 'story-abc' })
+        );
+
+        const result = await createNewStory(
+            BASE_URL,
+            'story-abc',
+            { storyline: 'A sci-fi adventure.', chapterCount: 3 },
+            undefined,
+            'Nvidia'
+        );
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-abc`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ storyline: 'A sci-fi adventure.', chapterCount: 3, clientId: 'Nvidia' })
+        });
+        expect(result).toEqual({ storyId: 'story-abc' });
+    });
+
+    it('includes clientId alongside forkFrom in the fork branch', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { storyId: 'fork-abc' })
+        );
+
+        const result = await createNewStory(
+            BASE_URL,
+            'fork-abc',
+            // storyline/chapterCount are not needed for a fork (the server
+            // inherits them from the source story) — same `{}` shape the UI
+            // passes in SectionStoryContent.handleFork.
+            {} as any,
+            { sourceStoryId: 'source-story', chapterIndex: 1 },
+            'Modal'
+        );
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/fork-abc`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                forkFrom: { sourceStoryId: 'source-story', chapterIndex: 1 },
+                clientId: 'Modal'
+            })
+        });
+        expect(result).toEqual({ storyId: 'fork-abc' });
     });
 
     it('throws an Error containing the server message on 400 (missing storyline)', async () => {
@@ -82,6 +145,184 @@ describe('createNewStory', () => {
         await createNewStory(BASE_URL, 'a/b c', { storyline: 'x', chapterCount: 1 });
 
         expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/a%2Fb%20c`);
+    });
+});
+
+describe('updateChapter (PATCH)', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('patches the chapter index without clientId (legacy callers)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'story-1',
+                expandChapterIndex: 2,
+                chapterNumber: '3',
+                title: 'Ch3',
+                message: 'Chapter 2 re-expansion started'
+            })
+        );
+
+        const result = await updateChapter(BASE_URL, 'story-1', 2);
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-1`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expandChapterIndex: 2 })
+        });
+        expect(result).toEqual({
+            storyId: 'story-1',
+            expandChapterIndex: 2,
+            chapterNumber: '3',
+            title: 'Ch3',
+            message: 'Chapter 2 re-expansion started'
+        });
+    });
+
+    it('patches the chapter index together with the selected clientId', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'story-1',
+                expandChapterIndex: 0,
+                chapterNumber: '1',
+                title: 'Ch1',
+                message: 'Chapter 0 re-expansion started'
+            })
+        );
+
+        await updateChapter(BASE_URL, 'story-1', 0, 'Qwen3_8');
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-1`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expandChapterIndex: 0, clientId: 'Qwen3_8' })
+        });
+    });
+
+    it('throws with the server message when the server rejects the clientId', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(400, { error: "Unknown clientId 'nope'. Available clients: Qwen3_8" })
+        );
+
+        await expect(updateChapter(BASE_URL, 'story-1', 0, 'nope')).rejects.toThrow(
+            "Unknown clientId 'nope'. Available clients: Qwen3_8"
+        );
+    });
+});
+
+describe('rewriteChapter (PATCH)', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('patches rewriteChapter + rewriteContext + rewriteRevisionIndex + clientId', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'story-1',
+                rewriteChapter: 1,
+                chapterNumber: '2',
+                title: 'Ch2',
+                message: 'Chapter 1 rewrite started'
+            })
+        );
+
+        const result = await rewriteChapter(BASE_URL, 'story-1', 1, 'Make it dramatic', 0, 'Telnyx');
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-1`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                rewriteChapter: 1,
+                rewriteContext: 'Make it dramatic',
+                rewriteRevisionIndex: 0,
+                clientId: 'Telnyx'
+            })
+        });
+        expect(result).toEqual({
+            storyId: 'story-1',
+            rewriteChapter: 1,
+            chapterNumber: '2',
+            title: 'Ch2',
+            message: 'Chapter 1 rewrite started'
+        });
+    });
+
+    it('omits optional fields when rewriteRevisionIndex and clientId are absent', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'story-1',
+                rewriteChapter: 0,
+                chapterNumber: '1',
+                title: 'Ch1',
+                message: 'Chapter 0 rewrite started'
+            })
+        );
+
+        await rewriteChapter(BASE_URL, 'story-1', 0, 'Slow it down');
+
+        expect((fetch as any).mock.calls[0][1].body).toBe(
+            JSON.stringify({ rewriteChapter: 0, rewriteContext: 'Slow it down' })
+        );
+    });
+});
+
+describe('fetchClientOptions', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('derives the /v1/storyboard/clients URL from the generations baseUrl', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { clients: ['Nvidia', 'Qwen3_8', 'Telnyx'] })
+        );
+
+        const result = await fetchClientOptions(BASE_URL);
+
+        // .../v1/storyboard/generations → .../v1/storyboard/clients
+        expect((fetch as any).mock.calls[0][0]).toBe('http://test.local/v1/storyboard/clients');
+        expect((fetch as any).mock.calls[0][1]).toEqual({ method: 'GET' });
+        expect(result).toEqual(['Nvidia', 'Qwen3_8', 'Telnyx']);
+    });
+
+    it('returns [] when the response body is malformed (stale deployment)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(200, {}));
+
+        const result = await fetchClientOptions(BASE_URL);
+
+        // The UI still renders the persisted client id as its sole option, so
+        // the fetch degrades to an empty list instead of throwing.
+        expect(result).toEqual([]);
+    });
+
+    it('throws with the server message on non-200', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(500, { error: 'client registry on fire' })
+        );
+
+        await expect(fetchClientOptions(BASE_URL)).rejects.toThrow('client registry on fire');
+    });
+
+    it('falls back to a status-based message when the body is not JSON', async () => {
+        const badResponse = {
+            ok: false,
+            status: 502,
+            json: async () => {
+                throw new SyntaxError('not json');
+            }
+        } as any;
+        (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
+
+        await expect(fetchClientOptions(BASE_URL)).rejects.toThrow('Failed to fetch client options (HTTP 502)');
     });
 });
 

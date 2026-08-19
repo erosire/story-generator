@@ -13,6 +13,10 @@
 import { MAKORA_CLIENT } from '@runtime/secret/private/makora';
 import { GLM52_CLIENT, KIMI3_CLIENT, NVIDIA_CLIENT, OPENROUTER_CLIENT, QWEN3_8_CLIENT } from '@runtime/secret/private';
 import { TELNYX_CLIENT } from '@runtime/secret/private/telnyx';
+// Type-only import: every selectable client is a SimpleClient instance
+// (simpleClient() in @agentic/harness), used to widen CLIENTS for the
+// request-driven string indexing in resolveClient().
+import type { SimpleClient } from '@agentic/harness';
 
 /** First user message seeded into the conversation history. */
 export const OPENING_USER_MESSAGE = 'Hey ENI';
@@ -177,4 +181,74 @@ export const CLIENTS = {
     Telnyx: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
+/**
+ * The default story-generation client, used when a request does not specify a
+ * clientId. Kept for backward compatibility with code/tests that import CLIENT
+ * directly — treat resolveClient() as the canonical selector.
+ */
 export const CLIENT = CLIENTS.Qwen3_8;
+
+// ---------------------------------------------------------------------------
+// Client Selection (per-request clientId)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the LLM client for a request-supplied clientId.
+ *
+ * The clientId is intentionally NOT persisted anywhere (no plotpoint.json
+ * field, no DB row) — it changes per request and travels with every payload
+ * (story creation, expansion, rewrite, fork). It is resolved against CLIENTS
+ * here, the single source of truth for selectable story clients.
+ *
+ * Fallback behaviour: an absent, empty, or unknown clientId resolves to the
+ * default client (CLIENT = CLIENTS.Qwen3_8) so a missing value can never
+ * crash a generation. Request payloads that carry an EXPLICIT unknown id are
+ * rejected earlier by parseClientId() — this fallback only covers calls that
+ * never set a clientId at all.
+ */
+export const resolveClient = (clientId?: string | null) => {
+    if (!clientId) return CLIENT;
+    // hasOwnProperty guard: CLIENTS is a plain object, so unguarded indexing
+    // would resolve inherited names ('toString', 'constructor', ...) to
+    // prototype methods. The requestId is a runtime string, not the literal
+    // keys of CLIENTS, hence the Record widening (every client is a
+    // SimpleClient from simpleClient() in
+    // packages/agentic/harness/simple/modules/simple-client.ts:550).
+    // Explicit malformed payloads are rejected upstream by parseClientId;
+    // the ?? CLIENT fallback covers ids absent from this deployment.
+    const selected: SimpleClient | undefined = Object.prototype.hasOwnProperty.call(CLIENTS, clientId)
+        ? (CLIENTS as Record<string, SimpleClient>)[clientId]
+        : undefined;
+    return selected ?? CLIENT;
+};
+
+/**
+ * Validate a raw clientId value from a request payload (POST/PATCH body).
+ *
+ * Returns:
+ *   - { clientId }           when absent (undefined/null) or a known key of
+ *                            CLIENTS (the key string is echoed back).
+ *   - { error }              when the value is present but invalid:
+ *                            non-string/empty → 'clientId must be a non-empty string'
+ *                            unknown id       → 'Unknown clientId …' listing every
+ *                            available key so the UI/caller can self-correct.
+ *
+ * Used by generation-create-new-story.ts (POST, incl. the fork branch) and
+ * generation-update-chapter.ts (PATCH) so both endpoints share one validation
+ * contract.
+ */
+export const parseClientId = (raw: unknown): { clientId?: string; error?: string } => {
+    // Absent values are legal — generation falls back to the default client.
+    if (raw === undefined || raw === null) return {};
+    if (typeof raw !== 'string' || raw.length === 0) {
+        return { error: 'clientId must be a non-empty string' };
+    }
+    // hasOwnProperty guards against 'toString', 'constructor', etc. being
+    // passed as a clientId when CLIENTS (a plain object) is indexed.
+    if (!Object.prototype.hasOwnProperty.call(CLIENTS, raw)) {
+        return {
+            error: `Unknown clientId '${raw}'. Available clients: ${Object.keys(CLIENTS).join(', ')}`
+        };
+    }
+    return { clientId: raw };
+};

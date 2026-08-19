@@ -28,6 +28,16 @@ vi.mock('./generation-config', () => {
         return client;
     };
 
+    // Shared instance so CLIENT / CLIENTS / resolveClient all resolve to the
+    // same mock — story-utils createStoryClient() now drives client selection
+    // through resolveClient(clientId), while the handler validates the payload
+    // via parseClientId (contract mirrored below).
+    const mockClient = createMockClient();
+
+    // Test-only selectable client set: only 'Qwen3_8' exists, so any other
+    // id in a PATCH body must be rejected with the production error shape.
+    const clients: Record<string, any> = { Qwen3_8: mockClient };
+
     return {
         useApiMethod: 'format',
         MODEL: 'z-ai/glm-5.2',
@@ -42,7 +52,25 @@ vi.mock('./generation-config', () => {
         MIN_PLOTPOINTS_PER_CHAPTER: 10,
         REFUSAL_PATTERNS: ['I cannot fulfill', 'I will not'],
         DATABASE_BASE_DIR: 'storyboard',
-        CLIENT: createMockClient()
+        CLIENT: mockClient,
+        CLIENTS: clients,
+        // Faithful re-implementation of the production parseClientId contract
+        // (generation-config.ts) against the test-only CLIENTS set, exercised
+        // end-to-end by the handler even though the real config module (with
+        // its private provider clients) is mocked out.
+        parseClientId: (raw: unknown): { clientId?: string; error?: string } => {
+            if (raw === undefined || raw === null) return {};
+            if (typeof raw !== 'string' || raw.length === 0) {
+                return { error: 'clientId must be a non-empty string' };
+            }
+            if (!Object.prototype.hasOwnProperty.call(clients, raw)) {
+                return {
+                    error: `Unknown clientId '${raw}'. Available clients: ${Object.keys(clients).join(', ')}`
+                };
+            }
+            return { clientId: raw };
+        },
+        resolveClient: (_clientId?: string | null) => mockClient
     };
 });
 
@@ -698,5 +726,123 @@ describe('generationUpdateChapter', () => {
         const ch2LatestRev = chapter2Payload.revisions[chapter2Payload.revisions.length - 1];
         expect(ch2LatestRev.content).not.toBe('');
         expect(chapter2Payload.title).toBe('Re-Expanded Chapter');
+    });
+
+    // ── Per-request clientId selection ──────────────────────────────────
+    // The clientId travels with each PATCH payload (expand/rewrite) and is
+    // never persisted (no plotpoint.json field) — see generation-config.ts
+    // parseClientId/resolveClient, which the mocked config above mirrors.
+    describe('clientId selection', () => {
+        const seedStory = (storyId: string, withChapterPayload: boolean) => {
+            createdStoryIds.push(storyId);
+            const storyboardDir = getStoryboardDir(storyId);
+            const chapterDir = path.join(storyboardDir, 'chapter');
+            fs.mkdirSync(chapterDir, { recursive: true });
+
+            fs.writeFileSync(
+                path.join(storyboardDir, 'plotpoint.json'),
+                JSON.stringify({
+                    storyId,
+                    storyline: 'A sci-fi adventure.',
+                    chapterCount: 1,
+                    chapters: [{ number: '1', title: 'The Beginning', plotpoints: ['Opening scene'] }],
+                    createdAt: '2026-07-01T10:00:00.000Z'
+                }),
+                'utf-8'
+            );
+
+            if (withChapterPayload) {
+                // Minimal chapter payload carrying the context append/rewrite paths require.
+                fs.writeFileSync(
+                    path.join(chapterDir, 'chapter-001.json'),
+                    JSON.stringify({
+                        storyId,
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'The Beginning',
+                        plotpoints: ['Opening scene'],
+                        context: {
+                            appending: ['> 1: The Beginning\n\n- Opening scene'],
+                            request: '> Expand the chapter "1: The Beginning"'
+                        },
+                        config: { systemInstructions: 'test', openingMessage: 'test' }
+                    }),
+                    'utf-8'
+                );
+            }
+        };
+
+        it('should return 400 when clientId is not a string (validation precedes story checks)', async () => {
+            // No story fixture needed: parseClientId runs right after the
+            // storyId check, before story-existence validation.
+            const parameters = createMockParameters('test-client-nonstring', {
+                storyName: 'Anything',
+                clientId: 42
+            });
+
+            const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
+
+            expect(result.status).toBe(400);
+            expect(result.response).toHaveProperty('error');
+            expect(result.response.error).toBe('clientId must be a non-empty string');
+        });
+
+        it('should return 400 when clientId is unknown, listing the available clients', async () => {
+            const storyId = `test-client-unknown-${Date.now()}`;
+            seedStory(storyId, false);
+
+            const parameters = createMockParameters(storyId, { expandChapterIndex: 0, clientId: 'unknown-client' });
+
+            const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
+
+            expect(result.status).toBe(400);
+            expect(result.response).toHaveProperty('error');
+            expect(result.response.error).toContain('Unknown clientId');
+            expect(result.response.error).toContain('unknown-client');
+            // Error lists selectable ids so the UI can self-correct.
+            expect(result.response.error).toContain('Qwen3_8');
+        });
+
+        it('should accept a valid clientId for chapter re-expansion and never persist it', async () => {
+            const storyId = `test-client-expand-${Date.now()}`;
+            seedStory(storyId, true);
+
+            const parameters = createMockParameters(storyId, {
+                expandChapterIndex: 0,
+                clientId: 'Qwen3_8'
+            });
+
+            const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
+
+            expect(result.status).toBe(200);
+            expect(result.response.storyId).toBe(storyId);
+            expect(result.response.message).toContain('re-expansion started');
+
+            // Let the mock re-expansion settle, then assert the persistence
+            // contract: plotpoint.json gains no clientId property.
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            const updated = JSON.parse(
+                fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.json'), 'utf-8')
+            );
+            expect(updated).not.toHaveProperty('clientId');
+        });
+
+        it('should accept a valid clientId for a chapter rewrite', async () => {
+            const storyId = `test-client-rewrite-${Date.now()}`;
+            seedStory(storyId, true);
+
+            const parameters = createMockParameters(storyId, {
+                rewriteChapter: 0,
+                rewriteContext: 'Make the scene more dramatic',
+                clientId: 'Qwen3_8'
+            });
+
+            const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
+
+            expect(result.status).toBe(200);
+            expect(result.response.storyId).toBe(storyId);
+            expect(result.response.rewriteChapter).toBe(0);
+            expect(result.response.message).toContain('rewrite started');
+        });
     });
 });

@@ -1,6 +1,6 @@
 // API client for the storyboard generations endpoints.
 //
-// Two routes (see src/server/endpoints/story-generator.yml):
+// Routes (see src/server/endpoints/story-generator.yml):
 //
 // Route 1 — Collection: GET /v1/storyboard/generations
 //   returns: { stories: StoryMeta[] }
@@ -11,10 +11,13 @@
 //
 // Route 2 — Story-specific: /v1/storyboard/generations/:storyId
 //   - POST /v1/storyboard/generations/:storyId
-//       body: { storyline: string, chapterCount: number }
+//       body: { storyline: string, chapterCount: number, clientId?: string }
+//       (or { forkFrom: { sourceStoryId, chapterIndex }, clientId?: string })
 //       returns: { storyId: string }
 //       behavior: fire-and-forget background generation; the server writes
 //       plotpoint.json immediately and chapter-NNN.md/json files one at a time.
+//       clientId selects the LLM client on the server (see Route 3 +
+//       fetchClientOptions); it is NEVER stored with the story.
 //       See generation-create-new-story.ts.
 //
 //   - GET /v1/storyboard/generations/:storyId
@@ -26,14 +29,16 @@
 //
 //   - PATCH /v1/storyboard/generations/:storyId
 //       body: { storyName?: string, expandChapterIndex?: number,
-//               rewriteChapter?: number, rewriteContext?: string }
+//               rewriteChapter?: number, rewriteContext?: string,
+//               clientId?: string }
 //       returns: { storyId, storyName?, expandChapterIndex?, rewriteChapter?,
 //                  chapterNumber?, title?, message }
 //       behavior: Updates story metadata (e.g. storyName), triggers
 //       fire-and-forget re-expansion of a single chapter (expandChapterIndex),
 //       or rewrites a chapter with user-provided context (rewriteChapter +
 //       rewriteContext). expandChapterIndex chains to subsequent pending
-//       chapters; rewriteChapter only rewrites the targeted chapter.
+//       chapters; rewriteChapter only rewrites the targeted chapter. clientId
+//       selects the LLM client for the triggered work (never stored).
 //       See generation-update-chapter.ts.
 //
 //   - DELETE /v1/storyboard/generations/:storyId
@@ -41,7 +46,13 @@
 //       behavior: Permanently deletes a story and all its data.
 //       See generation-delete-story.ts.
 //
-// `pollStoryData` repeatedly hits GET /generations/:storyId until a stop condition is met:
+// Route 3 — Clients: GET /v1/storyboard/clients
+//   returns: { clients: string[] }
+//   The selectable LLM client ids (keys of the server's CLIENTS map).
+//   fetchClientOptions() derives the URL from the generations baseUrl.
+//   See generation-list-clients.ts.
+//
+// `pollStoryData` repeatedly hits GET /v1/storyboard/generations/:storyId until a stop condition is met:
 //   - chapter count reaches the requested chapterRequested, OR
 //   - the response is a 404 (treated as "not started yet", keep polling), OR
 //   - a non-200/non-404 error occurs, OR
@@ -81,16 +92,26 @@ export type PollResult =
 // When `forkFrom` is provided, the server forks an existing story instead of
 // creating from scratch. It copies plotlines and pre-fork chapters from the
 // source story, then re-expands from chapterIndex onwards.
+//
+// `clientId` (optional) is the id of the LLM client the deployment should use
+// for this generation — chosen from the top-right dropdown (options fetched
+// via fetchClientOptions). The server validates it against its CLIENTS map
+// (400 on unknown ids) and never stores it; absent clientId → default client.
 export async function createNewStory(
     baseUrl: string,
     storyId: string,
     body: { storyline: string; chapterCount: number },
-    forkFrom?: { sourceStoryId: string; chapterIndex: number }
+    forkFrom?: { sourceStoryId: string; chapterIndex: number },
+    clientId?: string
 ): Promise<{ storyId: string }> {
     const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    // clientId is only serialized when provided — the server treats an absent
+    // value as "use the default client", so callers without a selection keep
+    // the old wire shape.
+    const clientField = clientId !== undefined && clientId.length > 0 ? { clientId } : {};
     const payload = forkFrom
-        ? { forkFrom }
-        : body;
+        ? { forkFrom, ...clientField }
+        : { ...body, ...clientField };
     const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -329,6 +350,9 @@ export async function deleteStory(
 // returns immediately with chapter info. The UI should poll GET to detect
 // when re-expansion completes (generationTimeMs in the chapter payload changes).
 // Throws on network failure or non-200 response.
+//
+// `clientId` (optional) selects the LLM client for the re-expansion chain —
+// the server validates and applies it per-request, never persists it.
 export type UpdateChapterResponse = {
     storyId: string;
     expandChapterIndex: number;
@@ -340,13 +364,16 @@ export type UpdateChapterResponse = {
 export async function updateChapter(
     baseUrl: string,
     storyId: string,
-    chapterIndex: number
+    chapterIndex: number,
+    clientId?: string
 ): Promise<UpdateChapterResponse> {
+    // clientId is included only when provided (see createNewStory).
+    const clientField = clientId !== undefined && clientId.length > 0 ? { clientId } : {};
     const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
     const response = await fetch(url, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expandChapterIndex: chapterIndex })
+        body: JSON.stringify({ expandChapterIndex: chapterIndex, ...clientField })
     });
 
     if (!response.ok) {
@@ -367,6 +394,8 @@ export async function updateChapter(
 // rewrite uses the full story summary context + user's rewriteContext as the
 // expansion prompt. Only rewrites the single targeted chapter (no chain).
 // Throws on network failure or non-200 response.
+//
+// `clientId` (optional) selects the LLM client for the rewrite (never stored).
 export type RewriteChapterResponse = {
     storyId: string;
     rewriteChapter: number;
@@ -380,12 +409,17 @@ export async function rewriteChapter(
     storyId: string,
     chapterIndex: number,
     rewriteContext: string,
-    rewriteRevisionIndex?: number
+    rewriteRevisionIndex?: number,
+    clientId?: string
 ): Promise<RewriteChapterResponse> {
     const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
     const body: Record<string, unknown> = { rewriteChapter: chapterIndex, rewriteContext };
     if (rewriteRevisionIndex !== undefined) {
         body.rewriteRevisionIndex = rewriteRevisionIndex;
+    }
+    // clientId is included only when provided (see createNewStory).
+    if (clientId !== undefined && clientId.length > 0) {
+        body.clientId = clientId;
     }
     const response = await fetch(url, {
         method: 'PATCH',
@@ -433,4 +467,41 @@ export async function updateStoryMeta(
     }
 
     return (await response.json()) as Record<string, unknown>;
+}
+
+// ── Clients endpoint ────────────────────────────────────────────────────────
+// Fetch the selectable LLM client ids from GET /v1/storyboard/clients
+// (see generation-list-clients.ts + story-generator.yml).
+//
+// The clients route is a sibling of the generations route: the store's
+// baseUrl always points at .../v1/storyboard/generations, so we remap the
+// trailing "generations" segment to "clients". If the base URL doesn't match
+// that shape (custom deployment with a different layout) the remap is a
+// no-op and the request will 404 — callers are expected to catch and fall
+// back to just offering the persisted/default client id.
+//
+// Returns the server's client id list (may be empty). Throws on network
+// failure or non-200 so the caller can surface/fall back deliberately.
+export async function fetchClientOptions(baseUrl: string): Promise<string[]> {
+    // Derive the clients URL from the generations base URL.
+    const clientsUrl = baseUrl.replace(/\/generations\/?$/, '/clients');
+    const response = await fetch(clientsUrl, { method: 'GET' });
+
+    if (!response.ok) {
+        let message = `Failed to fetch client options (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    const data = (await response.json()) as { clients?: unknown };
+    // Defensive: the server always sends { clients: string[] }, but a stale
+    // deployment without the /v1/storyboard/clients route answers 404 above;
+    // a 200 with a malformed body degrades to [] so the dropdown still renders
+    // the persisted clientId as its only option.
+    return Array.isArray(data.clients) ? (data.clients as string[]) : [];
 }

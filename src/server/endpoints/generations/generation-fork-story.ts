@@ -29,6 +29,10 @@ export type ForkStoryOptions = {
     sourceStoryId: string;
     chapterIndex: number;
     root: string;
+    // Optional per-request LLM client id (validated by parseClientId in the
+    // create-new-story handler before forkStory is invoked). Re-expansion of
+    // the forked chapters uses this client; absent id → default client.
+    clientId?: string;
 };
 
 /**
@@ -36,7 +40,7 @@ export type ForkStoryOptions = {
  * from the fork chapter onwards. Runs in the background (fire-and-forget).
  */
 export const forkStory = async (options: ForkStoryOptions) => {
-    const { newStoryId, sourceStoryId, chapterIndex, root: projectRoot } = options;
+    const { newStoryId, sourceStoryId, chapterIndex, root: projectRoot, clientId } = options;
 
     const sourceDir = path.join(projectRoot, DATABASE_BASE_DIR, sourceStoryId);
     const newDir = path.join(projectRoot, DATABASE_BASE_DIR, newStoryId);
@@ -164,7 +168,9 @@ export const forkStory = async (options: ForkStoryOptions) => {
     }
 
     // ── Sequentially re-expand chapters from chapterIndex onwards ───────────
-    const client = createStoryClient();
+    // Uses the per-request clientId when the caller supplied one, otherwise
+    // falls back to the default client inside resolveClient.
+    const client = createStoryClient(clientId);
 
     // Prime the conversation with the story context
     client.user(STORY_REQUEST_MESSAGE);

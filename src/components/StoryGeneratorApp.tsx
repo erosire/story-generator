@@ -19,7 +19,7 @@
 import React from 'react';
 import { styled, theme } from '../styles';
 import { StoryStoreProvider, useStoryStore } from '../context';
-import { updateStoryMeta } from '../api';
+import { updateStoryMeta, fetchClientOptions } from '../api';
 import { StoryGeneratorDashboard } from './StoryGeneratorDashboard';
 import { BootstrapLayer } from './BootstrapLayer';
 import { SectionStoryTabs, SectionStoryContent, SectionStoryInput } from './sections';
@@ -184,6 +184,28 @@ const HeaderTitle = styled('span', {
     userSelect: 'none' as const
 });
 
+// Top-right LLM client dropdown. `marginLeft: 'auto'` pushes it to the right
+// edge of the flex DashboardHeader row (toggle + title sit on the left).
+// NOTE: this distribution package vendors the minimal `styled()` helper
+// (src/styles/styled.tsx) instead of @presource/react's styledComponent — the
+// latter cannot be imported here (not in package.json deps). The styling is
+// the documented equivalent: static style tokens from the shared theme.
+const ClientSelect = styled('select', {
+    marginLeft: 'auto',
+    height: 34,
+    padding: '0 10px',
+    fontFamily: theme.fontSans,
+    fontSize: theme.fontSize.md,
+    fontWeight: 500,
+    color: theme.text,
+    backgroundColor: theme.surface1,
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusMd,
+    cursor: 'pointer',
+    outline: 'none',
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}`
+});
+
 // Composed dashboard. Accepts optional store overrides (used by tests and by
 // future callers that want to point at a different storyboard base URL).
 export type StoryGeneratorAppProps = {
@@ -201,6 +223,78 @@ const HeaderControls: React.FC<{
     const [renaming, setRenaming] = React.useState(false);
     const [renameValue, setRenameValue] = React.useState('');
 
+    // ── LLM client options ────────────────────────────────────────────────
+    // Fetch the selectable client ids from GET /v1/storyboard/clients on
+    // mount so the dropdown mirrors the deployment's CLIENTS map (see
+    // generation-config.ts / generation-list-clients.ts).
+    //
+    // RETRIES on failure (every CLIENTS_FETCH_RETRY_MS, up to
+    // CLIENTS_FETCH_MAX_ATTEMPTS): the most common failure is a STALE server
+    // deployment that predates the /v1/storyboard/clients route (answers 404)
+    // — without retries the dropdown would be stuck on the persisted/default
+    // clientId forever (only 'Qwen3_8' visible) even after the deployment is
+    // updated, forcing a full page reload. Retry stops after the first success;
+    // on every failure the option list is left as-is so the dropdown always
+    // stays usable (the current clientId is always offered as an option).
+    const CLIENTS_FETCH_RETRY_MS = 10000;
+    const CLIENTS_FETCH_MAX_ATTEMPTS = 30; // ~5 minutes of retry budget
+    const didFetchClientsRef = React.useRef(false);
+    React.useEffect(() => {
+        if (didFetchClientsRef.current) return;
+        didFetchClientsRef.current = true;
+
+        const baseUrl = store.config.baseUrl;
+        let disposed = false; // unmount guard — stop retrying and setState work
+
+        const fetchClients = (attempt: number) => {
+            fetchClientOptions(baseUrl)
+                .then((clients) => {
+                    if (disposed) return;
+                    setStore((prev) => {
+                        // Dedupe while keeping the server's order first; the
+                        // currently-selected id is always included so a value
+                        // persisted from localStorage (or a client that vanished
+                        // server-side) still renders as the selected option.
+                        const options = Array.from(new Set([...clients, prev.config.clientId]));
+                        return { ...prev, clientOptions: options };
+                    });
+                })
+                .catch((err) => {
+                    if (disposed) return;
+                    // Non-fatal while retries remain: dropdown falls back to the
+                    // persisted/default id until the server serves the list.
+                    console.warn(`[HeaderControls] Failed to fetch client options (attempt ${attempt}).`, err);
+                    if (attempt < CLIENTS_FETCH_MAX_ATTEMPTS) {
+                        setTimeout(() => fetchClients(attempt + 1), CLIENTS_FETCH_RETRY_MS);
+                    }
+                });
+        };
+        fetchClients(1);
+
+        return () => {
+            disposed = true;
+        };
+        // Intentionally run once on mount only (baseUrl is fixed per deployment).
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // The dropdown's option list always contains the current clientId, even
+    // before the options fetch resolves (clientOptions starts as []) — the
+    // select must never render with a value absent from its options.
+    const clientOptions = store.clientOptions.includes(store.config.clientId)
+        ? store.clientOptions
+        : [...store.clientOptions, store.config.clientId];
+
+    const handleClientChange = React.useCallback(
+        (clientId: string) => {
+            setStore((prev) => ({
+                ...prev,
+                config: { ...prev.config, clientId }
+            }));
+        },
+        [setStore]
+    );
+
     const openRename = React.useCallback(() => {
         if (!selected) return;
         setRenameValue(selected.storyName || selected.title || '');
@@ -215,7 +309,14 @@ const HeaderControls: React.FC<{
     const handleRename = React.useCallback(async () => {
         if (!selected || !renameValue.trim()) return;
         try {
-            await updateStoryMeta(store.config.baseUrl, selected.storyId, { storyName: renameValue.trim() });
+            // Every payload carries the currently selected clientId so the
+            // server's per-request client selection stays uniform across
+            // operations (metadata-only PATCHes don't invoke the LLM, but the
+            // payload shape stays consistent for the UI contract).
+            await updateStoryMeta(store.config.baseUrl, selected.storyId, {
+                storyName: renameValue.trim(),
+                clientId: store.config.clientId
+            });
             setStore((prev) => {
                 const records = prev.records.map((e) =>
                     e.storyId === selected.storyId
@@ -229,7 +330,7 @@ const HeaderControls: React.FC<{
         } catch (err) {
             console.error('Failed to rename story:', err);
         }
-    }, [selected, renameValue, store.config.baseUrl, setStore]);
+    }, [selected, renameValue, store.config.baseUrl, store.config.clientId, setStore]);
 
     const handleRenameKeyDown = React.useCallback(
         (e: React.KeyboardEvent) => {
@@ -260,6 +361,25 @@ const HeaderControls: React.FC<{
             >
                 {selected?.storyName || selected?.title || 'Story Generator'}
             </HeaderTitle>
+
+            {/* Top-right client dropdown: chooses which LLM client the server
+                uses for generation. Stored in config.clientId (persisted to
+                localStorage) and sent as `clientId` with every payload —
+                never stored by the server with the story. */}
+            <ClientSelect
+                value={store.config.clientId}
+                onChange={(e) => handleClientChange(e.target.value)}
+                data-testid="client-select"
+                aria-label="LLM client"
+                title="LLM client used for generation"
+                className="sg-input"
+            >
+                {clientOptions.map((option) => (
+                    <option key={option} value={option}>
+                        {option}
+                    </option>
+                ))}
+            </ClientSelect>
 
             {/* Rename dialog */}
             {renaming && (

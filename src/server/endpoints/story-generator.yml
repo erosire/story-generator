@@ -10,8 +10,12 @@ info:
     chapters show only plotpoints with expanded=false. Story metadata
     (storyline, chapterCount, createdAt) is also returned. PATCH to update
     story metadata (e.g. storyName) and/or re-expand a specific chapter
-    using the stored LLM context.
-  version: 1.8.0
+    using the stored LLM context. Every mutating payload (create/fork POST,
+    expand/rewrite PATCH) accepts an optional clientId selecting which LLM
+    client performs the generation — the id is never stored and must be sent
+    with each request. GET /v1/storyboard/clients lists the available client
+    ids.
+  version: 1.9.0
 servers:
   - url: http://127.0.0.1:5000
     description: Local development server
@@ -81,6 +85,12 @@ paths:
                 value:
                   storyline: A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.
                   chapterCount: 5
+              withClient:
+                summary: Create a 5-chapter story on a specific LLM client
+                value:
+                  storyline: A sci-fi adventure about a crew discovering an ancient alien artifact on Mars.
+                  chapterCount: 5
+                  clientId: Nvidia
       responses:
         '200':
           description: Story generation started successfully
@@ -256,8 +266,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/storyboard/clients:
+    get:
+      operationId: listClients
+      summary: List available generation clients
+      description: >-
+        Returns the ids of every selectable story-generation LLM client
+        (the keys of the server-side CLIENTS map in generation-config.ts).
+        The story-generator UI renders these ids as the client dropdown and
+        sends the user's selection back as clientId with every generation
+        payload. Client ids are never persisted — this endpoint is the
+        discovery mechanism keeping the UI in sync with the deployment.
+      tags:
+        - Storyboard
+      responses:
+        '200':
+          description: List of available client ids
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientsResponse'
+              example:
+                clients:
+                  - Nvidia
+                  - Modal
+                  - KIMIK3
+                  - Qwen3_8
+                  - Makora
+                  - Router
+                  - Telnyx
 components:
   schemas:
+    ClientsResponse:
+      type: object
+      properties:
+        clients:
+          type: array
+          description: >-
+            Ids of every selectable story-generation LLM client (the keys of
+            the server-side CLIENTS map). The UI dropdown renders these
+            verbatim and submits the chosen id as clientId.
+          items:
+            type: string
+          example:
+            - Nvidia
+            - Qwen3_8
+            - Telnyx
     CreateStoryRequest:
       type: object
       required:
@@ -275,6 +329,15 @@ components:
           minimum: 1
           description: Number of chapters to generate
           example: 5
+        clientId:
+          type: string
+          description: >-
+            Optional id of the LLM client that should perform the generation
+            (a key of the CLIENTS map, discoverable via
+            GET /v1/storyboard/clients). Never stored with the story — send it
+            with every request. Absent value → the server's default client.
+            Unknown value → 400 listing the available clients.
+          example: Qwen3_8
     CreateStoryResponse:
       type: object
       properties:
@@ -534,6 +597,15 @@ components:
             rewriteChapter is provided. Combined with preset rewrite prompt
             to form the full expansion request.
           example: Make the scene more dramatic and add more tension
+        clientId:
+          type: string
+          description: >-
+            Optional id of the LLM client that should perform the re-expansion
+            or rewrite (a key of the CLIENTS map, discoverable via
+            GET /v1/storyboard/clients). Never stored with the story. Absent
+            value → the server's default client. Unknown value → 400 listing
+            the available clients.
+          example: Qwen3_8
     PatchStoryResponse:
       type: object
       properties:

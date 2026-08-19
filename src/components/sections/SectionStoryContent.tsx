@@ -660,7 +660,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         async (chapterIndex: number, previousRevisionCount?: number) => {
             if (!selected?.storyId) return;
             try {
-                await updateChapter(store.config.baseUrl, selected.storyId, chapterIndex);
+                // clientId from the top-right header dropdown selects the LLM
+                // client for the background re-expansion chain (per-request only).
+                await updateChapter(store.config.baseUrl, selected.storyId, chapterIndex, store.config.clientId);
                 // Mark as processing so the tab chip shows the badge.
                 setStore((prev) => ({
                     ...prev,
@@ -680,7 +682,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 }));
             }
         },
-        [selected, store.config.baseUrl, setStore]
+        [selected, store.config.baseUrl, store.config.clientId, setStore]
     );
 
     // Poll for re-expand completion. Runs while reExpandState is set. On each
@@ -749,6 +751,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     // Fork creates a new story by copying the source story's plotlines and
     // all chapters before the fork point, then re-expanding from the fork
     // chapter onwards. The new story is added to the store and selected.
+    // Re-expansion of the forked chapters uses the top-right dropdown's
+    // clientId (per-request, never stored).
     const handleFork = React.useCallback(
         async (chapterIndex: number) => {
             if (!selected?.storyId) return;
@@ -761,7 +765,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                     store.config.baseUrl,
                     newStoryId,
                     {} as any, // storyline/chapterCount not needed for fork
-                    { sourceStoryId: selected.storyId, chapterIndex }
+                    { sourceStoryId: selected.storyId, chapterIndex },
+                    store.config.clientId
                 );
 
                 // Add the new forked story to the store and select it.
@@ -794,7 +799,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 }));
             }
         },
-        [selected, store.config.baseUrl, setStore]
+        [selected, store.config.baseUrl, store.config.clientId, setStore]
     );
 
     // ── Rewrite chapter state ─────────────────────────────────────────────
@@ -829,7 +834,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         async (chapterIndex: number, rewriteContext: string, previousRevisionCount?: number, rewriteRevisionIndex?: number) => {
             if (!selected?.storyId || !rewriteContext.trim()) return;
             try {
-                await rewriteChapter(store.config.baseUrl, selected.storyId, chapterIndex, rewriteContext.trim(), rewriteRevisionIndex);
+                // clientId selects the LLM client for the single-chapter rewrite
+                // (top-right header dropdown, per-request only).
+                await rewriteChapter(store.config.baseUrl, selected.storyId, chapterIndex, rewriteContext.trim(), rewriteRevisionIndex, store.config.clientId);
                 // Mark as processing so the tab chip shows the badge.
                 setStore((prev) => ({
                     ...prev,
@@ -853,7 +860,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 setRewriteState((prev) => ({ ...prev, isOpen: false }));
             }
         },
-        [selected, store.config.baseUrl, setStore]
+        [selected, store.config.baseUrl, store.config.clientId, setStore]
     );
 
     // Polling effect.

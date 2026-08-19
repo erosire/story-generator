@@ -20,6 +20,12 @@ import { deleteStory as deleteStoryApi } from '../api';
 const STORAGE_KEY_STORY = 'storyGenerator:lastStoryId';
 const STORAGE_KEY_EXPANDED_PREFIX = 'storyGenerator:expanded:';
 const STORAGE_KEY_RECORDS = 'storyGenerator:records';
+// The last-selected LLM client id. NOTE: this is a client-side convenience
+// only (remembers the user's dropdown choice between browser sessions). The
+// server never persists clientId with a story — it travels with every
+// generation payload (POST create/fork, PATCH expand/rewrite), which is why
+// the store keeps it in `config` rather than per-story records.
+const STORAGE_KEY_CLIENT_ID = 'storyGenerator:clientId';
 
 /** Read the last-selected storyId from localStorage. Returns null if absent. */
 export const getLastStoryId = (): string | null => {
@@ -40,6 +46,28 @@ export const setLastStoryId = (storyId: string | null) => {
         }
     } catch {
         // localStorage unavailable (SSR / private browsing) — silently ignore.
+    }
+};
+
+/** Read the last-selected LLM client id from localStorage. Null if absent. */
+export const getClientId = (): string | null => {
+    try {
+        return localStorage.getItem(STORAGE_KEY_CLIENT_ID);
+    } catch {
+        return null;
+    }
+};
+
+/** Persist the selected LLM client id to localStorage. */
+export const setClientId = (clientId: string | null) => {
+    try {
+        if (clientId) {
+            localStorage.setItem(STORAGE_KEY_CLIENT_ID, clientId);
+        } else {
+            localStorage.removeItem(STORAGE_KEY_CLIENT_ID);
+        }
+    } catch {
+        // ignore
     }
 };
 
@@ -238,7 +266,18 @@ export type StoryStore = {
     config: {
         baseUrl: string; // e.g. 'http://192.168.8.128:5000/v1/storyboard/generations'
         pollIntervalMs: number; // how often to re-poll while isProcessing
+        // The LLM client id selected in the top-right header dropdown. Sent as
+        // `clientId` in every generation payload (create/fork POST,
+        // expand/rewrite/metadata PATCH) and persisted to localStorage. Never
+        // stored on the server with the story — see generation-config.ts
+        // (resolveClient / parseClientId) on the server side.
+        clientId: string;
     };
+    // Selectable LLM client ids for the header dropdown, fetched from
+    // GET /v1/storyboard/clients (see fetchClientOptions). Starts empty until
+    // the fetch resolves; the current config.clientId is always offered as an
+    // option even if absent from this list (stale server / fetch failure).
+    clientOptions: string[];
     // Optional non-blocking banner set by BootstrapLayer when the initial
     // fetchStoryList fails (eg. server unreachable). The dashboard header reads
     // this and shows a small inline warning. Optional because legacy tests /
@@ -263,6 +302,12 @@ type StoryStoreContextValue = {
     deleteStory: (storyId: string) => Promise<void>;
 };
 
+// Default LLM client id. Must stay in sync with the server-side fallback in
+// generation-config.ts (`CLIENT = CLIENTS.Qwen3_8`) — the server applies the
+// same default when a payload carries no clientId, so a fresh UI and a
+// server-only fallback can never disagree on which model a story is written by.
+export const DEFAULT_CLIENT_ID = 'Qwen3_8';
+
 const DEFAULT_CONFIG: StoryStore['config'] = {
     // Default to the same base the runtime service tests use
     // (runtime/service/endpoints/storyboard/generations/generation-get-story-data.test.ts:4-5).
@@ -271,7 +316,10 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // Poll every 10s. The generation-create-new-story handler writes plotpoint.md
     // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
     // so 10s gives a smooth progressive reveal without hammering the server.
-    pollIntervalMs: 10000
+    pollIntervalMs: 10000,
+    // Default LLM client — overridden by localStorage (user's previous choice)
+    // or an explicit configOverrides.clientId (tests / deployments).
+    clientId: DEFAULT_CLIENT_ID
 };
 
 const StoryStoreContext = createContext<StoryStoreContextValue | null>(null);
@@ -286,7 +334,16 @@ export const StoryStoreProvider: React.FC<{
     const [store, setStoreState] = useState<StoryStore>(() => ({
         records: initialStore?.records ?? [],
         selected: initialStore?.selected ?? null,
-        config: { ...DEFAULT_CONFIG, ...configOverrides }
+        clientOptions: initialStore?.clientOptions ?? [],
+        config: {
+            ...DEFAULT_CONFIG,
+            ...configOverrides,
+            // Precedence: explicit override > user's persisted choice
+            // (localStorage) > package default. getClientId() only runs when
+            // no explicit override was given, so tests pinning configOverrides
+            // are immune to localStorage carried over between runs.
+            clientId: configOverrides?.clientId ?? getClientId() ?? DEFAULT_CONFIG.clientId
+        }
     }));
 
     // Stable setStore callback so consumers can use it in effects without re-subscribing.
@@ -299,6 +356,13 @@ export const StoryStoreProvider: React.FC<{
     useEffect(() => {
         setLastStoryId(store.selected?.storyId ?? null);
     }, [store.selected?.storyId]);
+
+    // Persist the selected LLM client id whenever it changes (dropdown choice in
+    // the dashboard header). Client-local convenience only — the server never
+    // stores clientId with a story.
+    useEffect(() => {
+        setClientId(store.config.clientId || null);
+    }, [store.config.clientId]);
 
     // Auto-persist records to localStorage whenever they change.
     // Writes are scheduled non-blocking via requestIdleCallback so the UI

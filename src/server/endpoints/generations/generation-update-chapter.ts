@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
-import { DATABASE_BASE_DIR, MIN_WORDS_PER_CHAPTER } from './generation-config';
+import { DATABASE_BASE_DIR, MIN_WORDS_PER_CHAPTER, parseClientId } from './generation-config';
 import {
     buildExpandRequest,
     createStoryClient,
@@ -38,6 +38,21 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
             response: { error: 'storyId is required' }
         };
     }
+
+    // ── Validate the per-request LLM clientId (optional) ──────────────────
+    // Same contract as generation-create-new-story.ts: explicit non-string or
+    // unknown clientId values are a 400; absent clientId is legal and the
+    // background re-expansion/rewrite falls back to the default client. The
+    // value is never persisted in plotpoint.json — it only selects the LLM
+    // client for whatever this PATCH triggers.
+    const clientIdCheck = parseClientId(body.clientId);
+    if (clientIdCheck.error) {
+        return {
+            status: 400,
+            response: { error: clientIdCheck.error }
+        };
+    }
+    const clientId = clientIdCheck.clientId;
 
     // Resolve the shared database root and the story-generator-owned directory.
     const projectRoot = variables.root;
@@ -224,7 +239,8 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         // rewriteContext is guaranteed non-empty by the guard above
         const rewriteRequest = buildRewriteRequest(rewriteChapterNumber, rewriteChapterTitle, rewriteContext!);
 
-        // Fire-and-forget: rewrite the single chapter (no chain expansion)
+        // Fire-and-forget: rewrite the single chapter (no chain expansion).
+        // clientId selects the LLM client for this rewrite (absent → default).
         rewriteChapterBg({
             storyId,
             storyline: storyMeta.storyline,
@@ -238,7 +254,8 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
             originalRequest,
             assertStoryExists,
             databaseDir,
-            chapterDir
+            chapterDir,
+            clientId
         }).catch((err) => {
             console.error(`Chapter rewrite failed for storyId ${storyId} chapter ${rewriteChapterIndex}:`, err);
         });
@@ -311,7 +328,8 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     };
 
     // Start chapter re-expansion in the background (fire-and-forget)
-    // This mirrors the pattern in generation-create-new-story.ts
+    // This mirrors the pattern in generation-create-new-story.ts.
+    // clientId selects the LLM client for the chain (absent → default).
     reExpandChapter({
         storyId,
         storyline: storyMeta.storyline,
@@ -324,7 +342,8 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         request: payloadContext.request,
         assertStoryExists,
         databaseDir,
-        chapterDir
+        chapterDir,
+        clientId
     }).catch((err) => {
         console.error(`Chapter re-expansion failed for storyId ${storyId} chapter ${expandIdx}:`, err);
     });
@@ -369,6 +388,8 @@ const reExpandChapter = async (options: {
     assertStoryExists: () => void;
     databaseDir: string;
     chapterDir: string;
+    // Per-request LLM client id (validated in the handler). Absent → default client.
+    clientId?: string;
 }) => {
     const {
         storyId,
@@ -380,8 +401,10 @@ const reExpandChapter = async (options: {
         chapterDir
     } = options;
 
-    // Create a fresh LLM client (reused across all expansions in the chain)
-    const client = createStoryClient();
+    // Create a fresh LLM client (reused across all expansions in the chain).
+    // The per-request clientId is applied to the whole re-expansion chain so
+    // every chapter touched by this PATCH is written by the same LLM client.
+    const client = createStoryClient(options.clientId);
 
     // Add the storyline to the conversation context
     client.user('You know the story I like');
@@ -594,6 +617,8 @@ const rewriteChapterBg = async (options: {
     assertStoryExists: () => void;
     databaseDir: string;
     chapterDir: string;
+    // Per-request LLM client id (validated in the handler). Absent → default client.
+    clientId?: string;
 }) => {
     const {
         storyId,
@@ -610,7 +635,7 @@ const rewriteChapterBg = async (options: {
         chapterDir
     } = options;
 
-    const client = createStoryClient();
+    const client = createStoryClient(options.clientId);
 
     // Prime with storyline context (same as initial expansion)
     client.user('You know the story I like');

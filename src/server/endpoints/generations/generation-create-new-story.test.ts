@@ -57,6 +57,16 @@ vi.mock('./generation-config', () => {
         return client;
     };
 
+    // Shared instance so CLIENT and the CLIENTS map resolve to the same mock —
+    // story-utils createStoryClient() now calls resolveClient(clientId), which
+    // the handler paths under test drive via parseClientId below.
+    const mockClient = createMockClient();
+
+    // Test-only CLIENTS surface: 'Qwen3_8' is the only selectable id, mirroring
+    // the production default while keeping the fake parseClientId contract
+    // deterministic (unknown id → 400 with the exact production error shape).
+    const clients: Record<string, any> = { Qwen3_8: mockClient };
+
     return {
         useApiMethod: 'format',
         OPENING_USER_MESSAGE: 'Hey ENI',
@@ -72,7 +82,28 @@ vi.mock('./generation-config', () => {
         MIN_PLOTPOINTS_PER_CHAPTER: 10,
         REFUSAL_PATTERNS: ['I cannot fulfill', 'I will not'],
         DATABASE_BASE_DIR: 'storyboard',
-        CLIENT: createMockClient()
+        CLIENT: mockClient,
+        CLIENTS: clients,
+        // Faithful re-implementation of the production parseClientId contract
+        // (generation-config.ts) against the test-only CLIENTS set, so the
+        // endpoint validation is exercised end-to-end even though the real
+        // config module (with its private provider clients) is mocked out.
+        parseClientId: (raw: unknown): { clientId?: string; error?: string } => {
+            if (raw === undefined || raw === null) return {};
+            if (typeof raw !== 'string' || raw.length === 0) {
+                return { error: 'clientId must be a non-empty string' };
+            }
+            if (!Object.prototype.hasOwnProperty.call(clients, raw)) {
+                return {
+                    error: `Unknown clientId '${raw}'. Available clients: ${Object.keys(clients).join(', ')}`
+                };
+            }
+            return { clientId: raw };
+        },
+        // story-utils createStoryClient() resolves the per-request clientId
+        // through this — the handler already validated via parseClientId, so
+        // the mock pins every id back to the shared client.
+        resolveClient: (_clientId?: string | null) => mockClient
     };
 });
 
@@ -293,6 +324,79 @@ describe('generationCreateNewStory', () => {
         expect(result.status).toBe(400);
         expect(result.response).toHaveProperty('error');
         expect(result.response.error).toContain('chapterCount');
+    });
+
+    // ── Per-request clientId selection ────────────────────────────────────
+    // The clientId travels with each payload (never stored — see the
+    // generation-config.ts parseClientId/resolveClient contract) and selects
+    // which LLM client the background generation uses.
+    it('should return 400 when clientId is present but not a string', async () => {
+        const storyId = `test-story-bad-client-type-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const parameters = createMockParameters(storyId, {
+            storyline: TEST_STORYLINE,
+            chapterCount: TEST_CHAPTER_COUNT,
+            clientId: 42
+        });
+
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
+
+        expect(result.status).toBe(400);
+        expect(result.response).toHaveProperty('error');
+        expect(result.response.error).toBe('clientId must be a non-empty string');
+        // Validation happens before generation starts — no story dir may exist.
+        expect(fs.existsSync(getStoryboardDir(storyId))).toBe(false);
+    });
+
+    it('should return 400 when clientId is unknown, listing the available clients', async () => {
+        const storyId = `test-story-unknown-client-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const parameters = createMockParameters(storyId, {
+            storyline: TEST_STORYLINE,
+            chapterCount: TEST_CHAPTER_COUNT,
+            clientId: 'unknown-client'
+        });
+
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
+
+        expect(result.status).toBe(400);
+        expect(result.response).toHaveProperty('error');
+        expect(result.response.error).toContain('Unknown clientId');
+        expect(result.response.error).toContain('unknown-client');
+        // The error message lists every selectable id so the caller self-corrects.
+        expect(result.response.error).toContain('Qwen3_8');
+        expect(fs.existsSync(getStoryboardDir(storyId))).toBe(false);
+    });
+
+    it('should accept a valid clientId, run generation, and never persist it', async () => {
+        const storyId = `test-story-with-client-${Date.now()}`;
+        createdStoryIds.push(storyId);
+        const storyboardDir = getStoryboardDir(storyId);
+
+        const parameters = createMockParameters(storyId, {
+            storyline: TEST_STORYLINE,
+            chapterCount: TEST_CHAPTER_COUNT,
+            clientId: 'Qwen3_8'
+        });
+
+        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
+
+        expect(result.status).toBe(200);
+        expect(result.response.storyId).toBe(storyId);
+
+        // Wait for the fire-and-forget background generation to write the
+        // placeholder plotpoint.json (same pattern as the directory test above).
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        expect(fs.existsSync(path.join(storyboardDir, 'plotpoint.json'))).toBe(true);
+
+        // Contract: clientId is per-request only — plotpoint.json must NOT
+        // gain a clientId field (the story dir is the story's persistent state).
+        const storyMeta = JSON.parse(fs.readFileSync(path.join(storyboardDir, 'plotpoint.json'), 'utf-8'));
+        expect(storyMeta).not.toHaveProperty('clientId');
+        expect(storyMeta.storyId).toBe(storyId);
+        expect(storyMeta.storyline).toBe(TEST_STORYLINE);
     });
 
     it('should retry chapter expansion after timeout and log timeout error', async () => {

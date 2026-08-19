@@ -37,7 +37,7 @@ vi.mock('@runtime/secret/private', () => ({
 }));
 vi.mock('@runtime/secret/private/telnyx', () => ({ TELNYX_CLIENT: mocks.TELNYX_CLIENT }));
 
-import { CLIENTS, DEFAULT_SAMPLING_PARAMS, QWEN3_8_SAMPLING_PARAMS } from './generation-config';
+import { CLIENT, CLIENTS, DEFAULT_SAMPLING_PARAMS, QWEN3_8_SAMPLING_PARAMS, parseClientId, resolveClient } from './generation-config';
 
 describe('generation sampling defaults', () => {
     it('defines the exact SGLang-compatible defaults', () => {
@@ -103,5 +103,74 @@ describe('generation sampling defaults', () => {
             'Router',
             'Telnyx'
         ]);
+    });
+
+    it('resolves each known clientId to its own (mocked) client instance', () => {
+        // Each CLIENTS entry is a distinct mock (clone returns itself), so
+        // identity assertions prove the lookup is key-accurate — a broken
+        // map (e.g. one client returned for every id) would fail exactly one
+        // of these per key.
+        expect(resolveClient('Nvidia')).toBe(mocks.NVIDIA_CLIENT);
+        expect(resolveClient('Modal')).toBe(mocks.GLM52_CLIENT);
+        expect(resolveClient('KIMIK3')).toBe(mocks.KIMI3_CLIENT);
+        expect(resolveClient('Qwen3_8')).toBe(mocks.QWEN3_8_CLIENT);
+        expect(resolveClient('Makora')).toBe(mocks.MAKORA_CLIENT);
+        expect(resolveClient('Router')).toBe(mocks.OPENROUTER_CLIENT);
+        expect(resolveClient('Telnyx')).toBe(mocks.TELNYX_CLIENT);
+    });
+
+    it('falls back to the default client (CLIENT = CLIENTS.Qwen3_8) for absent or unknown ids', () => {
+        // The server-side default must be the same Qwen3_8 the UI defaults to
+        // (store.tsx DEFAULT_CLIENT_ID), so a payload without clientId and a
+        // UI-driven payload for the default id hit the same client.
+        expect(CLIENT).toBe(CLIENTS.Qwen3_8);
+        expect(resolveClient()).toBe(CLIENT);
+        expect(resolveClient(null)).toBe(CLIENT);
+        expect(resolveClient('')).toBe(CLIENT);
+        expect(resolveClient('no-such-client')).toBe(CLIENT);
+        // Inherited-prototype names must NOT resolve to prototype methods
+        // (CLIENTS is a plain object) — the hasOwnProperty guard in
+        // resolveClient covers this; without it resolveClient('toString')
+        // would return Object.prototype.toString.
+        expect(resolveClient('toString')).toBe(CLIENT);
+        expect(resolveClient('constructor')).toBe(CLIENT);
+    });
+});
+
+describe('parseClientId', () => {
+    it('treats an absent value as the legal default-client signal', () => {
+        expect(parseClientId(undefined)).toEqual({});
+        expect(parseClientId(null)).toEqual({});
+    });
+
+    it('accepts every selectable client id, echoing the key verbatim', () => {
+        expect(parseClientId('Nvidia')).toEqual({ clientId: 'Nvidia' });
+        expect(parseClientId('Modal')).toEqual({ clientId: 'Modal' });
+        expect(parseClientId('KIMIK3')).toEqual({ clientId: 'KIMIK3' });
+        expect(parseClientId('Qwen3_8')).toEqual({ clientId: 'Qwen3_8' });
+        expect(parseClientId('Makora')).toEqual({ clientId: 'Makora' });
+        expect(parseClientId('Router')).toEqual({ clientId: 'Router' });
+        expect(parseClientId('Telnyx')).toEqual({ clientId: 'Telnyx' });
+    });
+
+    it('rejects non-string clientId values with the type error', () => {
+        expect(parseClientId(7).error).toBe('clientId must be a non-empty string');
+        expect(parseClientId('').error).toBe('clientId must be a non-empty string');
+        expect(parseClientId({}).error).toBe('clientId must be a non-empty string');
+        expect(parseClientId([]).error).toBe('clientId must be a non-empty string');
+        expect(parseClientId(true).error).toBe('clientId must be a non-empty string');
+    });
+
+    it('rejects unknown clientId values, listing every available client', () => {
+        expect(parseClientId('Nope')).toEqual({
+            clientId: undefined,
+            error: 'Unknown clientId \'Nope\'. Available clients: Nvidia, Modal, KIMIK3, Qwen3_8, Makora, Router, Telnyx'
+        });
+        // Inherited prototype names are rejected even though plain-object
+        // indexing would "find" them — hasOwnProperty is the guard.
+        expect(parseClientId('toString')).toEqual({
+            clientId: undefined,
+            error: 'Unknown clientId \'toString\'. Available clients: Nvidia, Modal, KIMIK3, Qwen3_8, Makora, Router, Telnyx'
+        });
     });
 });

@@ -10,7 +10,7 @@ import path from 'node:path';
 import { KIMIK2_INSTRUCTIONS, KIMIK2_OPENING } from '@runtime/data/prompts';
 import { type TSchema, Type } from '@sinclair/typebox';
 import { jsonComplete } from '@presource/core';
-import { CLIENT, DATABASE_BASE_DIR, EXPAND_TIMEOUT_MS, OPENING_USER_MESSAGE, useApiMethod } from './generation-config';
+import { resolveClient, DATABASE_BASE_DIR, EXPAND_TIMEOUT_MS, OPENING_USER_MESSAGE, useApiMethod } from './generation-config';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,12 +57,18 @@ export const resolveStoryboardDir = (root: string, storyId: string): string => {
 
 /**
  * Create an LLM client pre-configured for story generation.
- * Clones the shared simpleClient from generation-config to avoid
- * shared mutable state between concurrent generations.
+ *
+ * @param clientId - Optional per-request client id (from the request payload,
+ *   validated by parseClientId in the handlers). Resolved via resolveClient()
+ *   against generation-config CLIENTS; absent/unknown ids fall back to the
+ *   default client so the selection is always per-request and never persisted.
+ *
+ * Clones the selected shared simpleClient to avoid shared mutable state
+ * between concurrent generations.
  * The clone is then primed with system instructions and opening conversation messages.
  */
-export const createStoryClient = () => {
-    const client = CLIENT.clone();
+export const createStoryClient = (clientId?: string) => {
+    const client = resolveClient(clientId).clone();
 
     client.system(KIMIK2_INSTRUCTIONS);
     client.user(OPENING_USER_MESSAGE);

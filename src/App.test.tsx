@@ -59,6 +59,161 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('storyline-input')).toBeDefined();
         // Sidebar is present with the "Stories" label.
         expect(screen.getByTestId('sidebar')).toBeDefined();
+        // The top-right LLM client dropdown is always rendered. Before the
+        // server's client list arrives it offers only the default client id
+        // (localStorage cleared in beforeEach → DEFAULT_CLIENT_ID 'Qwen3_8').
+        const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
+        expect(clientSelect).toBeDefined();
+        expect(clientSelect.value).toBe('Qwen3_8');
+    });
+
+    it('offers the server-listed clients in the top-right dropdown and posts the chosen clientId on Generate', async () => {
+        const fetchMock = globalThis.fetch as any;
+        // The clients route is a sibling of the generations route with the
+        // trailing segment swapped (see fetchClientOptions in src/api/storyboard.ts).
+        const CLIENTS_URL = `${BASE_URL.replace(/\/generations$/, '/clients')}`;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'POST') {
+                const storyId = String(url.split('/').pop() ?? '');
+                return Promise.resolve(mockResponse(200, { storyId }));
+            }
+            if (url === CLIENTS_URL) {
+                // Server advertises its selectable CLIENTS keys (generation-config.ts).
+                return Promise.resolve(mockResponse(200, { clients: ['Nvidia', 'Modal', 'Qwen3_8'] }));
+            }
+            return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
+        // Default selection is the package default client id.
+        expect(clientSelect.value).toBe('Qwen3_8');
+
+        // The options fetch resolves and replaces the options list.
+        await waitFor(() => {
+            const options = Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value);
+            expect(options).toEqual(['Nvidia', 'Modal', 'Qwen3_8']);
+        });
+
+        // Pick a different LLM client.
+        fireEvent.change(clientSelect, { target: { value: 'Nvidia' } });
+        expect(clientSelect.value).toBe('Nvidia');
+
+        // Focus the storyline input to reveal the controls, fill the form, generate.
+        fireEvent.focus(screen.getByTestId('storyline-input'));
+        await waitFor(() => {
+            expect(screen.getByTestId('generate-button')).toBeDefined();
+        });
+        fireEvent.change(screen.getByTestId('storyline-input'), {
+            target: { value: 'A test story for Nvidia' }
+        });
+        fireEvent.change(screen.getByTestId('chapter-count-input'), {
+            target: { value: '2' }
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('generate-button'));
+        });
+
+        // The POST body carries the dropdown selection — the server validates
+        // it and uses the matching client for this generation only.
+        await waitFor(() => {
+            const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
+            expect(postCall).toBeDefined();
+            expect(JSON.parse(postCall![1].body)).toEqual({
+                storyline: 'A test story for Nvidia',
+                chapterCount: 2,
+                clientId: 'Nvidia'
+            });
+        });
+    });
+
+    // Retries the /v1/storyboard/clients fetch against a STALE deployment:
+    // the first response is a 404 (route not deployed yet), the retry after
+    // CLIENTS_FETCH_RETRY_MS (10s, see StoryGeneratorApp.tsx) hits the
+    // updated server and fills the dropdown with every CLIENTS key — no page
+    // reload required. Fake timers advance the retry delay deterministically.
+    it('recovers the full client list when the server first 404s (stale deployment) and recovers without a page reload', async () => {
+        vi.useFakeTimers();
+        const fetchMock = globalThis.fetch as any;
+        const CLIENTS_URL = `${BASE_URL.replace(/\/generations$/, '/clients')}`;
+        let clientsCalls = 0;
+        // Full key set from the server's CLIENTS map (generation-config.ts).
+        const ALL_CLIENTS = ['Nvidia', 'Modal', 'KIMIK3', 'Qwen3_8', 'Makora', 'Router', 'Telnyx'];
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (url === CLIENTS_URL && (!init || init.method === 'GET')) {
+                clientsCalls++;
+                // Attempt 1: stale deployment predates the clients route → 404.
+                if (clientsCalls === 1) {
+                    return Promise.resolve(mockResponse(404, { error: 'Not Found' }));
+                }
+                // Attempt 2 (retry after the deployment restarts): full list.
+                return Promise.resolve(mockResponse(200, { clients: ALL_CLIENTS }));
+            }
+            return Promise.resolve(mockResponse(200, init && init.method === 'POST' ? {} : { stories: [] }));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
+        // After the initial 404 the dropdown offers only the default id —
+        // the exact symptom the retry loop eliminates once the server recovers.
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value)).toEqual(['Qwen3_8']);
+
+        // Advance past CLIENTS_FETCH_RETRY_MS (10s) to fire the first retry.
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(10 * 1000);
+        });
+
+        // The retry found the route and the dropdown now mirrors every client.
+        expect(Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value)).toEqual(ALL_CLIENTS);
+        expect(clientsCalls).toBe(2);
+        vi.useRealTimers();
+    });
+
+    // The user's last dropdown choice must survive a full reload: the store
+    // persists config.clientId to localStorage (key 'storyGenerator:clientId')
+    // and StoryStoreProvider restores it ahead of the DEFAULT_CLIENT_ID
+    // fallback and ahead of the server's client list (localStorage > default).
+    it('persists the selected clientId to localStorage and restores it on the next mount', async () => {
+        const view = render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
+        expect(clientSelect.value).toBe('Qwen3_8'); // no stored choice yet → default
+        // Default fetch mock answers the clients URL with 200 { stories: [] } →
+        // fetchClientOptions degrades to [] (no clients key), so the option
+        // list stays pinned to the selected id and 'Modal' is not selectable.
+        // Simulate the server advertising Modal to make the choice meaningful.
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (url === `${BASE_URL.replace(/\/generations$/, '/clients')}`) {
+                return Promise.resolve(mockResponse(200, { clients: ['Qwen3_8', 'Modal'] }));
+            }
+            return Promise.resolve(mockResponse(200, { stories: [] }));
+        });
+        // Re-mount triggers a fresh options fetch with the new mock.
+        view.unmount();
+        const view2 = render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+        const select2 = screen.getByTestId('client-select') as HTMLSelectElement;
+        await waitFor(() => {
+            expect(Array.from(select2.querySelectorAll('option')).map((o) => o.value)).toEqual(['Qwen3_8', 'Modal']);
+        });
+
+        // Choose Modal — the store's effect persists it to localStorage.
+        fireEvent.change(select2, { target: { value: 'Modal' } });
+        await waitFor(() => {
+            expect(localStorage.getItem('storyGenerator:clientId')).toBe('Modal');
+        });
+        view2.unmount();
+
+        // A brand-new mount (page reload) restores the persisted choice.
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+        const select3 = screen.getByTestId('client-select') as HTMLSelectElement;
+        // The provider reads localStorage before any options fetch resolves,
+        // so the FIRST render already reflects the user's previous choice.
+        expect(select3.value).toBe('Modal');
     });
 
     it('toggles the sidebar open and closed via the hamburger icon', async () => {
@@ -181,12 +336,17 @@ describe('StoryGeneratorApp', () => {
         });
 
         // The POST should have been made.
+        //
+        // The payload carries the top-right dropdown selection as clientId
+        // (store.config.clientId, default 'Qwen3_8' — localStorage is cleared
+        // in beforeEach so the package default always applies in tests).
         await waitFor(() => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
             expect(postCall).toBeDefined();
             expect(JSON.parse(postCall![1].body)).toEqual({
                 storyline: 'A test story',
-                chapterCount: 3
+                chapterCount: 3,
+                clientId: 'Qwen3_8'
             });
         });
     });
@@ -247,9 +407,12 @@ describe('StoryGeneratorApp', () => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
             expect(postCall).toBeDefined();
             expect(postCall![0]).toBe(`${BASE_URL}/${storyId}`);
+            // clientId is the store's default client id (localStorage cleared
+            // in beforeEach → DEFAULT_CLIENT_ID = 'Qwen3_8').
             expect(JSON.parse(postCall![1].body)).toEqual({
                 storyline: 'A sci-fi adventure on Mars.',
-                chapterCount: 3
+                chapterCount: 3,
+                clientId: 'Qwen3_8'
             });
         });
 
