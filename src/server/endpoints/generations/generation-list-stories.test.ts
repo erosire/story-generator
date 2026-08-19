@@ -387,6 +387,52 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         console.log('Failed story:', { status: found.status });
     });
 
+    it('should report status "completed" for plotline-only stories even with zero expanded chapters', async () => {
+        const storyId = `test-list-plotonly-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const dir = getStoryboardDir(storyId);
+        fs.mkdirSync(dir, { recursive: true });
+
+        // The dashboard Generate button triggers plotline-only generation (the
+        // plotOnly branch in generation-create-new-story.ts): once the plotline
+        // is written, the terminal state is status 'completed' with
+        // chapterCompleted still 0 (chapters are expanded individually later
+        // via PATCH). deriveStatus must honor that explicit terminal status —
+        // otherwise the sidebar reports such stories as 'generating' forever.
+        fs.writeFileSync(
+            path.join(dir, 'plotpoint.json'),
+            JSON.stringify({
+                storyId,
+                storyName: 'Plotline-Only Story',
+                storyline: 'A story generated as plotlines only.',
+                chapterCount: 3,
+                chapterCompleted: 0,
+                chapters: [
+                    { number: '1', title: 'Ch 1', plotpoints: ['a'] },
+                    { number: '2', title: 'Ch 2', plotpoints: ['b'] },
+                    { number: '3', title: 'Ch 3', plotpoints: ['c'] }
+                ],
+                validation: { valid: true, reason: 'plotline complete', attempt: 0 },
+                status: 'completed',
+                createdAt: '2026-08-01T00:00:00.000Z'
+            }),
+            'utf-8'
+        );
+
+        const parameters = createMockParameters();
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
+
+        const found = result.response.stories.find((s: any) => s.storyId === storyId);
+        expect(found).toBeDefined();
+        expect(found.storyName).toBe('Plotline-Only Story');
+        expect(found.chapterRequested).toBe(3);
+        expect(found.chapterCompleted).toBe(0);
+        expect(found.status).toBe('completed');
+
+        console.log('Plotline-only story:', { chapterRequested: found.chapterRequested, chapterCompleted: found.chapterCompleted, status: found.status });
+    });
+
     it('should report status "generating" when chapters are partially expanded and not failed', async () => {
         const storyId = `test-list-gen-${Date.now()}`;
         createdStoryIds.push(storyId);

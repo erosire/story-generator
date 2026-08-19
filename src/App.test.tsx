@@ -11,6 +11,7 @@
 // tiny value so the loop advances quickly under real timers.
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoryGeneratorApp } from './components';
 import { cancelPendingStorageWrites } from './context/store';
@@ -65,6 +66,13 @@ describe('StoryGeneratorApp', () => {
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
         expect(clientSelect).toBeDefined();
         expect(clientSelect.value).toBe('Qwen3_8');
+        // Theming contract: the native select opts into the dark color scheme
+        // (inline, so the UA paints the control + popup dark instead of the
+        // default grey-on-white) and carries the sg-select/sg-input class
+        // hooks that drive the flat hover/focus treatment (styles/global.ts).
+        expect(clientSelect.className).toContain('sg-select');
+        expect(clientSelect.className).toContain('sg-input');
+        expect(clientSelect.style.colorScheme).toBe('dark');
     });
 
     it('offers the server-listed clients in the top-right dropdown and posts the chosen clientId on Generate', async () => {
@@ -156,12 +164,15 @@ describe('StoryGeneratorApp', () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
-        // After the initial 404 the dropdown offers only the default id —
-        // the exact symptom the retry loop eliminates once the server recovers.
+        const readOptions = () => Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value);
+
+        // Flush microtasks (fake timers: a 0ms advance runs the pending promise
+        // chain of the first, 404-ing fetch) — the dropdown still offers only
+        // the default id: the exact stale-deployment symptom.
         await act(async () => {
-            await Promise.resolve();
+            for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
         });
-        expect(Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value)).toEqual(['Qwen3_8']);
+        expect(readOptions()).toEqual(['Qwen3_8']);
 
         // Advance past CLIENTS_FETCH_RETRY_MS (10s) to fire the first retry.
         await act(async () => {
@@ -169,9 +180,59 @@ describe('StoryGeneratorApp', () => {
         });
 
         // The retry found the route and the dropdown now mirrors every client.
-        expect(Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value)).toEqual(ALL_CLIENTS);
+        expect(readOptions()).toEqual(ALL_CLIENTS);
         expect(clientsCalls).toBe(2);
         vi.useRealTimers();
+    });
+
+    // StrictMode regression (dev-only failure mode): React 18 StrictMode runs
+    // mount effect → cleanup → re-mount effect. The clients-fetch effect must
+    // NOT use a shared "did fetch" ref guard — the guard makes the StrictMode
+    // re-run return early, orphaning the first run's in-flight fetch whose
+    // closure was already disposed by its cleanup. The browser still completes
+    // that request (307 → 200 in DevTools) but its response is dropped, and no
+    // fetch is ever re-issued, so the dropdown stays pinned to the default
+    // clientId forever. Render inside <StrictMode> (like main.tsx does) and
+    // assert the full server list still lands in the dropdown.
+    it('populates the client dropdown under React.StrictMode double-invocation (no orphaned disposed fetch)', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const CLIENTS_URL = `${BASE_URL.replace(/\/generations$/, '/clients')}`;
+        let clientsCalls = 0;
+        // Full key set from the server's CLIENTS map (generation-config.ts).
+        const ALL_CLIENTS = ['Nvidia', 'Modal', 'KIMIK3', 'Qwen3_8', 'Makora', 'Router', 'Telnyx'];
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (url === CLIENTS_URL && (!init || init.method === 'GET')) {
+                clientsCalls++;
+                // Every attempt succeeds, exactly like the real deployment:
+                // the drop can only come from the component ignoring the
+                // response (disposed closure), not from the network.
+                return Promise.resolve(mockResponse(200, { clients: ALL_CLIENTS }));
+            }
+            return Promise.resolve(mockResponse(200, { stories: [] }));
+        });
+
+        // main.tsx wraps <App /> in <React.StrictMode> — replicate it so the
+        // double mount/cleanup/mount lifecycle is exercised.
+        render(
+            <StrictMode>
+                <StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />
+            </StrictMode>
+        );
+
+        const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
+        // Before any fetch resolves the dropdown offers only the default id.
+        expect(clientSelect.value).toBe('Qwen3_8');
+
+        // The StrictMode remount's own fetch must complete and populate the
+        // dropdown with every client — not just the first (disposed) attempt,
+        // which would leave the options pinned to Qwen3_8.
+        await waitFor(() => {
+            const options = Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value);
+            expect(options).toEqual(ALL_CLIENTS);
+        });
+        // StrictMode issues the effect twice; both attempts must have hit the
+        // endpoint (the first one's result is intentionally discarded).
+        expect(clientsCalls).toBe(2);
     });
 
     // The user's last dropdown choice must survive a full reload: the store
@@ -198,7 +259,8 @@ describe('StoryGeneratorApp', () => {
         const view2 = render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
         const select2 = screen.getByTestId('client-select') as HTMLSelectElement;
         await waitFor(() => {
-            expect(Array.from(select2.querySelectorAll('option')).map((o) => o.value)).toEqual(['Qwen3_8', 'Modal']);
+            const options = Array.from(select2.querySelectorAll('option')).map((o) => o.value);
+            expect(options).toEqual(['Qwen3_8', 'Modal']);
         });
 
         // Choose Modal — the store's effect persists it to localStorage.

@@ -27,6 +27,16 @@ const ACCENT_SOLID = theme.accent;
 const ACCENT_SOLID_HOVER = theme.accentHover;
 
 const sheet = `
+/* ---- Color scheme ------------------------------------------------------ */
+
+/* Native UI surfaces the browser paints for us — scrollbars, native
+   dialogs, and native form controls (incl. the header client dropdown's
+   <select> control + options popup, StoryGeneratorApp ClientSelect) are
+   drawn per the document's color scheme. Without this dark hint they
+   default to the LIGHT scheme (white tracks / grey-on-white popups) which
+   shatters the dark dashboard. */
+:root { color-scheme: dark; }
+
 /* ---- Shared interactive class hooks ----------------------------------- */
 
 /* Generic hover for flat outline buttons (header toggle, story pills).
@@ -50,6 +60,12 @@ const sheet = `
    keeps the focus visible without a glow. */
 .sg-input:focus { outline: none; border-color: ${theme.accent}; background-color: ${theme.surface3}; }
 .sg-input:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* Header client dropdown — same flat hover treatment as outline buttons.
+   (Focus treatment is handled by the .sg-input class hook above; the native
+   select control + popup dark theming comes from the :root color-scheme
+   rule above plus the inline colorScheme on the element itself.) */
+.sg-select:hover { background-color: ${theme.surface2}; border-color: ${theme.borderStrong}; }
 
 /* Rename dialog — a stronger input focus treatment makes the active editor
    unambiguous while leaving the dialog's opaque surface visually stable. */

@@ -186,10 +186,14 @@ const HeaderTitle = styled('span', {
 
 // Top-right LLM client dropdown. `marginLeft: 'auto'` pushes it to the right
 // edge of the flex DashboardHeader row (toggle + title sit on the left).
-// NOTE: this distribution package vendors the minimal `styled()` helper
-// (src/styles/styled.tsx) instead of @presource/react's styledComponent — the
-// latter cannot be imported here (not in package.json deps). The styling is
-// the documented equivalent: static style tokens from the shared theme.
+// Theming: a native <select> + its options popup is painted by the browser's
+// UA layer, so `colorScheme: 'dark'` (inline here AND on :root in global.ts)
+// tells the UA to draw the control and popup in the DARK scheme; without it
+// Chromium/Windows falls back to the light scheme (grey on white). The
+// `sg-select` / `sg-input` class hooks (global.ts) add hover + focus
+// treatments. NOTE: this distribution package vendors the minimal `styled()`
+// helper (src/styles/styled.tsx) instead of @presource/react's styledComponent
+// — the latter cannot be imported here (not in package.json deps).
 const ClientSelect = styled('select', {
     marginLeft: 'auto',
     height: 34,
@@ -203,6 +207,9 @@ const ClientSelect = styled('select', {
     borderRadius: theme.radiusMd,
     cursor: 'pointer',
     outline: 'none',
+    // Dark color scheme for the native select control + its options popup
+    // (see the comment above). 'dark' is a valid React.CSSProperties value.
+    colorScheme: 'dark',
     transition: `background-color ${theme.transition}, border-color ${theme.transition}`
 });
 
@@ -238,13 +245,20 @@ const HeaderControls: React.FC<{
     // stays usable (the current clientId is always offered as an option).
     const CLIENTS_FETCH_RETRY_MS = 10000;
     const CLIENTS_FETCH_MAX_ATTEMPTS = 30; // ~5 minutes of retry budget
-    const didFetchClientsRef = React.useRef(false);
     React.useEffect(() => {
-        if (didFetchClientsRef.current) return;
-        didFetchClientsRef.current = true;
-
         const baseUrl = store.config.baseUrl;
+        // Per-invocation disposal flag. CRITICAL: do NOT guard this effect
+        // with a shared "did fetch" ref. React 18 StrictMode (main.tsx) runs
+        // mount effect → cleanup → re-mount effect in dev; a ref guard makes
+        // the re-run return early, orphaning the FIRST invocation's in-flight
+        // fetch (already disposed by its cleanup). That fetch resolves fine in
+        // the browser (307 → 200 visible in DevTools) but its `.then` sees
+        // disposed===true and silently drops the response — the dropdown is
+        // stuck on the default clientId with no further retry to recover.
+        // Each effect run below owns its own flag + timer, so the StrictMode
+        // remount starts a fresh fetch that is allowed to update the store.
         let disposed = false; // unmount guard — stop retrying and setState work
+        let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
         const fetchClients = (attempt: number) => {
             fetchClientOptions(baseUrl)
@@ -265,7 +279,9 @@ const HeaderControls: React.FC<{
                     // persisted/default id until the server serves the list.
                     console.warn(`[HeaderControls] Failed to fetch client options (attempt ${attempt}).`, err);
                     if (attempt < CLIENTS_FETCH_MAX_ATTEMPTS) {
-                        setTimeout(() => fetchClients(attempt + 1), CLIENTS_FETCH_RETRY_MS);
+                        // Cleanup (unmount / StrictMode re-mount) clears this
+                        // timer so no orphaned retry outlives the effect run.
+                        retryTimer = setTimeout(() => fetchClients(attempt + 1), CLIENTS_FETCH_RETRY_MS);
                     }
                 });
         };
@@ -273,8 +289,10 @@ const HeaderControls: React.FC<{
 
         return () => {
             disposed = true;
+            if (retryTimer !== null) clearTimeout(retryTimer);
         };
-        // Intentionally run once on mount only (baseUrl is fixed per deployment).
+        // Intentionally run once on mount (baseUrl is fixed per deployment).
+        // No ref-based once-guard — see the disposed-flag comment above.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -365,14 +383,17 @@ const HeaderControls: React.FC<{
             {/* Top-right client dropdown: chooses which LLM client the server
                 uses for generation. Stored in config.clientId (persisted to
                 localStorage) and sent as `clientId` with every payload —
-                never stored by the server with the story. */}
+                never stored by the server with the story. Native <select>
+                whose control + popup are dark-themed via colorScheme (see
+                the ClientSelect comment above) — the sg-select/sg-input
+                class hooks add the flat hover/focus treatments. */}
             <ClientSelect
                 value={store.config.clientId}
                 onChange={(e) => handleClientChange(e.target.value)}
                 data-testid="client-select"
                 aria-label="LLM client"
                 title="LLM client used for generation"
-                className="sg-input"
+                className="sg-input sg-select"
             >
                 {clientOptions.map((option) => (
                     <option key={option} value={option}>

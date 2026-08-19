@@ -14,8 +14,13 @@
 //       body: { storyline: string, chapterCount: number, clientId?: string }
 //       (or { forkFrom: { sourceStoryId, chapterIndex }, clientId?: string })
 //       returns: { storyId: string }
-//       behavior: fire-and-forget background generation; the server writes
-//       plotpoint.json immediately and chapter-NNN.md/json files one at a time.
+//       behavior: fire-and-forget background generation. For direct creates
+//       (the dashboard Generate button) the server generates the PLOTLINE ONLY:
+//       it writes plotpoint.json (status 'completed') and a skeleton
+//       chapter-NNN.json payload per chapter (LLM context, empty revisions[]).
+//       Chapters are NOT auto-expanded — the client expands them individually
+//       via PATCH expandChapterIndex, which consumes each skeleton's stored
+//       context. Fork mode still re-expands chapters from the fork point.
 //       clientId selects the LLM client on the server (see Route 3 +
 //       fetchClientOptions); it is NEVER stored with the story.
 //       See generation-create-new-story.ts.
@@ -285,6 +290,14 @@ export async function pollStoryData(params: {
                 // we stop polling. Checking only chapter count is not enough because
                 // plotpoint.json is written with all chapter entries before any
                 // chapter expansion starts — see generation-create-new-story.ts.
+                //
+                // NOTE: direct creates (Generate button) are plotline-only — the API
+                // never auto-expands chapters, so for those stories this loop keeps
+                // polling (doubles as a live refresh) until every chapter is expanded
+                // through its own PATCH flow, or the loop is cancelled via shouldStop()
+                // (story switch / unmount). Individual expansions stop it early: the
+                // per-chapter re-expand poller (SectionStoryContent) clears
+                // isProcessing when the expanded chapter completes.
                 const allExpanded =
                     result.data.chapters.length >= expectedChapterCount &&
                     result.data.chapters.every((ch) => ch.expanded);

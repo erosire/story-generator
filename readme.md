@@ -84,6 +84,8 @@ Storyline is intentionally omitted from the list — it is free-form user text n
 
 Starts background story generation. Returns the `storyId` immediately while generation continues asynchronously.
 
+**Direct create (the dashboard Generate button) is plotline-only:** the server generates and validates the plot outline, writes `plotpoint.json` with `status: "completed"`, and writes a skeleton `chapter-NNN.json` payload per chapter (stored LLM context, `revisions: []`). **Chapters are NOT auto-expanded** — the client expands them individually with `PATCH { expandChapterIndex }`, which consumes each skeleton's stored context.
+
 **Request body:**
 ```json
 {
@@ -101,6 +103,8 @@ Starts background story generation. Returns the `storyId` immediately while gene
   }
 }
 ```
+
+Unlike direct creates, fork mode re-expands chapters from `chapterIndex` onwards in the background (full plotline + expansion flow).
 
 **Response:**
 ```json
@@ -190,7 +194,7 @@ All server code lives in `src/server/endpoints/generations/`.
 | `service-route.ts` | Collection route (`GET /generations`) — delegates to `generationListStories` |
 | `service-route-storyId.ts` | Story route (`/generations/:storyId`) — maps `POST/GET/PATCH/DELETE` to handlers |
 | `generation-list-stories.ts` | Lists all stories with metadata from `plotpoint.json` |
-| `generation-create-new-story.ts` | POST handler — validates body, writes placeholder `plotpoint.json`, kicks off background `generateStory()` |
+| `generation-create-new-story.ts` | POST handler — validates body, writes placeholder `plotpoint.json`, kicks off background `generateStory()` (plotline-only for direct creates; fork mode expands) |
 | `generation-get-story-data.ts` | GET handler — reads `plotpoint.json` + `chapter/*.json` files, builds unified chapter array |
 | `generation-update-chapter.ts` | PATCH handler — updates metadata, re-expands chapters, or rewrites with user context |
 | `generation-delete-story.ts` | DELETE handler — removes the entire story directory |
@@ -201,9 +205,9 @@ All server code lives in `src/server/endpoints/generations/`.
 ### Data Flow
 
 1. **POST** creates `temporary/database/storyboard/{storyId}/` with `plotpoint.json` (placeholder) and `chapter/` directory
-2. **Background `generateStory()`** calls LLM for plot outline → writes `plotpoint.json` with chapters array → expands each chapter sequentially → writes `chapter-XXX.md` + `chapter-XXX.json` files
+2. **Background `generateStory()`** (direct creates, plotline-only) calls the LLM for the plot outline → writes `plotpoint.json` with `chapters` array + `status: "completed"` → writes a skeleton `chapter-XXX.json` payload per chapter (stored LLM context, `revisions: []`). Fork mode additionally expands chapters from the fork point: writes `chapter-XXX.md` + full `chapter-XXX.json` files
 3. **GET** reads `plotpoint.json` (for metadata/plotpoints) + `chapter/*.json` (for expansion data) → returns unified chapter array
-4. **PATCH** reads stored LLM context from `chapter-XXX.json` → re-expands or rewrites via background task
+4. **PATCH** reads stored LLM context from `chapter-XXX.json` → expands (single chapter + chain to pending chapters) or rewrites via background task
 5. **DELETE** removes the entire `temporary/database/storyboard/{storyId}/` directory
 
 ### Story Retry

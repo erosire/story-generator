@@ -9,8 +9,9 @@ import { DATABASE_BASE_DIR } from './generation-config';
 //   - The API response renames them to `createdDate` and `chapterRequested` per the spec
 //   - `chapterCompleted` is denormalized in plotpoint.json by writeChapterFiles (story-utils.ts)
 //     and read directly here instead of scanning every chapter JSON file.
-//   - `status` is derived from the plotpoint.json `status` field ('generating', 'failed')
-//     combined with chapter completion (all chapters expanded → 'completed')
+//   - `status` is derived from the plotpoint.json `status` field ('generating',
+//     'completed' — plotline-only stories, 'failed') combined with chapter
+//     completion (all chapters expanded → 'completed')
 //
 // Note: storyline is intentionally omitted from the list response — it is
 // free-form user text that can be arbitrarily long and is not needed by the
@@ -27,6 +28,11 @@ type StoryMeta = {
 // Derive the final status from the raw plotpoint.json status + chapter completion.
 // Logic:
 //   - If plotpoint.json status is 'failed' → 'failed' (generation hit an error)
+//   - If plotpoint.json status is 'completed' → 'completed' (plotline-only story:
+//     the Generate-button flow writes this terminal status once plotlines are
+//     generated even though chapterCompleted stays 0 — see plotOnly in
+//     generation-create-new-story.ts; full-generation stories never write this
+//     status, only 'generating'/'failed')
 //   - If chapterCompleted >= chapterRequested and chapterRequested > 0 → 'completed'
 //   - Otherwise → 'generating' (still in progress)
 const deriveStatus = (
@@ -35,6 +41,8 @@ const deriveStatus = (
     chapterRequested: number
 ): 'generating' | 'completed' | 'failed' => {
     if (rawStatus === 'failed') return 'failed';
+    // Explicit terminal status from the plotline-only completion path.
+    if (rawStatus === 'completed') return 'completed';
     if (chapterRequested > 0 && chapterCompleted >= chapterRequested) return 'completed';
     return 'generating';
 };

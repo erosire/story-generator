@@ -130,7 +130,11 @@ vi.mock('@presource/core', async (importOriginal) => {
 // Import handler AND mock target AFTER mocks are set up
 import { CLIENT } from './generation-config';
 import { generationCreateNewStory } from './generation-create-new-story';
-import { MIN_WORDS_PER_CHAPTER, EXPAND_TIMEOUT_MS, DATABASE_BASE_DIR } from './generation-config';
+// buildExpandRequest is the real (non-mocked, prompt-only) helper from
+// story-utils — used to build exact expected context.request values in the
+// plotline-only tests so the assertions stay in lockstep with the prompt.
+import { buildExpandRequest } from './story-utils';
+import { DATABASE_BASE_DIR } from './generation-config';
 
 // Use an isolated temp directory as the project root so tests never pollute the
 // source tree. The service normally passes temporary/database via variables.root,
@@ -152,6 +156,15 @@ const createMockParameters = (storyId: string, body: Record<string, any> = {}) =
     query: {},
     body
 });
+
+// Exact plotline-summary format as written to chapter context by the production
+// code (generation-create-new-story.ts plotline pass / story-utils
+// buildAppendingFromChapters): entries are built as
+// [heading, '\n\n', bullets].join('\n\n') — the join separator on BOTH sides of
+// the '\n\n' element plus the element itself yields SIX newlines (5 blank
+// lines) between the heading and the bullet list. The literals below hardcode
+// that exact value (verified against the on-disk chapter-XXX.json context).
+const SUMMARY_SEP = '\n\n\n\n\n\n';
 
 describe('generationCreateNewStory', () => {
     // Track created test directories for cleanup
@@ -233,6 +246,18 @@ describe('generationCreateNewStory', () => {
         expect(typeof storyMeta.createdAt).toBe('string');
         expect(storyMeta.createdAt.length).toBeGreaterThan(0);
 
+        // Plotline-only contract (Generate button → plotOnly API): once the
+        // plotline is generated the story is terminal ('completed') even though
+        // chapterCompleted stays 0. The default mocked LLM response yields the
+        // 3 plotline chapters asserted below — see the vi.mock factory above.
+        expect(storyMeta.status).toBe('completed');
+        expect(storyMeta.validation).toEqual({ valid: true, reason: 'plotline complete', attempt: 0 });
+        expect(storyMeta.chapters).toEqual([
+            { number: '1', title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
+            { number: '2', title: 'Chapter Two', plotpoints: ['Plot point C'] },
+            { number: '3', title: 'Chapter Three', plotpoints: ['Plot point D'] }
+        ]);
+
         // plotpoint.md should also be created
         const plotpointPath = path.join(storyboardDir, 'plotpoint.md');
         expect(fs.existsSync(plotpointPath)).toBe(true);
@@ -241,44 +266,54 @@ describe('generationCreateNewStory', () => {
         const chapterDir = path.join(storyboardDir, 'chapter');
         expect(fs.existsSync(chapterDir)).toBe(true);
 
-        // chapter .md and .json files should be created
+        // Plotline-only: chapters are NOT auto-expanded, so no chapter-XXX.md
+        // files exist (the .md file is only written by the expansion pass).
+        // Exactly three skeleton chapter-XXX.json payloads — one per plotline
+        // chapter — are written instead.
         const mdFiles = fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md')).sort();
         const jsonFiles = fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json')).sort();
-        expect(mdFiles.length).toBeGreaterThan(0);
-        expect(jsonFiles.length).toBe(mdFiles.length);
+        expect(mdFiles).toEqual([]);
+        expect(jsonFiles).toEqual(['chapter-001.json', 'chapter-002.json', 'chapter-003.json']);
 
-        // Verify chapter-001.json structure and content
+        // Verify chapter-001.json is a full skeleton: stored LLM context for a
+        // later per-chapter expansion (via PATCH) with EMPTY revisions[].
         const chapterJsonPath = path.join(chapterDir, 'chapter-001.json');
         expect(fs.existsSync(chapterJsonPath)).toBe(true);
 
         const chapterPayload = JSON.parse(fs.readFileSync(chapterJsonPath, 'utf-8'));
-        expect(chapterPayload.storyId).toBe(storyId);
-        expect(chapterPayload.storyline).toBe(TEST_STORYLINE);
-        expect(chapterPayload.chapterCount).toBe(TEST_CHAPTER_COUNT);
-        expect(chapterPayload.chapterNumber).toBe('1');
-        expect(chapterPayload.chapterIndex).toBe(0);
-        expect(typeof chapterPayload.title).toBe('string');
-        expect(Array.isArray(chapterPayload.plotpoints)).toBe(true);
-        expect(chapterPayload.plotpoints.length).toBeGreaterThan(0);
+        expect(chapterPayload).toEqual({
+            storyId,
+            storyline: TEST_STORYLINE,
+            chapterCount: TEST_CHAPTER_COUNT,
+            chapterNumber: '1',
+            chapterIndex: 0,
+            title: 'Chapter 1',
+            plotpoints: ['Plot point A', 'Plot point B'],
+            context: {
+                // All-plotline summaries — exactly what the first expansion of
+                // chapter 1 will see in context (no expanded prose exists yet).
+                appending: [
+                    '> 1: Chapter One' + SUMMARY_SEP + '- Plot point A\n- Plot point B',
+                    '> 2: Chapter Two' + SUMMARY_SEP + '- Plot point C',
+                    '> 3: Chapter Three' + SUMMARY_SEP + '- Plot point D'
+                ],
+                request: buildExpandRequest('1', 'Chapter One')
+            },
+            config: {
+                systemInstructions: 'test instructions',
+                openingMessage: 'test opening'
+            },
+            revisions: []
+        });
 
-        // Context must contain the appending snapshot and request
-        expect(Array.isArray(chapterPayload.context.appending)).toBe(true);
-        expect(typeof chapterPayload.context.request).toBe('string');
-
-        // Config must contain systemInstructions and openingMessage
-        expect(typeof chapterPayload.config.systemInstructions).toBe('string');
-        expect(typeof chapterPayload.config.openingMessage).toBe('string');
-
-        // No top-level expansion or generationTimeMs — content lives in revisions[]
-        expect(chapterPayload.expansion).toBeUndefined();
-        expect(chapterPayload.generationTimeMs).toBeUndefined();
-
-        // Result must contain title and content in revisions[]
-        expect(Array.isArray(chapterPayload.revisions)).toBe(true);
-        expect(chapterPayload.revisions.length).toBeGreaterThan(0);
-        const latestRev = chapterPayload.revisions[chapterPayload.revisions.length - 1];
-        expect(typeof latestRev.content).toBe('string');
-        expect(latestRev.content.length).toBeGreaterThan(0);
+        // The last chapter's skeleton carries the same all-summary context —
+        // proving no chapter was expanded along the way (an expansion pass
+        // would have replaced earlier entries with expanded content).
+        const lastPayload = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-003.json'), 'utf-8'));
+        expect(lastPayload.chapterIndex).toBe(2);
+        expect(lastPayload.revisions).toEqual([]);
+        expect(lastPayload.context.appending).toEqual(chapterPayload.context.appending);
+        expect(lastPayload.context.request).toBe(buildExpandRequest('3', 'Chapter Three'));
     });
 
     it('should return 400 when storyline is missing', async () => {
@@ -399,172 +434,199 @@ describe('generationCreateNewStory', () => {
         expect(storyMeta.storyline).toBe(TEST_STORYLINE);
     });
 
-    it('should retry chapter expansion after timeout and log timeout error', async () => {
-        vi.useFakeTimers();
-
-        const storyId = `test-story-timeout-${Date.now()}`;
+    // ── Plotline-only (dashboard Generate button) ─────────────────────────────
+    // The Generate button's POST now always triggers plotline-only
+    // generation (plotOnly: true in generation-create-new-story.ts): the LLM
+    // is called for the plot outline only, chapters end as skeleton
+    // chapter-XXX.json payloads (stored LLM context, empty revisions[]), and
+    // no expansion request ("Expand the chapter ...") ever reaches the LLM.
+    // Chapters are expanded afterwards, one at a time, via the PATCH
+    // { expandChapterIndex } endpoint (generation-update-chapter.test.ts).
+    it('should generate the plotline only: one LLM call, skeleton payloads, no expansion', async () => {
+        const storyId = `test-story-plotonly-${Date.now()}`;
         createdStoryIds.push(storyId);
+        const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
 
-        let expandStructureCalls = 0;
-
+        // Pin every client clone to ONE instance so all LLM calls accumulate
+        // on a single spy; record every request the server sent to the LLM so
+        // the test can prove which categories (plot vs expand) were attempted.
+        const seenRequests: string[] = [];
         vi.mocked(CLIENT.clone).mockReturnValue({
             system: vi.fn(),
             user: vi.fn(),
             assistant: vi.fn(),
             clone: vi.fn().mockReturnThis(),
             messages: [],
-            format: vi.fn().mockImplementation(() => {
-                expandStructureCalls++;
-                if (expandStructureCalls === 1) {
-                    // Plotpoint generation — succeed immediately
-                    return Promise.resolve({
-                        response: {
-                            chapters: [
-                                {
-                                    number: '1',
-                                    title: 'Chapter One',
-                                    plotpoints: ['Plot point A']
-                                }
-                            ]
-                        }
-                    });
-                }
-                if (expandStructureCalls === 2) {
-                    // First expansion attempt — hang forever (timeout will terminate it)
-                    return new Promise(() => {});
-                }
-                // Retry expansion — succeed immediately
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                seenRequests.push(request);
+                // A valid 2-chapter plotline — exactly matches chapterCount below.
                 return Promise.resolve({
                     response: {
-                        title: 'Expanded Chapter',
-                        content: 'This is expanded content after timeout retry. ' + 'word '.repeat(3500)
+                        chapters: [
+                            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+                            { number: '2', title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] }
+                        ]
                     }
                 });
             })
         } as any);
 
-        const parameters = createMockParameters(storyId, {
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 2 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+        expect(result.response.storyId).toBe(storyId);
+
+        // Deterministic completion signal: the terminal 'completed' status in
+        // plotpoint.json is written by the plotline-only completion path.
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Exactly ONE LLM call — the plotline request. No chapter expansion
+        // (buildExpandRequest prompts) may have been attempted by this request.
+        expect(seenRequests.length).toBe(1);
+        const expandRequests = seenRequests.filter((r) => r.includes('Expand the chapter'));
+        expect(expandRequests).toEqual([]);
+
+        // No expanded .md files (the .md is only written during expansion).
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md'))).toEqual([]);
+
+        // Skeleton payload: full LLM context for a later PATCH expansion,
+        // but ZERO revisions — the chapter content was never generated.
+        const skeleton = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-002.json'), 'utf-8'));
+        expect(skeleton).toEqual({
+            storyId,
             storyline: TEST_STORYLINE,
-            chapterCount: 1
+            chapterCount: 2,
+            chapterNumber: '2',
+            chapterIndex: 1,
+            title: 'Chapter 2',
+            plotpoints: ['Plot B', 'Plot C'],
+            context: {
+                appending: [
+                    '> 1: Chapter One' + SUMMARY_SEP + '- Plot A',
+                    '> 2: Chapter Two' + SUMMARY_SEP + '- Plot B\n- Plot C'
+                ],
+                request: buildExpandRequest('2', 'Chapter Two')
+            },
+            config: {
+                systemInstructions: 'test instructions',
+                openingMessage: 'test opening'
+            },
+            revisions: []
         });
 
-        // Handler returns immediately (200) — generation runs in background
-        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
-        expect(result.status).toBe(200);
+        // Terminal metadata: plotline complete, validation passed on the first
+        // attempt, chapterCompleted stays 0 (advances only when the user
+        // expands a chapter via PATCH — see incrementPlotpointChapterCompleted).
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.status).toBe('completed');
+        expect(finalMeta.validation).toEqual({ valid: true, reason: 'plotline complete', attempt: 0 });
+        expect(finalMeta.chapters).toEqual([
+            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+            { number: '2', title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] }
+        ]);
+    });
 
-        // Let microtasks settle (plotpoint generation starts)
-        await vi.advanceTimersByTimeAsync(0);
+    it('should keep retries plotline-only: a retried story completes as a plotline without expansion', async () => {
+        // NOTE: the storyId must NOT end in `-retry-<digits>` — generateStory
+        // parses that suffix via /-retry-(\d+)$/ to seed retryIndex, so a
+        // literal `-retry-` in a fresh (non-retry) storyId would corrupt the
+        // retry-ID derivation (the new retry story would get a bogus id).
+        const storyId = `test-story-plotonlychain-${Date.now()}`;
+        const retryStoryId = `${storyId}-retry-1`;
+        const noRetryStoryId = `${storyId}-retry-2`;
+        createdStoryIds.push(storyId, retryStoryId, noRetryStoryId);
 
-        // Advance past the timeout to trigger the timeout error
-        await vi.advanceTimersByTimeAsync(EXPAND_TIMEOUT_MS + 1);
-
-        // Let the retry complete (microtasks for structure call + file writes)
-        await vi.advanceTimersByTimeAsync(0);
-        await vi.advanceTimersByTimeAsync(0);
-        await vi.advanceTimersByTimeAsync(0);
-
-        // Restore real timers for cleanup
-        vi.useRealTimers();
-
-        // Wait for all background operations to fully complete
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-
-        // Verify timeout error was logged
-        expect(console.error).toHaveBeenCalledWith(
-            expect.stringContaining('[TIMEOUT]')
-        );
-        expect(console.error).toHaveBeenCalledWith(
-            expect.stringContaining('timed out')
-        );
-
-        // Verify chapter was eventually written successfully after retry
-        const storyboardDir = getStoryboardDir(storyId);
-        const chapterDir = path.join(storyboardDir, 'chapter');
-        expect(fs.existsSync(chapterDir)).toBe(true);
-
-        const mdFiles = fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md'));
-        expect(mdFiles.length).toBe(1);
-        expect(mdFiles[0]).toBe('chapter-001.md');
-
-        // Verify the content is from the successful retry, not the timed-out attempt
-        const content = fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8');
-        expect(content).toContain('Expanded Chapter');
-        expect(content).toContain('This is expanded content after timeout retry');
-    }, 30000);
-
-    it('should log error details when expansion fails with a non-timeout error', async () => {
-        const storyId = `test-story-error-${Date.now()}`;
-        createdStoryIds.push(storyId);
-
-        let expandStructureCalls = 0;
-
+        const seenRequests: string[] = [];
+        let plotCalls = 0;
         vi.mocked(CLIENT.clone).mockReturnValue({
             system: vi.fn(),
             user: vi.fn(),
             assistant: vi.fn(),
             clone: vi.fn().mockReturnThis(),
             messages: [],
-            format: vi.fn().mockImplementation(() => {
-                expandStructureCalls++;
-                if (expandStructureCalls === 1) {
-                    // Plotpoint generation
-                    return Promise.resolve({
-                        response: {
-                            chapters: [
-                                {
-                                    number: '1',
-                                    title: 'Chapter One',
-                                    plotpoints: ['Plot point A']
-                                }
-                            ]
-                        }
-                    });
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                seenRequests.push(request);
+                // A plotline-only story must NEVER send an expansion request —
+                // if one appears, the plotOnly flag failed to carry over.
+                expect(request.includes('Expand the chapter')).toBe(false);
+
+                plotCalls++;
+                // Attempt 1 (original story): the plot request fails → the
+                // story is marked failed and a retry story is spun up.
+                if (plotCalls === 1) {
+                    return Promise.reject(new Error('plot exploded'));
                 }
-                if (expandStructureCalls === 2) {
-                    // First expansion — throw a non-timeout error
-                    return Promise.reject(new Error('Network connection reset'));
-                }
-                // Retry — succeed
+                // Attempt 2 (retry story): a valid 1-chapter plotline.
                 return Promise.resolve({
                     response: {
-                        title: 'Expanded Chapter',
-                        content: 'Recovered after error. ' + 'word '.repeat(3500)
+                        chapters: [{ number: '1', title: 'Recovered Plot', plotpoints: ['Recovered plot point'] }]
                     }
                 });
             })
         } as any);
 
-        const parameters = createMockParameters(storyId, {
-            storyline: TEST_STORYLINE,
-            chapterCount: 1
-        });
-
-        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 1 }),
+            { root: projectRoot }
+        );
         expect(result.status).toBe(200);
 
-        // Wait for background generation to complete
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-
-        // Verify error was logged with [ERROR] tag (not [TIMEOUT])
-        expect(console.error).toHaveBeenCalledWith(
-            expect.stringContaining('[ERROR]')
+        const originalPlotpointPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        const retryPlotpointPath = path.join(getStoryboardDir(retryStoryId), 'plotpoint.json');
+        // The original fails; the retry must complete AS PLOTLINE-ONLY.
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).status).toBe('failed');
+                expect(JSON.parse(fs.readFileSync(retryPlotpointPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
         );
-        expect(console.error).toHaveBeenCalledWith(
-            expect.stringContaining('Network connection reset')
-        );
 
-        // Verify the [TIMEOUT] tag was NOT logged (it was a non-timeout error)
-        const errorCalls = (console.error as any).mock.calls.map((call: any[]) => call.join(' '));
-        const hasTimeoutLog = errorCalls.some((msg: string) => msg.includes('[TIMEOUT]'));
-        expect(hasTimeoutLog).toBe(false);
+        // The original failure is recorded with the plot error.
+        expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8'))).toMatchObject({
+            storyId,
+            status: 'failed',
+            validation: { valid: false, reason: 'plot exploded' }
+        });
 
-        // Verify chapter was written successfully after retry
-        const storyboardDir = getStoryboardDir(storyId);
-        const chapterDir = path.join(storyboardDir, 'chapter');
-        expect(fs.existsSync(chapterDir)).toBe(true);
+        // The retry story is plotline-complete: its chapter is a SKELETON
+        // (empty revisions, no .md file), not an expanded chapter.
+        const retryChapterDir = path.join(getStoryboardDir(retryStoryId), 'chapter');
+        expect(fs.readdirSync(retryChapterDir).filter((f) => f.endsWith('.md'))).toEqual([]);
+        const retrySkeleton = JSON.parse(fs.readFileSync(path.join(retryChapterDir, 'chapter-001.json'), 'utf-8'));
+        expect(retrySkeleton).toEqual({
+            storyId: retryStoryId,
+            storyline: TEST_STORYLINE,
+            chapterCount: 1,
+            chapterNumber: '1',
+            chapterIndex: 0,
+            title: 'Chapter 1',
+            plotpoints: ['Recovered plot point'],
+            context: {
+                appending: ['> 1: Recovered Plot' + SUMMARY_SEP + '- Recovered plot point'],
+                request: buildExpandRequest('1', 'Recovered Plot')
+            },
+            config: {
+                systemInstructions: 'test instructions',
+                openingMessage: 'test opening'
+            },
+            revisions: []
+        });
 
-        const content = fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8');
-        expect(content).toContain('Recovered after error');
+        // The retry succeeded, so no third story (retry-2) may be spawned.
+        expect(fs.existsSync(getStoryboardDir(noRetryStoryId))).toBe(false);
     }, 30000);
 
     it('should mark current story as failed and spin up flat retry story when plotlines validation fails', async () => {

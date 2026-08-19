@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { MAKORA_CLIENT } from '@runtime/secret/private/makora';
-import { GLM52_CLIENT, KIMI3_CLIENT, NVIDIA_CLIENT, OPENROUTER_CLIENT, QWEN3_8_CLIENT } from '@runtime/secret/private';
+import { KIMI3_CLIENT, NVIDIA_CLIENT, QWEN3_8_CLIENT } from '@runtime/secret/private';
 import { TELNYX_CLIENT } from '@runtime/secret/private/telnyx';
 // Type-only import: every selectable client is a SimpleClient instance
 // (simpleClient() in @agentic/harness), used to widen CLIENTS for the
@@ -170,14 +170,14 @@ export const useApiMethod: 'structure' | 'format' = 'structure';
 // List of possible clients
 export const CLIENTS = {
     Nvidia: NVIDIA_CLIENT.clone({ model: 'z-ai/glm-5.2', sampling: DEFAULT_SAMPLING_PARAMS }),
-    Modal: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
+    // Modal: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMIK3: KIMI3_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // Uses QWEN3_8_SAMPLING_PARAMS (top_k: 0) because the ninfer backend
     // rejects the SGLang-style top_k: -1 sentinel; all other values unchanged.
     Qwen3_8: QWEN3_8_CLIENT.clone({ sampling: QWEN3_8_SAMPLING_PARAMS }),
     Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.2-NVFP4', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Makora: MAKORA_CLIENT.clone({ model: 'deepseek-ai/DeepSeek-V4-Flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS }),
+    // Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS }),
     Telnyx: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
 };
 

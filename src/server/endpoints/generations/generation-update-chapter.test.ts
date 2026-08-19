@@ -81,7 +81,7 @@ vi.mock('@runtime/data/prompts', () => ({
 }));
 
 // Import handler AFTER mocks are set up
-import { CLIENT } from './generation-config';
+import { CLIENT, EXPAND_TIMEOUT_MS } from './generation-config';
 import { generationUpdateChapter } from './generation-update-chapter';
 import { DATABASE_BASE_DIR } from './generation-config';
 
@@ -727,6 +727,175 @@ describe('generationUpdateChapter', () => {
         expect(ch2LatestRev.content).not.toBe('');
         expect(chapter2Payload.title).toBe('Re-Expanded Chapter');
     });
+
+    // ── Expansion error-retry regressions (moved here from the POST tests) ──
+    // Since the plotline-only API change, POST /generations/:storyId (the Generate
+    // button) never triggers chapter expansion — it stops after the plotline.
+    // Chapter expansion is only reachable through this PATCH endpoint (or forks),
+    // so expandChapter's error-retry behaviour is regression-tested here.
+
+    // Seeds a single-chapter story whose chapter-001.json carries the LLM
+    // context required by reExpandChapter (plotpoint.json + chapter payload).
+    const seedExpandableStory = (storyId: string) => {
+        createdStoryIds.push(storyId);
+        const storyboardDir = getStoryboardDir(storyId);
+        const chapterDir = path.join(storyboardDir, 'chapter');
+        fs.mkdirSync(chapterDir, { recursive: true });
+
+        fs.writeFileSync(
+            path.join(storyboardDir, 'plotpoint.json'),
+            JSON.stringify({
+                storyId,
+                storyline: 'A sci-fi adventure.',
+                chapterCount: 1,
+                chapterCompleted: 0,
+                chapters: [{ number: '1', title: 'The Beginning', plotpoints: ['Opening scene'] }],
+                createdAt: '2026-07-01T10:00:00.000Z'
+            }),
+            'utf-8'
+        );
+        fs.writeFileSync(
+            path.join(chapterDir, 'chapter-001.json'),
+            JSON.stringify({
+                storyId,
+                storyline: 'A sci-fi adventure.',
+                chapterCount: 1,
+                chapterNumber: '1',
+                chapterIndex: 0,
+                title: 'The Beginning',
+                plotpoints: ['Opening scene'],
+                context: {
+                    appending: ['> 1: The Beginning\n\n- Opening scene'],
+                    request: '> Expand the chapter "1: The Beginning"'
+                },
+                config: { systemInstructions: 'test', openingMessage: 'test' },
+                revisions: []
+            }),
+            'utf-8'
+        );
+    };
+
+    it('should retry chapter re-expansion after a startup timeout stall and log the timeout error', async () => {
+        vi.useFakeTimers();
+
+        const storyId = `test-update-timeout-${Date.now()}`;
+        seedExpandableStory(storyId);
+        const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+
+        let expandCalls = 0;
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation(() => {
+                expandCalls++;
+                if (expandCalls === 1) {
+                    // First expansion attempt — hangs forever with zero
+                    // streaming writes, so the two-phase stall detector's
+                    // phase 1 (startup timeout) fires after EXPAND_TIMEOUT_MS.
+                    return new Promise(() => {});
+                }
+                // Retry expansion — succeed immediately (word count above
+                // MIN_WORDS_PER_CHAPTER so the do-while terminates).
+                return Promise.resolve({
+                    response: {
+                        title: 'Expanded Chapter',
+                        content: 'This is expanded content after timeout retry. ' + 'word '.repeat(3500)
+                    }
+                });
+            })
+        } as any);
+
+        const result = await generationUpdateChapter(
+            mockContext,
+            createMockParameters(storyId, { expandChapterIndex: 0 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        // Let microtasks settle so the background re-expansion reaches its
+        // Promise.race and registers the (fake-timer) stall interval.
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Advance past the startup timeout to trigger phase-1 termination.
+        await vi.advanceTimersByTimeAsync(EXPAND_TIMEOUT_MS + 1);
+
+        // Let the retry complete (microtasks for format call + file writes).
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Restore real timers for cleanup
+        vi.useRealTimers();
+
+        // Wait for all background operations to fully complete
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        // Verify timeout error was logged
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('[TIMEOUT]'));
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+        // Exactly one attempt + one retry — no further loops.
+        expect(expandCalls).toBe(2);
+
+        // Verify the chapter file was eventually written by the successful retry
+        const content = fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8');
+        expect(content).toContain('Expanded Chapter');
+        expect(content).toContain('This is expanded content after timeout retry');
+    }, 30000);
+
+    it('should log error details when re-expansion fails with a non-timeout error and recover on retry', async () => {
+        const storyId = `test-update-error-${Date.now()}`;
+        seedExpandableStory(storyId);
+        const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+
+        let expandCalls = 0;
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation(() => {
+                expandCalls++;
+                if (expandCalls === 1) {
+                    // First expansion — throw a non-timeout error
+                    return Promise.reject(new Error('Network connection reset'));
+                }
+                // Retry — succeed immediately
+                return Promise.resolve({
+                    response: {
+                        title: 'Expanded Chapter',
+                        content: 'Recovered after error. ' + 'word '.repeat(3500)
+                    }
+                });
+            })
+        } as any);
+
+        const result = await generationUpdateChapter(
+            mockContext,
+            createMockParameters(storyId, { expandChapterIndex: 0 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        // Wait for background re-expansion to complete (fail → retry → write)
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+
+        // Verify error was logged with [ERROR] tag (not [TIMEOUT])
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('[ERROR]'));
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Network connection reset'));
+
+        // Verify the [TIMEOUT] tag was NOT logged (it was a non-timeout error)
+        const errorCalls = (console.error as any).mock.calls.map((call: any[]) => call.join(' '));
+        const hasTimeoutLog = errorCalls.some((msg: string) => msg.includes('[TIMEOUT]'));
+        expect(hasTimeoutLog).toBe(false);
+
+        // Verify the chapter was written successfully after retry
+        const content = fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8');
+        expect(content).toContain('Recovered after error');
+    }, 30000);
 
     // ── Per-request clientId selection ──────────────────────────────────
     // The clientId travels with each PATCH payload (expand/rewrite) and is
