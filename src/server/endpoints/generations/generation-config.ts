@@ -123,7 +123,7 @@ export const DEFAULT_SAMPLING_PARAMS = {
     // WARNING: some backends reject -1 (they require top_k >= 0 and use 0 as
     // the "disabled" sentinel) — see QWEN3_8_SAMPLING_PARAMS below for that
     // variant. The value is passed through verbatim into the chat request body
-    // by simple-client.ts (SimpleClientSamplingParams, line 83); passthrough
+    // by simple-client.ts (SimpleClientSamplingParams, line 80); passthrough
     // asserted at simple-client.test.ts:1348 / :1398.
     top_k: -1,
     min_p: 0.0,
