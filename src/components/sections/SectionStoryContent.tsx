@@ -1480,14 +1480,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 disabled={appendState.isSubmitting}
                                 data-testid="append-count-input"
                             />
-                            <ActionButton
-                                onClick={closeAppendDialogue}
-                                disabled={appendState.isSubmitting}
-                                data-testid="append-cancel"
-                                style={{ pointerEvents: 'auto' }}
-                            >
-                                Cancel
-                            </ActionButton>
+                            {/* No Cancel button in this dialog — the user is
+                                here to append chapters; closing the dialog
+                                (overlay click) is sufficient to abort. */}
                             {/* Append — the footer's Generate analogue: submits
                                 the append POST for this story in place. */}
                             <AppendButton
