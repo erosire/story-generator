@@ -156,14 +156,19 @@ export const QWEN3_8_SAMPLING_PARAMS = {
  * the ninfer engine hard-rejects any response_format other than {type:"text"}
  * with HTTP 400 response_format_not_supported (no constrained decoding exists
  * upstream), which surfaces as "400 only response_format {type:text} is
- * supported". Tool-call STREAMING on that backend is restored by a proxy
- * polyfill (deployment/qwen3_8/modal_qwen3_8_rtx6000_ninfer.py,
- * _rewrite_body_for_tool_streaming): the engine itself buffers tool calls
- * post-generation, so the proxy strips tools upstream, streams the model's
- * <tool_call> content immediately, and re-emits it as incremental OpenAI
- * delta.tool_calls[].function.arguments chunks — keeping progressive
- * onUpdate (plotpoint writes + stall detection) functional with
- * useApiMethod = 'structure'.
+ * supported". Tool-call STREAMING on that backend: the proxy forwards both
+ * the request and the native SSE stream VERBATIM (deployment/qwen3_8/
+ * modal_qwen3_8_rtx6000_ninfer.py — _stream_tool_call_verified_response).
+ * Natively the engine buffers tool calls post-generation: ordinary content
+ * (including pre-tool reasoning) streams incrementally, and the complete
+ * delta.tool_calls arrive in ONE final frame just before finish_reason — so
+ * progressive onUpdate works for content and tool arguments land in one
+ * batch at the end of the generation. The proxy's only modification: invalid
+ * tool call entries (missing function object, empty name, or arguments that
+ * do not JSON-parse to an object) are replaced with a placeholder
+ * `invalid_tool_call` entry whose empty arguments fail the client's JSON
+ * parse — the invalid-tool → retry path. useApiMethod = 'structure' stays
+ * the only viable method for structured output on this backend.
  */
 export const useApiMethod: 'structure' | 'format' = 'structure';
 
