@@ -139,6 +139,64 @@ export async function createNewStory(
     return (await response.json()) as { storyId: string };
 }
 
+// Append plotlines for N new chapters to an EXISTING story (the dashboard's
+// "[->]" append dialog). Unlike createNewStory this POSTs the SAME storyId the
+// story already has, with an `append` envelope instead of a storyline body:
+// { append: { chapterCount, notes? }, clientId? }. The server validates the
+// existing story synchronously (400 with { error }: unknown story, no
+// plotpoint.json, no storyline, no plotpoints, bad chapterCount/notes) and
+// then generates LLM plotlines in the background; the new chapters land in
+// plotpoint.json AFTER the current chapter list (10 existing + 3 appended =
+// 13) and appear here via the caller's existing GET polling.
+//
+// `notes` (optional) is free-form author guidance for the new plotlines; pass
+// undefined (or empty/whitespace) to omit the field entirely — the server
+// 400s on an explicit empty string.
+//
+// `clientId` (optional) selects the LLM client for the plotline call — the
+// same per-request-only selection as every other endpoint (never stored).
+//
+// Throws on network failure or non-200 response (400 surfaces the server's
+// exact validation message).
+export async function appendStoryPlotpoints(
+    baseUrl: string,
+    storyId: string,
+    body: { chapterCount: number; notes?: string },
+    clientId?: string
+): Promise<{ storyId: string; appended: number }> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    // clientId is only serialized when provided (same convention as
+    // createNewStory/updateChapter below).
+    const clientField = clientId !== undefined && clientId.length > 0 ? { clientId } : {};
+    // notes is serialized only when non-empty after trim — a blank dialog
+    // textarea must keep the legacy wire shape { append: { chapterCount } }.
+    const trimmedNotes = body.notes?.trim();
+    const payload =
+        trimmedNotes !== undefined && trimmedNotes.length > 0
+            ? { append: { chapterCount: body.chapterCount, notes: trimmedNotes }, ...clientField }
+            : { append: { chapterCount: body.chapterCount }, ...clientField };
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+        // Server returns 400 with { error } for invalid bodies (same handler —
+        // generation-create-new-story.ts append branch). Surface the message.
+        let message = `Failed to append chapters (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore JSON parse error — keep the default message
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as { storyId: string; appended: number };
+}
+
 // Fetch the current story data once via GET. Maps HTTP status to PollResult.
 // 404 → 'not-found' (transient; story dir not created yet). 200 → 'data'.
 // Anything else → 'error' with the server's error message if present.

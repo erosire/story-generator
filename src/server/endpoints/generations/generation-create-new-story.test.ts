@@ -1099,4 +1099,277 @@ describe('generationCreateNewStory', () => {
         expect(fs.readFileSync(originalPlotpointPath, 'utf-8')).toBe(failedSnapshot);
         expect(fs.existsSync(getStoryboardDir(retryStoryId))).toBe(true);
     }, 30000);
+
+    // ── Append request (the dashboard's "[->]" append dialog) ─────────────
+    // POST { append: { chapterCount, notes? } } against an EXISTING storyId
+    // extends that story in place: the LLM generates plotlines for
+    // chapterCount NEW chapters which are stored AFTER the current chapter
+    // list (10 existing + 3 appended = 13), with skeleton chapter payloads
+    // so the new chapters can be expanded later. No expansion happens here.
+    // See generation-append-story.ts.
+
+    it('should return 400 when append.chapterCount is not a positive number', async () => {
+        const storyId = `test-append-bad-count-${Date.now()}`;
+        createdStoryIds.push(storyId);
+        createdStoryIds.push(`${storyId}-retry-1`); // in case a retry dir would appear — validation must NOT create one
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { append: { chapterCount: 0 } }),
+            { root: projectRoot }
+        );
+
+        expect(result.status).toBe(400);
+        expect(result.response.error).toBe('append.chapterCount must be a positive number');
+        // Validation fails before any background job — no story dir may exist.
+        expect(fs.existsSync(getStoryboardDir(storyId))).toBe(false);
+    });
+
+    it('should return 400 when append.notes is an empty string', async () => {
+        const storyId = `test-append-bad-notes-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { append: { chapterCount: 2, notes: '   ' } }),
+            { root: projectRoot }
+        );
+
+        expect(result.status).toBe(400);
+        expect(result.response.error).toBe('append.notes must be a non-empty string');
+        expect(fs.existsSync(getStoryboardDir(storyId))).toBe(false);
+    });
+
+    it('should return 400 when the story to append to does not exist', async () => {
+        const storyId = `test-append-unknown-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { append: { chapterCount: 3 } }),
+            { root: projectRoot }
+        );
+
+        expect(result.status).toBe(400);
+        expect(result.response.error).toBe(`Story '${storyId}' not found`);
+    });
+
+    it('should return 400 with the exact reason when the story violates append preconditions', async () => {
+        // Pre-seed storyboard/<storyId>/plotpoint.json in the temp root so the
+        // handler's synchronous validation can be exercised WITHOUT triggering
+        // any LLM call (each case must 400 before the background job starts).
+        const seed = (id: string, meta: Record<string, unknown>) => {
+            createdStoryIds.push(id);
+            const dir = getStoryboardDir(id);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(
+                path.join(dir, 'plotpoint.json'),
+                JSON.stringify({ storyline: 'Seed', chapterCount: 3, createdAt: '2026-08-01T00:00:00Z', ...meta }, null, 2),
+                'utf-8'
+            );
+        };
+
+        const storyboardDir = (id: string) => getStoryboardDir(id);
+
+        // Case 1: story without a continuation storyline.
+        const noLine = `test-append-noline-${Date.now()}`;
+        seed(noLine, { storyline: '', chapters: [{ number: '1', title: 'T', plotpoints: ['P'] }] });
+        const r1 = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(noLine, { append: { chapterCount: 1 } }),
+            { root: projectRoot }
+        );
+        expect(r1.status).toBe(400);
+        expect(r1.response.error).toBe(`Story '${noLine}' has no storyline to continue from`);
+
+        // Case 2: story with no chapters to append after.
+        const noChapters = `test-append-noch-${Date.now()}`;
+        seed(noChapters, { chapters: [] });
+        const r2 = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(noChapters, { append: { chapterCount: 1 } }),
+            { root: projectRoot }
+        );
+        expect(r2.status).toBe(400);
+        expect(r2.response.error).toBe(`Story '${noChapters}' has no chapters to append to`);
+
+        // Case 3: a chapter without plotpoints breaks the appending[] context.
+        const noPlot = `test-append-noplot-${Date.now()}`;
+        seed(noPlot, { chapters: [{ number: '1', title: 'T', plotpoints: [] }] });
+        const r3 = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(noPlot, { append: { chapterCount: 1 } }),
+            { root: projectRoot }
+        );
+        expect(r3.status).toBe(400);
+        expect(r3.response.error).toBe(`Story '${noPlot}' has a chapter without plotpoints`);
+
+        // A 400 means NO background append ran — plotpoint.json bytes must be
+        // exactly what was seeded (no rewrite with partial appends).
+        for (const id of [noLine, noChapters, noPlot]) {
+            const seeded = JSON.parse(fs.readFileSync(path.join(storyboardDir(id), 'plotpoint.json'), 'utf-8'));
+            expect(seeded.chapterCount).toBe(3);
+        }
+    });
+
+    it('should append plotline chapters after the current list, renumber, and keep the story metadata (plotpoints only)', async () => {
+        const storyId = `test-append-success-${Date.now()}`;
+        createdStoryIds.push(storyId);
+        const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+
+        // Pin every clone to ONE instance so all LLM calls accumulate on a
+        // single spy. The create step (initial 3-chapter plotline) and the
+        // append step ('Continue the story' prompt) get distinct responses.
+        const seenRequests: string[] = [];
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                seenRequests.push(request);
+                // Chapter expansion is NEVER part of append/create (plotOnly) —
+                // if one appears, the flow started expanding chapters.
+                expect(request.includes('Expand the chapter')).toBe(false);
+                // Append step: exactly chapterCount (3) NEW chapters.
+                if (request.includes('Continue the story')) {
+                    return Promise.resolve({
+                        response: {
+                            chapters: [
+                                { number: '4', title: 'New Arc Begins', plotpoints: ['Plot E', 'Plot F'] },
+                                { number: '5', title: 'The Split', plotpoints: ['Plot G'] },
+                                { number: '6', title: 'Final Stand', plotpoints: ['Plot H', 'Plot I'] }
+                            ]
+                        }
+                    });
+                }
+                // Initial plotline generation: the standard 3 chapters.
+                return Promise.resolve({
+                    response: {
+                        chapters: [
+                            { number: '1', title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
+                            { number: '2', title: 'Chapter Two', plotpoints: ['Plot point C'] },
+                            { number: '3', title: 'Chapter Three', plotpoints: ['Plot point D'] }
+                        ]
+                    }
+                });
+            })
+        } as any);
+
+        // Step 1: create the story (plotline-only, 3 chapters) and wait for completion.
+        const createResult = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 3 }),
+            { root: projectRoot }
+        );
+        expect(createResult.status).toBe(200);
+        expect(createResult.response).toEqual({ storyId });
+
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Step 2: append 3 chapters via the SAME storyId, with author notes.
+        seenRequests.length = 0;
+        const appendResult = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { append: { chapterCount: 3, notes: 'steer toward the final battle' } }),
+            { root: projectRoot }
+        );
+        expect(appendResult.status).toBe(200);
+        expect(appendResult.response).toEqual({ storyId, appended: 3 });
+
+        // Step 3: wait for the background append to rewrite plotpoint.json
+        // with the enlarged chapter list (3 existing + 3 appended = 6).
+        await vi.waitFor(
+            () => {
+                const meta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+                expect(meta.chapterCount).toBe(6);
+                expect(meta.chapters.length).toBe(6);
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // The append LLM call saw the continue-prompt AND the dialog's notes.
+        const appendRequests = seenRequests.filter((r) => r.includes('Continue the story'));
+        expect(appendRequests.length).toBe(1);
+        expect(appendRequests[0]).toContain('steer toward the final battle');
+        expect(appendRequests[0]).toContain('NEXT 3 new chapters');
+        expect(appendRequests[0]).toContain('chapters 4 to 6');
+
+        // Final plotpoint.json: the new chapters are stored AFTER the current
+        // list, renumbered 4-6, and the story's metadata (storyline,
+        // storyName, createdAt, completed status) survives the append.
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.storyId).toBe(storyId);
+        expect(finalMeta.storyline).toBe(TEST_STORYLINE);
+        expect(finalMeta.storyName).toBe(TEST_STORYLINE);
+        expect(finalMeta.chapterCount).toBe(6);
+        expect(finalMeta.status).toBe('completed');
+        expect(finalMeta.chapters).toEqual([
+            { number: '1', title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
+            { number: '2', title: 'Chapter Two', plotpoints: ['Plot point C'] },
+            { number: '3', title: 'Chapter Three', plotpoints: ['Plot point D'] },
+            { number: '4', title: 'New Arc Begins', plotpoints: ['Plot E', 'Plot F'] },
+            { number: '5', title: 'The Split', plotpoints: ['Plot G'] },
+            { number: '6', title: 'Final Stand', plotpoints: ['Plot H', 'Plot I'] }
+        ]);
+
+        // Append is PLOTPOINTS ONLY: six skeleton payloads, zero expanded .md
+        // files (the create step was plotOnly and the append never expands).
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md'))).toEqual([]);
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json')).sort()).toEqual([
+            'chapter-001.json',
+            'chapter-002.json',
+            'chapter-003.json',
+            'chapter-004.json',
+            'chapter-005.json',
+            'chapter-006.json'
+        ]);
+
+        // A NEW appended chapter's skeleton carries the full all-plotline
+        // context (all 6 chapters) + its expand request — ready for an
+        // individual PATCH expandChapterIndex later, with empty revisions.
+        const newSkeleton = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-004.json'), 'utf-8'));
+        expect(newSkeleton).toEqual({
+            storyId,
+            storyline: TEST_STORYLINE,
+            chapterCount: 6,
+            chapterNumber: '4',
+            chapterIndex: 3,
+            // writeChapterPayload writes the generic `Chapter N` placeholder as
+            // the skeleton title (same contract as the create flow — the LLM
+            // title only lands in revisions after expansion); the stored
+            // expand request does carry the real title.
+            title: 'Chapter 4',
+            plotpoints: ['Plot E', 'Plot F'],
+            context: {
+                appending: [
+                    '> 1: Chapter One' + SUMMARY_SEP + '- Plot point A\n- Plot point B',
+                    '> 2: Chapter Two' + SUMMARY_SEP + '- Plot point C',
+                    '> 3: Chapter Three' + SUMMARY_SEP + '- Plot point D',
+                    '> 4: New Arc Begins' + SUMMARY_SEP + '- Plot E\n- Plot F',
+                    '> 5: The Split' + SUMMARY_SEP + '- Plot G',
+                    '> 6: Final Stand' + SUMMARY_SEP + '- Plot H\n- Plot I'
+                ],
+                request: buildExpandRequest('4', 'New Arc Begins')
+            },
+            config: {
+                systemInstructions: 'test instructions',
+                openingMessage: 'test opening'
+            },
+            revisions: []
+        });
+
+        // plotpoint.md grows by the appended entries (markdown debugging file).
+        const md = fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.md'), 'utf-8');
+        expect(md).toContain('> 4: New Arc Begins');
+        expect(md).toContain('- Plot H');
+    }, 30000);
 });

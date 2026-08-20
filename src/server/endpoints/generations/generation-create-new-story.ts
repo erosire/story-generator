@@ -25,6 +25,7 @@ import {
     writeChapterPayload
 } from './story-utils';
 import { forkStory } from './generation-fork-story';
+import { appendStoryChapters, validateAppendableStory } from './generation-append-story';
 
 // Generate the story in the background
 const generateStory = async (options: {
@@ -898,6 +899,69 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         return {
             status: 200,
             response: { storyId }
+        };
+    }
+
+    // ── Append request ──────────────────────────────────────────────────────
+    // When body.append is present, EXTEND the existing story in place (the
+    // dashboard's "[->]" append dialog): the LLM generates plotlines for
+    // append.chapterCount NEW chapters which are stored AFTER the current
+    // chapter list (10 existing + 3 appended = 13 chapters). Unlike fork
+    // (new storyId) and create (fresh storyId), append targets the SAME
+    // storyId the path carries. See generation-append-story.ts for the full
+    // semantics — plotpoints only, no chapter expansion, skeleton payloads
+    // written so the new chapters are expandable via PATCH.
+    //
+    // `notes` is optional free-form author guidance injected into the plotline
+    // prompt. A blank/whitespace-only notes value is a 400 (the client omits
+    // the field when the textarea is empty instead of sending ''); a non-empty
+    // value is forwarded trimmed.
+    if (body.append && typeof body.append === 'object') {
+        const { chapterCount, notes } = body.append;
+
+        if (typeof chapterCount !== 'number' || chapterCount < 1) {
+            return {
+                status: 400,
+                response: { error: 'append.chapterCount must be a positive number' }
+            };
+        }
+
+        if (notes !== undefined && (typeof notes !== 'string' || notes.trim().length === 0)) {
+            return {
+                status: 400,
+                response: { error: 'append.notes must be a non-empty string' }
+            };
+        }
+
+        // Synchronous story validation BEFORE firing the background job so the
+        // client gets the exact 400 reason (unknown story, missing plotpoint.json,
+        // no storyline, no plotpoints) instead of a silent background failure.
+        try {
+            validateAppendableStory(projectRoot, storyId);
+        } catch (err: any) {
+            return {
+                status: 400,
+                response: { error: err?.message ?? `Story '${storyId}' cannot be appended to` }
+            };
+        }
+
+        // Start the append in the background (fire-and-forget) — LLM plotline
+        // generation takes seconds to minutes; the dashboard's GET polling
+        // picks up the rewritten plotpoint.json when it lands. The per-request
+        // clientId (validated above) selects the model for the plotline call.
+        appendStoryChapters({
+            storyId,
+            chapterCount,
+            notes: notes !== undefined ? notes.trim() : undefined,
+            clientId,
+            root: projectRoot
+        }).catch((err) => {
+            console.error(`Story append failed for storyId ${storyId}:`, err);
+        });
+
+        return {
+            status: 200,
+            response: { storyId, appended: chapterCount }
         };
     }
 

@@ -6,6 +6,9 @@
 //   - Generate creates a new story and POSTs to the server
 //   - a 404 right after POST keeps polling until the first 200 with chapters
 //   - auto-refresh picks up new stories from the server
+//   - the [->] action opens the in-place append-chapters dialog (notes +
+//     chapter count + Append) and POSTs the append envelope to the same
+//     storyId; server 400s keep the dialog open with the error inline
 //
 // fetch is mocked globally. Poll interval is overridden via configOverrides to a
 // tiny value so the loop advances quickly under real timers.
@@ -679,5 +682,208 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('content-empty').textContent).toBe('Select one');
         // Input area is still available — user can create a new story via Generate.
         expect(screen.getByTestId('storyline-input')).toBeDefined();
+    });
+
+    // The "[->]" action button now opens a dialog (mirroring the footer
+    // generation box) that extends the SELECTED story in place: notes
+    // textarea + chapter count + Append button. Submitting POSTs
+    // { append: { chapterCount, notes? }, clientId } to the SAME storyId.
+    const seedAppendStory = (fetchMock: any, appendFetchImpl?: (url: string, init: any) => any) => {
+        // Two pending-plotpoint chapters so the chapter list renders and the
+        // story is pollable (chapterRequested > 0). meta.chapterCount (2) is
+        // the base the dialog's "X + new = total" copy and the success-path
+        // chapterRequested update derive from.
+        const chapters = [
+            {
+                chapterNumber: '1',
+                chapterIndex: 0,
+                title: 'Ch1',
+                plotpoints: ['plot1'],
+                expanded: true,
+                canReExpand: true,
+                revisions: [{ content: '## Ch1\n\nbody', wordCount: 5, generationTimeMs: 1000 }]
+            },
+            {
+                chapterNumber: '2',
+                chapterIndex: 1,
+                title: 'Ch2',
+                plotpoints: ['plot2'],
+                expanded: true,
+                canReExpand: true,
+                revisions: [{ content: '## Ch2\n\nbody', wordCount: 5, generationTimeMs: 1000 }]
+            }
+        ];
+        const meta = { storyline: 'Seed story', chapterCount: 2, createdAt: '2026-08-01T12:00:00Z' };
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'POST' && appendFetchImpl) {
+                return appendFetchImpl(url, init);
+            }
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                return Promise.resolve(mockResponse(200, { chapters, meta }));
+            }
+            // Default POST: the storyId echoed from the URL tail (append ok).
+            return Promise.resolve(mockResponse(200, { storyId: String(url.split('/').pop() ?? ''), appended: 0 }));
+        });
+
+        const story = {
+            id: 1,
+            storyId: 'append-story-1',
+            storyline: 'Seed story',
+            title: 'Seed story',
+            chapterRequested: 2,
+            chapterCompleted: 2,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'completed' as const,
+            data: { chapters, meta },
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+        return story;
+    };
+
+    it('opens the append dialog from the [->] action, POSTs the append envelope to the same storyId, and closes on success', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedAppendStory(fetchMock);
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // The [->] action (extend-plotpoints-button) appears when the story
+        // has at least one chapter.
+        await waitFor(() => {
+            expect(screen.getByTestId('extend-plotpoints-button')).toBeDefined();
+        });
+
+        // Click the [->] action — the append dialog opens on demand.
+        fireEvent.click(screen.getByTestId('extend-plotpoints-button'));
+        await waitFor(() => {
+            expect(screen.getByTestId('append-dialog')).toBeDefined();
+        });
+
+        // The dialog mirrors the footer box: notes textarea + chapters input +
+        // a primary Append button, with the story's current size in the copy.
+        const notes = screen.getByTestId('append-notes-input') as HTMLTextAreaElement;
+        const count = screen.getByTestId('append-count-input') as HTMLInputElement;
+        expect(notes).toBeDefined();
+        expect(notes.value).toBe('');
+        expect(count.value).toBe('3'); // default new-chapter count
+        expect(screen.getByTestId('append-dialog').textContent).toContain('This story has 2 chapters.');
+
+        // Enter guidance notes and pick 2 new chapters (2 existing + 2 = 4).
+        fireEvent.change(notes, { target: { value: 'the arc turns dark' } });
+        fireEvent.change(count, { target: { value: '2' } });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('append-button'));
+        });
+
+        // The append POST hits the SAME storyId with the append envelope +
+        // the top-right dropdown's clientId (default 'Qwen3_8' in tests).
+        await waitFor(() => {
+            const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
+            expect(postCall).toBeDefined();
+            expect(postCall[0]).toBe(`${BASE_URL}/append-story-1`);
+            expect(JSON.parse(postCall![1].body)).toEqual({
+                append: { chapterCount: 2, notes: 'the arc turns dark' },
+                clientId: 'Qwen3_8'
+            });
+        });
+
+        // Success: the dialog closes and resets to fresh defaults.
+        await waitFor(() => {
+            expect(screen.queryByTestId('append-dialog')).toBeNull();
+        });
+
+        // chapterRequested was bumped to the new total (2 existing + 2) so the
+        // main poll loop restarts against the enlarged target while the new
+        // plotline chapters stream in.
+        await waitFor(() => {
+            expect(screen.getByText('Generating 2/4 chapters…')).toBeDefined();
+        });
+    });
+
+    it('keeps the append dialog open with the server message when the append request is rejected', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedAppendStory(fetchMock, (url: string, init: any) =>
+            Promise.resolve(mockResponse(400, { error: "Story 'append-story-1' not found" }))
+        );
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // Open the dialog from the [->] action.
+        fireEvent.click(screen.getByTestId('extend-plotpoints-button'));
+        await waitFor(() => {
+            expect(screen.getByTestId('append-dialog')).toBeDefined();
+        });
+
+        fireEvent.change(screen.getByTestId('append-count-input'), { target: { value: '3' } });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('append-button'));
+        });
+
+        // The 400's exact server message is surfaced inline; the dialog stays
+        // open so the user can correct and retry.
+        await waitFor(() => {
+            expect(screen.getByTestId('append-error').textContent).toBe("Story 'append-story-1' not found");
+        });
+        expect(screen.getByTestId('append-dialog')).toBeDefined();
+        // Inputs survive the failed submit for correction.
+        expect((screen.getByTestId('append-count-input') as HTMLInputElement).value).toBe('3');
+    });
+
+    it('hides the append action when the selected story has no chapters yet', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                // Story dir exists but has no chapters yet.
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        const story = {
+            id: 1,
+            storyId: 'empty-story-1',
+            storyline: 'Pending story',
+            title: 'Pending story',
+            chapterRequested: 3,
+            chapterCompleted: 0,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'generating' as const,
+            data: { chapters: [], meta: null },
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // Chapter list is visible but chapter-less — nothing to append to, so
+        // the [->] action (and the entire action bar) is hidden.
+        await waitFor(() => {
+            expect(screen.getByTestId('chapters-list')).toBeDefined();
+        });
+        expect(screen.queryByTestId('extend-plotpoints-button')).toBeNull();
+        expect(screen.queryByTestId('content-action-bar')).toBeNull();
     });
 });

@@ -9,6 +9,9 @@
 //     and error branches.
 //   - updateChapter / rewriteChapter: PATCH payloads (incl. clientId) and
 //     error branches.
+//   - appendStoryPlotpoints: the "[->]" append dialog's POST — append
+//     envelope shape (notes omitted when blank, clientId optional) and
+//     the 400/500 error branches.
 //   - fetchClientOptions: URL derivation from the generations baseUrl,
 //     200 list, malformed-body fallback, and error branches.
 //   - pollStoryData: terminates when chapters reach expectedChapterCount, stops
@@ -22,7 +25,8 @@ import {
     fetchClientOptions,
     pollStoryData,
     updateChapter,
-    rewriteChapter
+    rewriteChapter,
+    appendStoryPlotpoints
 } from './storyboard';
 import type { StoryMeta } from './storyboard';
 
@@ -323,6 +327,76 @@ describe('fetchClientOptions', () => {
         (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
 
         await expect(fetchClientOptions(BASE_URL)).rejects.toThrow('Failed to fetch client options (HTTP 502)');
+    });
+});
+
+describe('appendStoryPlotpoints (POST append envelope)', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('posts the append envelope without notes or clientId (legacy wire shape)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(200, { storyId: 'story-1', appended: 3 }));
+
+        const result = await appendStoryPlotpoints(BASE_URL, 'story-1', { chapterCount: 3 });
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-1`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ append: { chapterCount: 3 } })
+        });
+        expect(result).toEqual({ storyId: 'story-1', appended: 3 });
+    });
+
+    it('includes the trimmed notes and clientId when provided', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(200, { storyId: 'story-1', appended: 2 }));
+
+        const result = await appendStoryPlotpoints(BASE_URL, 'story-1', { chapterCount: 2, notes: '  the arc turns dark  ' }, 'Nvidia');
+
+        expect((fetch as any).mock.calls[0][1].body).toBe(
+            JSON.stringify({ append: { chapterCount: 2, notes: 'the arc turns dark' }, clientId: 'Nvidia' })
+        );
+        expect(result).toEqual({ storyId: 'story-1', appended: 2 });
+    });
+
+    it('omits blank notes entirely (dialog textarea left empty)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(200, { storyId: 'story-1', appended: 1 }));
+
+        await appendStoryPlotpoints(BASE_URL, 'story-1', { chapterCount: 1, notes: '   ' });
+
+        expect((fetch as any).mock.calls[0][1].body).toBe(JSON.stringify({ append: { chapterCount: 1 } }));
+    });
+
+    it('URL-encodes the storyId for append', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(200, { storyId: 'a/b c', appended: 1 }));
+
+        await appendStoryPlotpoints(BASE_URL, 'a/b c', { chapterCount: 1 });
+
+        expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/a%2Fb%20c`);
+    });
+
+    it('throws with the server validation message on 400', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(400, { error: "Story 'nope' not found" }));
+
+        await expect(appendStoryPlotpoints(BASE_URL, 'nope', { chapterCount: 1 })).rejects.toThrow("Story 'nope' not found");
+    });
+
+    it('falls back to a status-based message when the body is not JSON', async () => {
+        const badResponse = {
+            ok: false,
+            status: 500,
+            json: async () => {
+                throw new SyntaxError('not json');
+            }
+        } as any;
+        (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
+
+        await expect(appendStoryPlotpoints(BASE_URL, 'story-1', { chapterCount: 1 })).rejects.toThrow(
+            'Failed to append chapters (HTTP 500)'
+        );
     });
 });
 

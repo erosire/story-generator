@@ -29,7 +29,7 @@
 import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
-import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory } from '../../api';
+import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 import { getExpandedChapters, setExpandedChapters } from '../../context/store';
@@ -164,6 +164,109 @@ const RewriteDialogActions = styled('div', {
     marginTop: 16
 });
 
+// ── Append-chapters dialog ──────────────────────────────────────────
+// Deliberately mirrors the footer generation box (SectionStoryInput): a
+// multi-line notes textarea + a control row (chapters label, numeric count
+// input, primary accent action button). The overlay/box match the rewrite
+// dialog's modal treatment so both content-area dialogs look alike. Opaque
+// surface (theme.surfaceDialog) so the form stays grounded above the dim.
+const AppendOverlay = styled('div', {
+    position: 'fixed' as const,
+    inset: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000
+});
+
+const AppendDialog = styled('div', {
+    background: theme.surfaceDialog,
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusLg,
+    padding: 24,
+    width: '90%',
+    maxWidth: 520,
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
+});
+
+const AppendDialogTitle = styled('h3', {
+    margin: '0 0 12px 0',
+    fontSize: theme.fontSize.lg,
+    fontWeight: 600,
+    color: theme.text
+});
+
+// Mirrors the footer's StorylineTextarea (SectionStoryInput:34-47) at a
+// fixed dialog height (5 rows) — the footer grows on focus, the dialog does not.
+const AppendNotesTextarea = styled('textarea', {
+    width: '100%',
+    resize: 'vertical' as const,
+    padding: 10,
+    maxHeight: 200,
+    borderRadius: theme.radiusMd,
+    border: `1px solid ${theme.borderStrong}`,
+    backgroundColor: theme.surface1,
+    color: theme.text,
+    fontFamily: theme.fontSans,
+    fontSize: theme.fontSize.body,
+    lineHeight: 1.5,
+    boxSizing: 'border-box' as const,
+    transition: `min-height ${theme.transition}, border-color ${theme.transition}, background-color ${theme.transition}`
+});
+
+// Control row: chapters label + count input on the left, Cancel + Append on the
+// right — same layout as the footer's ControlRow with the actions grouped right.
+const AppendControlRow = styled('div', {
+    display: 'flex',
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginTop: 12
+});
+
+// Mirrors the footer's ChapterCountInput (SectionStoryInput:61-72).
+const AppendCountInput = styled('input', {
+    width: 80,
+    padding: '7px 10px',
+    borderRadius: theme.radiusMd,
+    border: `1px solid ${theme.borderStrong}`,
+    backgroundColor: theme.surface1,
+    color: theme.text,
+    fontFamily: theme.fontSans,
+    fontSize: theme.fontSize.body,
+    boxSizing: 'border-box',
+    transition: `border-color ${theme.transition}, background-color ${theme.transition}`
+});
+
+// Primary action — mirrors the footer's GenerateButton (fill accent, flat).
+// The `sg-primary` class hook adds the brighter hover (styles/global.ts).
+const AppendButton = styled('button', {
+    padding: '9px 20px',
+    borderRadius: theme.radiusMd,
+    border: 'none',
+    backgroundColor: theme.accent,
+    color: '#ffffff',
+    fontSize: theme.fontSize.body,
+    fontWeight: 600,
+    cursor: 'pointer',
+    flex: '0 0 auto',
+    marginLeft: 'auto',
+    transition: `background-color ${theme.transition}`
+});
+
+// Error line under the control row — mirrors the footer's ErrorLine.
+const AppendError = styled('div', {
+    color: theme.danger,
+    fontSize: theme.fontSize.md,
+    padding: '8px 12px',
+    marginTop: 12,
+    background: theme.dangerSoft,
+    border: `1px solid ${theme.dangerBorder}`,
+    borderRadius: theme.radiusMd
+});
+
 // Chapter action icon button — compact square button for per-chapter actions
 // (re-expand, fork). Uses a fixed-size square with centered icon glyph.
 // Disabled state dims and blocks interaction.
@@ -260,8 +363,9 @@ const ForkIcon: React.FC = () => (
     </svg>
 );
 
-// Inline SVG extend icon — right-pointing arrow with lines, used for the
-// Extend action button that copies plotpoints into the storyline input.
+// Inline SVG extend icon — right-pointing arrow ([->]), used for the
+// Append-chapters action button that opens the in-place append dialog
+// (previously: copied plotpoints into the footer storyline input).
 const ExtendIcon: React.FC = () => (
     <svg
         width={14}
@@ -975,49 +1079,89 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
     const data = selected?.data ?? { chapters: [], meta: null };
 
-    // Build the complete plotpoints outline text from all chapters.
-    // This is used by the "Extend" button to populate the storyline input
-    // so the user can iterate on the full structure.
-    // NOTE: hooks must be declared before any early returns to satisfy
-    // React's Rules of Hooks (hooks cannot be called conditionally).
-    const buildPlotpointsOutline = React.useCallback((): string => {
-        const chapters = data?.chapters;
-        if (!chapters || chapters.length === 0) return '';
+    // ── Append chapters (the "[->]" action) ───────────────────────────────
+    // The append dialog extends the SELECTED story in place: it sends an
+    // `append` POST (appendStoryPlotpoints) with the user's optional notes +
+    // how many new chapters to generate. The server appends plotpoints-only
+    // chapters after the current chapter list (10 existing + 3 appended = 13)
+    // and writes skeleton payloads for them — NO chapter expansion happens,
+    // each new chapter is expanded later via its own per-chapter action.
+    //
+    // On success we bump this entry's chapterRequested to the new total so
+    // the main polling effect (below) restarts with the enlarged target and
+    // the new pending chapters stream into the list as plotline files land.
+    const [appendState, setAppendState] = React.useState<{
+        isOpen: boolean;
+        isSubmitting: boolean;
+        notes: string;
+        chapterCount: number;
+        error: string;
+    }>({ isOpen: false, isSubmitting: false, notes: '', chapterCount: 3, error: '' });
 
-        const storyTitle = selected?.storyName || selected?.title || 'Story';
-        const lines: string[] = [];
+    // Open the append dialog with fresh defaults (3 new chapters, no notes).
+    const openAppendDialogue = React.useCallback(() => {
+        setAppendState({ isOpen: true, isSubmitting: false, notes: '', chapterCount: 3, error: '' });
+    }, []);
 
-        // Heading with story title
-        lines.push(`# ${storyTitle} Extended`);
-        lines.push('');
+    const closeAppendDialogue = React.useCallback(() => {
+        setAppendState((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+    }, []);
 
-        chapters.forEach((ch: any, i: number) => {
-            const title = ch.title || `Chapter ${i + 1}`;
-            lines.push(`## ${title}`);
-            if (ch.plotpoints && ch.plotpoints.length > 0) {
-                ch.plotpoints.forEach((pp: string) => {
-                    lines.push(`- ${pp}`);
-                });
-            } else {
-                lines.push('- (no plot points)');
-            }
-            lines.push('');
-        });
+    // Submit the append request. On failure the dialog stays open with the
+    // server's message so the user can correct and retry.
+    const handleAppend = React.useCallback(async () => {
+        if (!selected?.storyId) return;
+        const { notes, chapterCount } = appendState;
+        setAppendState((prev) => ({ ...prev, isSubmitting: true, error: '' }));
+        try {
+            // clientId from the top-right header dropdown selects the LLM
+            // client for the plotline call (per-request only, never stored).
+            await appendStoryPlotpoints(
+                store.config.baseUrl,
+                selected.storyId,
+                { chapterCount, notes: notes.trim() || undefined },
+                store.config.clientId
+            );
 
-        // Closing prompt for the user to continue editing
-        lines.push('');
-        lines.push('> Extend the story with the following plotlines: ');
-        lines.push('');
-        lines.push('');
+            // New total chapter target = current story size + appended count.
+            // Prefer the server's meta.chapterCount (source of truth), fall
+            // back to the locally polled chapter list, then the entry's
+            // chapterRequested (remote entries seeded from the list endpoint).
+            const currentChapterCount =
+                selected.data?.meta?.chapterCount ?? selected.data?.chapters?.length ?? selected.chapterRequested;
+            const nextChapterRequested = Math.max(currentChapterCount, 0) + chapterCount;
 
-        return lines.join('\n');
-    }, [data?.chapters, selected?.storyName, selected?.title]);
+            // Bump chapterRequested (restarts the main poll loop with the new
+            // target) and mark processing so the tab chip/banner reflect that
+            // new plotlines are being generated. The new chapters arrive
+            // plotpoints-only and stay pending until individually expanded.
+            setStore((prev) => ({
+                ...prev,
+                records: prev.records.map((e) =>
+                    e.id === selected.id
+                        ? { ...e, chapterRequested: nextChapterRequested, isProcessing: true, status: 'generating' as const, error: '' }
+                        : e
+                ),
+                selected:
+                    prev.selected?.id === selected.id
+                        ? {
+                              ...prev.selected,
+                              chapterRequested: nextChapterRequested,
+                              isProcessing: true,
+                              status: 'generating' as const,
+                              error: ''
+                          }
+                        : prev.selected
+            }));
 
-    const handleExtend = React.useCallback(() => {
-        const outline = buildPlotpointsOutline();
-        if (!outline) return;
-        setStore((prev) => ({ ...prev, pendingStoryline: outline }));
-    }, [buildPlotpointsOutline, setStore]);
+            // Success: close the dialog with fresh defaults for the next use.
+            setAppendState({ isOpen: false, isSubmitting: false, notes: '', chapterCount: 3, error: '' });
+        } catch (err: any) {
+            // Server validation/append failure — keep the dialog open so the
+            // user can fix the inputs and retry.
+            setAppendState((prev) => ({ ...prev, isSubmitting: false, error: err?.message || 'Failed to append chapters' }));
+        }
+    }, [selected, store.config.baseUrl, store.config.clientId, appendState.notes, appendState.chapterCount, setStore]);
 
     const handleCollapseAll = React.useCallback(() => {
         // Mark this story as interacted so auto-expand doesn't re-open the
@@ -1026,11 +1170,15 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         setExpandedChaptersState(new Set());
     }, [selected?.storyId]);
 
-    // Whether the Extend button should be enabled: a story must be selected
-    // and have at least one chapter with plotpoints.
-    const hasPlotpoints = (data?.chapters ?? []).some(
-        (ch: any) => ch.plotpoints && ch.plotpoints.length > 0
-    );
+    // Whether the action bar should be enabled: append requires at least one
+    // existing chapter (the server rejects appends to chapter-less stories),
+    // so the bar appears as soon as any chapter is present.
+    const hasChapters = (data?.chapters ?? []).length > 0;
+
+    // Current story size for the append dialog copy: server meta first, then
+    // the polled chapter list, then the entry's requested count.
+    const appendBaseCount =
+        data?.meta?.chapterCount ?? data?.chapters?.length ?? selected?.chapterRequested ?? 0;
 
     // Render hygiene: null-safety on each branch.
     if (!selected) {
@@ -1178,9 +1326,12 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             )}
 
             {/* Action bar — pinned bottom-right. Collapse-all closes every
-                expanded chapter. Extend copies the full plotpoints outline
-                into the storyline input for iteration. */}
-            {hasPlotpoints && (
+                expanded chapter. The [->] button (same test id / glyph as the
+                former "extend to footer input" action) opens the in-place
+                append-chapters dialog. Appending needs at least one existing
+                chapter (the server rejects chapter-less stories), so the bar
+                appears as soon as any chapter exists. */}
+            {hasChapters && (
                 <ActionBar data-testid="content-action-bar">
                     <ActionButton
                         onClick={handleCollapseAll}
@@ -1191,9 +1342,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         <CollapseAllIcon />
                     </ActionButton>
                     <ActionButton
-                        onClick={handleExtend}
+                        onClick={openAppendDialogue}
                         data-testid="extend-plotpoints-button"
-                        title="Extend story with plotpoints outline"
+                        title={`Append ${appendState.chapterCount} new chapters to this story`}
                         className="sg-hover"
                     >
                         <ExtendIcon />
@@ -1263,6 +1414,96 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         </RewriteDialogActions>
                     </RewriteDialog>
                 </RewriteOverlay>
+            )}
+
+            {/* Append-chapters dialog — the "[->]" action. Mirrors the footer
+                generation box: a notes textarea (optional plotline guidance
+                for the appended chapters) + chapter count + a primary action.
+                Submitting POSTs { append: { chapterCount, notes? } } to this
+                SAME storyId (appendStoryPlotpoints) — the server appends
+                plotpoints-only chapters after the current list and the new
+                chapters appear via the restarted poll loop. */}
+            {appendState.isOpen && (
+                <AppendOverlay onClick={closeAppendDialogue}>
+                    <AppendDialog
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="append-dialog-title"
+                        data-testid="append-dialog"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <AppendDialogTitle id="append-dialog-title">
+                            Append Chapters to {selected.storyName || selected.storyId}
+                        </AppendDialogTitle>
+                        <p
+                            style={{
+                                margin: '0 0 12px 0',
+                                fontSize: theme.fontSize.sm,
+                                color: theme.textMuted,
+                                lineHeight: 1.5
+                            }}
+                        >
+                            This story has {appendBaseCount} chapter{appendBaseCount === 1 ? '' : 's'}. Appending
+                            adds new plotpoint chapters after the current list (
+                            {appendBaseCount} + new = total) — chapters are not auto-expanded.
+                        </p>
+                        <AppendNotesTextarea
+                            rows={5}
+                            className="sg-input"
+                            value={appendState.notes}
+                            onChange={(e) =>
+                                setAppendState((prev) => (prev.isSubmitting ? prev : { ...prev, notes: e.target.value, error: '' }))
+                            }
+                            placeholder="Optional — plotpoints or guidance for the new chapters, e.g. 'the crew splits into two groups, each chasing a different lead…'"
+                            disabled={appendState.isSubmitting}
+                            data-testid="append-notes-input"
+                        />
+                        <AppendControlRow>
+                            <label
+                                htmlFor="append-count"
+                                style={{ color: theme.textMuted, fontSize: theme.fontSize.md, fontWeight: 500 }}
+                            >
+                                Chapters
+                            </label>
+                            <AppendCountInput
+                                id="append-count"
+                                type="number"
+                                min={1}
+                                max={99}
+                                className="sg-input"
+                                value={appendState.chapterCount}
+                                onChange={(e) =>
+                                    setAppendState((prev) =>
+                                        prev.isSubmitting ? prev : { ...prev, chapterCount: Number(e.target.value), error: '' }
+                                    )
+                                }
+                                disabled={appendState.isSubmitting}
+                                data-testid="append-count-input"
+                            />
+                            <ActionButton
+                                onClick={closeAppendDialogue}
+                                disabled={appendState.isSubmitting}
+                                data-testid="append-cancel"
+                                style={{ pointerEvents: 'auto' }}
+                            >
+                                Cancel
+                            </ActionButton>
+                            {/* Append — the footer's Generate analogue: submits
+                                the append POST for this story in place. */}
+                            <AppendButton
+                                onClick={handleAppend}
+                                disabled={appendState.isSubmitting}
+                                className="sg-primary"
+                                data-testid="append-button"
+                            >
+                                {appendState.isSubmitting ? 'Appending…' : 'Append'}
+                            </AppendButton>
+                        </AppendControlRow>
+                        {appendState.error && (
+                            <AppendError data-testid="append-error">{appendState.error}</AppendError>
+                        )}
+                    </AppendDialog>
+                </AppendOverlay>
             )}
         </ContentColumn>
     );
