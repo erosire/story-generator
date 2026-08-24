@@ -174,7 +174,7 @@ export const useApiMethod: 'structure' | 'format' = 'structure';
 
 // List of possible clients
 export const CLIENTS = {
-    Nvidia: NVIDIA_CLIENT.clone({ model: 'z-ai/glm-5.2', sampling: DEFAULT_SAMPLING_PARAMS }),
+    Nvidia: NVIDIA_CLIENT.clone({ model: 'moonshotai/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Modal: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMIK3: KIMI3_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // Uses QWEN3_8_SAMPLING_PARAMS (top_k: 0) because the ninfer backend

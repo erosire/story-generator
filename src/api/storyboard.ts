@@ -35,15 +35,22 @@
 //   - PATCH /v1/storyboard/generations/:storyId
 //       body: { storyName?: string, expandChapterIndex?: number,
 //               rewriteChapter?: number, rewriteContext?: string,
+//               deleteChapterIndex?: number, deleteChapterRevisionIndex?: number,
 //               clientId?: string }
 //       returns: { storyId, storyName?, expandChapterIndex?, rewriteChapter?,
-//                  chapterNumber?, title?, message }
+//                  deleteChapterIndex?, deleteChapterRevisionIndex?,
+//                  chapterNumber?, title?, revisionsRemaining?, message }
 //       behavior: Updates story metadata (e.g. storyName), triggers
 //       fire-and-forget re-expansion of a single chapter (expandChapterIndex),
 //       or rewrites a chapter with user-provided context (rewriteChapter +
 //       rewriteContext). expandChapterIndex chains to subsequent pending
-//       chapters; rewriteChapter only rewrites the targeted chapter. clientId
-//       selects the LLM client for the triggered work (never stored).
+//       chapters; rewriteChapter only rewrites the targeted chapter.
+//       deleteChapterIndex synchronously removes ONE revision from the chapter
+//       (the one at deleteChapterRevisionIndex, else the latest); the chapter
+//       returns to plotlines-only only when its last revision is deleted.
+//       expandChapterIndex / rewriteChapter / deleteChapterIndex are mutually
+//       exclusive. clientId selects the LLM client for the triggered work
+//       (never stored); deletion does no LLM work.
 //       See generation-update-chapter.ts.
 //
 //   - DELETE /v1/storyboard/generations/:storyId
@@ -510,6 +517,60 @@ export async function rewriteChapter(
     }
 
     return (await response.json()) as RewriteChapterResponse;
+}
+
+// Delete ONE revision of a chapter's expanded content via PATCH. Synchronous
+// server-side (unlike expand/rewrite).
+//
+// `revisionIndex` selects which revisions[] entry is removed (the dropdown
+// selection in the UI); pass undefined to target the LATEST revision. The
+// remaining revisions keep the chapter expanded — only when the deleted
+// revision was the chapter's last does it return to plotlines-only (GET
+// reports expanded: false) so it can be expanded again via updateChapter.
+// The stored LLM context is kept either way. No LLM work happens, so no
+// clientId is sent. Throws on network failure or non-200 response (400
+// validation / 404 unknown chapter surface the server's exact message).
+export type DeleteChapterResponse = {
+    storyId: string;
+    deleteChapterIndex: number;
+    deleteChapterRevisionIndex: number;
+    chapterNumber: string;
+    title: string;
+    revisionsRemaining: number;
+    message: string;
+};
+
+export async function deleteChapter(
+    baseUrl: string,
+    storyId: string,
+    chapterIndex: number,
+    revisionIndex?: number
+): Promise<DeleteChapterResponse> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    // revisionIndex is only serialized when provided — the server falls back
+    // to the latest revision when the field is absent.
+    const body =
+        revisionIndex !== undefined
+            ? { deleteChapterIndex: chapterIndex, deleteChapterRevisionIndex: revisionIndex }
+            : { deleteChapterIndex: chapterIndex };
+    const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+        let message = `Failed to delete chapter (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as DeleteChapterResponse;
 }
 
 // Update story metadata via PATCH. Accepts any writable field (storyName, etc.)

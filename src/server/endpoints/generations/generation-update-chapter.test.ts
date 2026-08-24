@@ -1014,4 +1014,319 @@ describe('generationUpdateChapter', () => {
             expect(result.response.message).toContain('rewrite started');
         });
     });
+
+    // ── deleteChapterIndex + deleteChapterRevisionIndex ───────────────────
+    // Synchronous deletion of ONE revision from a chapter's revisions[] — the
+    // UI-selected one (deleteChapterRevisionIndex) or the latest when absent.
+    // Only deleting the chapter's LAST revision returns it to plotlines-only
+    // (markdown removed, chapterCompleted decremented); the stored LLM context
+    // is always preserved so the chapter can be expanded again. No LLM work
+    // happens, so no background wait is needed.
+    describe('deleteChapterIndex', () => {
+        // Seed a story with a single chapter whose payload carries the given
+        // revisions, plus the markdown mirror of the LATEST revision (same
+        // contract as writeChapterFiles). plotpoint.json gets an explicit
+        // chapterCompleted so the decrement is observable.
+        const seedExpandedChapter = (
+            storyId: string,
+            chapterCompleted: number,
+            revisions: Array<{ content: string; wordCount: number; generationTimeMs: number }>
+        ) => {
+            createdStoryIds.push(storyId);
+            const storyboardDir = getStoryboardDir(storyId);
+            const chapterDir = path.join(storyboardDir, 'chapter');
+            fs.mkdirSync(chapterDir, { recursive: true });
+
+            fs.writeFileSync(
+                path.join(storyboardDir, 'plotpoint.json'),
+                JSON.stringify({
+                    storyId,
+                    storyline: 'A sci-fi adventure.',
+                    chapterCount: 1,
+                    chapterCompleted,
+                    chapters: [{ number: '1', title: 'The Beginning', plotpoints: ['Opening scene'] }],
+                    createdAt: '2026-07-01T10:00:00.000Z'
+                }),
+                'utf-8'
+            );
+
+            fs.writeFileSync(
+                path.join(chapterDir, 'chapter-001.json'),
+                JSON.stringify({
+                    storyId,
+                    storyline: 'A sci-fi adventure.',
+                    chapterCount: 1,
+                    chapterNumber: '1',
+                    chapterIndex: 0,
+                    title: 'The Beginning',
+                    plotpoints: ['Opening scene'],
+                    context: {
+                        appending: ['> 1: The Beginning\n\n- Opening scene'],
+                        request: '> Expand the chapter "1: The Beginning"'
+                    },
+                    config: { systemInstructions: 'test', openingMessage: 'test' },
+                    revisions
+                }),
+                'utf-8'
+            );
+            if (revisions.length > 0) {
+                fs.writeFileSync(
+                    path.join(chapterDir, 'chapter-001.md'),
+                    `## The Beginning\n\n${revisions[revisions.length - 1].content}`,
+                    'utf-8'
+                );
+            }
+        };
+
+        const TWO_REVISIONS = [
+            { content: 'First pass content', wordCount: 3, generationTimeMs: 1200 },
+            { content: 'Second pass content', wordCount: 3, generationTimeMs: 900 }
+        ];
+
+        it('should return 400 when deleteChapterIndex is negative', async () => {
+            const storyId = `test-delete-negative-${Date.now()}`;
+            seedExpandedChapter(storyId, 1, TWO_REVISIONS);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: -1 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(400);
+            expect(result.response.error).toBe('deleteChapterIndex must be a non-negative integer');
+        });
+
+        it('should return 400 when deleteChapterRevisionIndex is negative', async () => {
+            const storyId = `test-delete-rev-negative-${Date.now()}`;
+            seedExpandedChapter(storyId, 1, TWO_REVISIONS);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 0, deleteChapterRevisionIndex: -1 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(400);
+            expect(result.response.error).toBe('deleteChapterRevisionIndex must be a non-negative integer');
+        });
+
+        it('should return 400 when deleteChapterRevisionIndex is provided without deleteChapterIndex', async () => {
+            const storyId = `test-delete-rev-orphan-${Date.now()}`;
+            seedExpandedChapter(storyId, 1, TWO_REVISIONS);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterRevisionIndex: 0 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(400);
+            expect(result.response.error).toBe('deleteChapterRevisionIndex requires deleteChapterIndex');
+        });
+
+        it('should return 400 when deleteChapterIndex is combined with expandChapterIndex or rewriteChapter', async () => {
+            const storyId = `test-delete-exclusive-${Date.now()}`;
+            seedExpandedChapter(storyId, 1, TWO_REVISIONS);
+
+            const expandCombo = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 0, expandChapterIndex: 0 }),
+                { root: projectRoot }
+            );
+            expect(expandCombo.status).toBe(400);
+            expect(expandCombo.response.error).toBe(
+                'Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be provided per request.'
+            );
+
+            const rewriteCombo = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 0, rewriteChapter: 0, rewriteContext: 'ctx' }),
+                { root: projectRoot }
+            );
+            expect(rewriteCombo.status).toBe(400);
+            expect(rewriteCombo.response.error).toBe(
+                'Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be provided per request.'
+            );
+        });
+
+        it('should return 404 when the chapter does not exist', async () => {
+            const storyId = `test-delete-no-chapter-${Date.now()}`;
+            createdStoryIds.push(storyId);
+
+            const storyboardDir = getStoryboardDir(storyId);
+            fs.mkdirSync(storyboardDir, { recursive: true });
+            fs.writeFileSync(
+                path.join(storyboardDir, 'plotpoint.json'),
+                JSON.stringify({
+                    storyId,
+                    storyline: 'A test story.',
+                    chapterCount: 2,
+                    chapters: [
+                        { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+                        { number: '2', title: 'Chapter Two', plotpoints: ['Plot B'] }
+                    ],
+                    createdAt: '2026-07-01T10:00:00.000Z'
+                }),
+                'utf-8'
+            );
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 1 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(404);
+            expect(result.response.error).toContain('Chapter 1');
+        });
+
+        it('should return 400 when the chapter has no revisions to delete', async () => {
+            const storyId = `test-delete-pending-${Date.now()}`;
+            // Pending chapter skeleton: revisions [] — the trash button is
+            // hidden client-side, but a raw PATCH must still be rejected.
+            seedExpandedChapter(storyId, 0, []);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 0 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(400);
+            expect(result.response.error).toBe('Chapter 0 has no revisions to delete');
+        });
+
+        it('should return 400 when deleteChapterRevisionIndex is out of range', async () => {
+            const storyId = `test-delete-rev-range-${Date.now()}`;
+            seedExpandedChapter(storyId, 1, TWO_REVISIONS);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 0, deleteChapterRevisionIndex: 2 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(400);
+            expect(result.response.error).toBe('Revision 2 does not exist on chapter 0 (chapter has 2 revisions)');
+        });
+
+        it('should delete only the selected (older) revision, leaving the markdown mirror untouched', async () => {
+            const storyId = `test-delete-selected-${Date.now()}`;
+            seedExpandedChapter(storyId, 1, TWO_REVISIONS);
+
+            // Select the OLDEST revision (index 0) — the .md mirrors the
+            // LATEST revision, so it must keep 'Second pass content'.
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 0, deleteChapterRevisionIndex: 0 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.response).toEqual({
+                storyId,
+                deleteChapterIndex: 0,
+                deleteChapterRevisionIndex: 0,
+                chapterNumber: '1',
+                title: 'The Beginning',
+                revisionsRemaining: 1,
+                message: 'Chapter 0 revision 0 deleted'
+            });
+
+            const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+            const updatedPayload = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+            // Only the selected entry is gone — the second revision survives intact.
+            expect(updatedPayload.revisions).toEqual([
+                { content: 'Second pass content', wordCount: 3, generationTimeMs: 900 }
+            ]);
+            // Context is preserved either way (re-expansion stays possible).
+            expect(updatedPayload.context).toEqual({
+                appending: ['> 1: The Beginning\n\n- Opening scene'],
+                request: '> Expand the chapter "1: The Beginning"'
+            });
+
+            // Latest revision still holds → markdown untouched, counter unchanged.
+            expect(fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8')).toBe(
+                '## The Beginning\n\nSecond pass content'
+            );
+            const plotpoint = JSON.parse(
+                fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.json'), 'utf-8')
+            );
+            expect(plotpoint.chapterCompleted).toBe(1);
+        });
+
+        it('should default to deleting the latest revision when deleteChapterRevisionIndex is absent', async () => {
+            const storyId = `test-delete-latest-${Date.now()}`;
+            seedExpandedChapter(storyId, 1, TWO_REVISIONS);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 0 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.response.deleteChapterRevisionIndex).toBe(1);
+            expect(result.response.revisionsRemaining).toBe(1);
+
+            const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+            const updatedPayload = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+            expect(updatedPayload.revisions).toEqual([
+                { content: 'First pass content', wordCount: 3, generationTimeMs: 1200 }
+            ]);
+
+            // The deleted revision WAS the mirrored one → the .md is rewritten
+            // with the new latest (the surviving first pass).
+            expect(fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8')).toBe(
+                '## The Beginning\n\nFirst pass content'
+            );
+            const plotpoint = JSON.parse(
+                fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.json'), 'utf-8')
+            );
+            expect(plotpoint.chapterCompleted).toBe(1);
+        });
+
+        it('should return the chapter to plotlines only when its last revision is deleted', async () => {
+            const storyId = `test-delete-last-revision-${Date.now()}`;
+            seedExpandedChapter(storyId, 1, [
+                { content: 'Only pass content', wordCount: 3, generationTimeMs: 1200 }
+            ]);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { deleteChapterIndex: 0, deleteChapterRevisionIndex: 0 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.response).toEqual({
+                storyId,
+                deleteChapterIndex: 0,
+                deleteChapterRevisionIndex: 0,
+                chapterNumber: '1',
+                title: 'The Beginning',
+                revisionsRemaining: 0,
+                message: 'Chapter 0 revision 0 deleted — the chapter is plotlines only and can be expanded again'
+            });
+
+            // Payload keeps plotpoints + context (expandable again), revisions emptied.
+            const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+            const updatedPayload = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+            expect(updatedPayload.revisions).toEqual([]);
+            expect(updatedPayload.plotpoints).toEqual(['Opening scene']);
+            expect(updatedPayload.context).toEqual({
+                appending: ['> 1: The Beginning\n\n- Opening scene'],
+                request: '> Expand the chapter "1: The Beginning"'
+            });
+
+            // No content left → markdown mirror removed; counter decremented
+            // because the chapter WAS complete before the deletion.
+            expect(fs.existsSync(path.join(chapterDir, 'chapter-001.md'))).toBe(false);
+            const plotpoint = JSON.parse(
+                fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.json'), 'utf-8')
+            );
+            expect(plotpoint.chapterCompleted).toBe(0);
+        });
+    });
 });

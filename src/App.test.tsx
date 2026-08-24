@@ -9,6 +9,10 @@
 //   - the [->] action opens the in-place append-chapters dialog (notes +
 //     chapter count + Append) and POSTs the append envelope to the same
 //     storyId; server 400s keep the dialog open with the error inline
+//   - the per-chapter delete (trash) button opens a confirmation dialog; only
+//     the confirm PATCHes { deleteChapterIndex, deleteChapterRevisionIndex }
+//     for the dropdown-selected revision — deleting the last revision returns
+//     the chapter to plotlines-only (expandable again); cancel sends nothing
 //
 // fetch is mocked globally. Poll interval is overridden via configOverrides to a
 // tiny value so the loop advances quickly under real timers.
@@ -885,5 +889,268 @@ describe('StoryGeneratorApp', () => {
         });
         expect(screen.queryByTestId('extend-plotpoints-button')).toBeNull();
         expect(screen.queryByTestId('content-action-bar')).toBeNull();
+    });
+
+    // Per-revision delete flow. The trash button sits next to the rewrite [+]
+    // in the chapter sticky bar and only renders for expanded chapters. It
+    // removes ONLY the revision selected in the chapter's revision dropdown —
+    // the chapter reverts to plotlines-only solely when its LAST revision is
+    // deleted. The click never deletes directly — a confirmation dialog opens
+    // first. seedDeleteStory's mock `deleted` flag flips the GET chapter-2
+    // payload to `chapter2After` once the confirm PATCH lands, emulating the
+    // server's synchronous revision deletion.
+    const seedDeleteStory = (fetchMock: any, chapter2Revisions: Array<{ content: string; wordCount: number; generationTimeMs: number }>, chapter2After: any) => {
+        let deleted = false;
+        const chapter1 = {
+            chapterNumber: '1',
+            chapterIndex: 0,
+            title: 'Ch1',
+            plotpoints: ['plot1'],
+            expanded: true,
+            canReExpand: true,
+            revisions: [{ content: '## Ch1\n\nbody', wordCount: 5, generationTimeMs: 1000 }]
+        };
+        const chapter2Expanded = {
+            chapterNumber: '2',
+            chapterIndex: 1,
+            title: 'Ch2',
+            plotpoints: ['plot2'],
+            expanded: true,
+            canReExpand: true,
+            revisions: chapter2Revisions
+        };
+        const meta = { storyline: 'Seed story', chapterCount: 2, createdAt: '2026-08-01T12:00:00Z' };
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'PATCH') {
+                deleted = true;
+                const patchBody = JSON.parse(init.body);
+                return Promise.resolve(
+                    mockResponse(200, {
+                        storyId: 'delete-story-1',
+                        deleteChapterIndex: 1,
+                        deleteChapterRevisionIndex: patchBody.deleteChapterRevisionIndex,
+                        chapterNumber: '2',
+                        title: 'Ch2',
+                        revisionsRemaining: chapter2After.expanded ? chapter2After.revisions.length : 0,
+                        message: 'Chapter 1 revision deleted'
+                    })
+                );
+            }
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: deleted ? [chapter1, chapter2After] : [chapter1, chapter2Expanded],
+                        meta
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        return {
+            id: 1,
+            storyId: 'delete-story-1',
+            storyline: 'Seed story',
+            title: 'Seed story',
+            chapterRequested: 2,
+            chapterCompleted: 2,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'completed' as const,
+            data: { chapters: [chapter1, chapter2Expanded], meta },
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+    };
+
+    it('deletes only the selected revision after confirmation, keeping the chapter expanded', async () => {
+        const fetchMock = globalThis.fetch as any;
+        // Chapter 2 has two revisions; deleting the selected (oldest) one
+        // leaves the latest — the chapter stays expanded.
+        const story = seedDeleteStory(
+            fetchMock,
+            [
+                { content: '## Ch2 rev1\n\nbody', wordCount: 5, generationTimeMs: 1000 },
+                { content: '## Ch2 rev2\n\nbody', wordCount: 6, generationTimeMs: 900 }
+            ],
+            {
+                chapterNumber: '2',
+                chapterIndex: 1,
+                title: 'Ch2',
+                plotpoints: ['plot2'],
+                expanded: true,
+                canReExpand: true,
+                revisions: [{ content: '## Ch2 rev2\n\nbody', wordCount: 6, generationTimeMs: 900 }]
+            }
+        );
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // Auto-expand opens the latest chapter (index 1), so its sticky bar —
+        // and the trash button next to rewrite — is visible.
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-1-delete')).toBeDefined();
+        });
+
+        // Select the OLDEST revision in the dropdown — the delete button must
+        // target the selection, not the latest.
+        const revisionSelect = screen.getByTestId('chapter-1-revisions-select') as HTMLSelectElement;
+        expect(revisionSelect.value).toBe('1'); // latest is the default
+        fireEvent.change(revisionSelect, { target: { value: '0' } });
+        expect(revisionSelect.value).toBe('0');
+
+        // Clicking the trash button only opens the confirmation dialog — no
+        // PATCH is sent yet (accidental click protection).
+        fireEvent.click(screen.getByTestId('chapter-1-delete'));
+        await waitFor(() => {
+            expect(screen.getByTestId('delete-dialog')).toBeDefined();
+        });
+        const deleteDialog = screen.getByTestId('delete-dialog');
+        expect(screen.getByTestId('delete-dialog-title').textContent).toBe('Delete Chapter 2 — Revision 1 of 2');
+        expect(deleteDialog.textContent).toContain(
+            "This removes revision 1 of 2 from Chapter 2. The chapter's other revisions are kept. This cannot be undone."
+        );
+        expect(fetchMock.mock.calls.some(([, init]: any[]) => init?.method === 'PATCH')).toBe(false);
+
+        // Confirm — the single PATCH targets the selected revision (index 0).
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('delete-confirm'));
+        });
+        const patchCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'PATCH');
+        expect(patchCall).toBeDefined();
+        expect(patchCall[0]).toBe(`${BASE_URL}/delete-story-1`);
+        expect(JSON.parse(patchCall![1].body)).toEqual({ deleteChapterIndex: 1, deleteChapterRevisionIndex: 0 });
+
+        // The dialog closes; the chapter stays expanded with the surviving
+        // revision (one option left), and the trash button remains for it.
+        await waitFor(() => {
+            expect(screen.queryByTestId('delete-dialog')).toBeNull();
+        });
+        await waitFor(() => {
+            const select = screen.getByTestId('chapter-1-revisions-select') as HTMLSelectElement;
+            expect(select.options.length).toBe(1);
+            expect(select.options[0].textContent).toBe('6 words · 0.9s');
+            expect(select.value).toBe('0');
+        });
+        expect(screen.queryByTestId('chapter-1-pending')).toBeNull();
+        expect(screen.getByTestId('chapter-1-delete')).toBeDefined();
+    });
+
+    it('returns the chapter to plotlines only (expandable again) when its last revision is deleted', async () => {
+        const fetchMock = globalThis.fetch as any;
+        // Chapter 2 has exactly one revision — deleting it empties revisions[]
+        // and the chapter drops back to the plotpoints-only pending state.
+        const story = seedDeleteStory(
+            fetchMock,
+            [{ content: '## Ch2\n\nbody', wordCount: 5, generationTimeMs: 1000 }],
+            {
+                chapterNumber: '2',
+                chapterIndex: 1,
+                title: 'Ch2',
+                plotpoints: ['plot2'],
+                expanded: false,
+                canReExpand: true
+            }
+        );
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-1-delete')).toBeDefined();
+        });
+
+        fireEvent.click(screen.getByTestId('chapter-1-delete'));
+        await waitFor(() => {
+            expect(screen.getByTestId('delete-dialog')).toBeDefined();
+        });
+        const deleteDialog = screen.getByTestId('delete-dialog');
+        expect(screen.getByTestId('delete-dialog-title').textContent).toBe('Delete Chapter 2 — Revision 1 of 1');
+        expect(deleteDialog.textContent).toContain(
+            "This removes the chapter's only revision — the chapter returns to plotlines only and can be expanded again. This cannot be undone."
+        );
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('delete-confirm'));
+        });
+        const patchCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'PATCH');
+        expect(patchCall).toBeDefined();
+        expect(JSON.parse(patchCall![1].body)).toEqual({ deleteChapterIndex: 1, deleteChapterRevisionIndex: 0 });
+
+        // The dialog closes and the chapter renders its plotlines-only state —
+        // the expand action (RefreshIcon) remains available for re-expansion.
+        await waitFor(() => {
+            expect(screen.queryByTestId('delete-dialog')).toBeNull();
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-1-pending').textContent).toBe(
+                'This chapter has not been expanded yet.'
+            );
+        });
+        expect(screen.queryByTestId('chapter-1-delete')).toBeNull(); // nothing left to delete
+        expect(screen.getByTestId('chapter-1-reexpand')).toBeDefined(); // allow expansion
+        // The plotlines survive the deletion. The toggle mounted while the
+        // chapter was expanded (defaultOpen=false at mount), so it still
+        // reads "Show" — useState only seeds the initial value.
+        expect(screen.getByTestId('chapter-1-plotpoints-toggle').textContent).toBe('Show Plot Points(1)');
+    });
+
+    it('closes the delete confirmation dialog without deleting on cancel', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedDeleteStory(
+            fetchMock,
+            [
+                { content: '## Ch2 rev1\n\nbody', wordCount: 5, generationTimeMs: 1000 },
+                { content: '## Ch2 rev2\n\nbody', wordCount: 6, generationTimeMs: 900 }
+            ],
+            {
+                chapterNumber: '2',
+                chapterIndex: 1,
+                title: 'Ch2',
+                plotpoints: ['plot2'],
+                expanded: true,
+                canReExpand: true,
+                revisions: [{ content: '## Ch2 rev2\n\nbody', wordCount: 6, generationTimeMs: 900 }]
+            }
+        );
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-1-delete')).toBeDefined();
+        });
+
+        fireEvent.click(screen.getByTestId('chapter-1-delete'));
+        await waitFor(() => {
+            expect(screen.getByTestId('delete-dialog')).toBeDefined();
+        });
+
+        fireEvent.click(screen.getByTestId('delete-cancel'));
+
+        await waitFor(() => {
+            expect(screen.queryByTestId('delete-dialog')).toBeNull();
+        });
+        // No PATCH was issued — both revisions survive and the trash button
+        // remains for a future attempt.
+        expect(fetchMock.mock.calls.some(([, init]: any[]) => init?.method === 'PATCH')).toBe(false);
+        expect(screen.getByTestId('chapter-1-delete')).toBeDefined();
+        expect((screen.getByTestId('chapter-1-revisions-select') as HTMLSelectElement).options.length).toBe(2);
     });
 });

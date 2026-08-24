@@ -29,7 +29,7 @@
 import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
-import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints } from '../../api';
+import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, deleteChapter } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 import { getExpandedChapters, setExpandedChapters } from '../../context/store';
@@ -267,6 +267,37 @@ const AppendError = styled('div', {
     borderRadius: theme.radiusMd
 });
 
+// ── Delete-chapter confirmation dialog ──────────────────────────────────
+// Modal box for the destructive confirm step. Opaque surface (same grounding
+// as the append dialog) since this dialog guards a destructive action — the
+// overlay + layout reuse the rewrite dialog's components (RewriteOverlay /
+// RewriteDialogTitle / RewriteDialogActions) so all content-area dialogs
+// share one visual treatment.
+const DeleteDialog = styled('div', {
+    background: theme.surfaceDialog,
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusLg,
+    padding: 24,
+    width: '90%',
+    maxWidth: 520,
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
+});
+
+// Primary confirm action — danger fill so the destructive nature reads at a
+// glance, in contrast to the accent-filled rewrite/append primaries.
+const DeleteConfirmButton = styled('button', {
+    padding: '9px 20px',
+    borderRadius: theme.radiusMd,
+    border: 'none',
+    backgroundColor: theme.danger,
+    color: '#ffffff',
+    fontSize: theme.fontSize.body,
+    fontWeight: 600,
+    cursor: 'pointer',
+    flex: '0 0 auto',
+    transition: `background-color ${theme.transition}, opacity ${theme.transition}`
+});
+
 // Chapter action icon button — compact square button for per-chapter actions
 // (re-expand, fork). Uses a fixed-size square with centered icon glyph.
 // Disabled state dims and blocks interaction.
@@ -412,6 +443,28 @@ const RewriteIcon: React.FC = () => (
     >
         <path d="M8 3v10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
         <path d="M3 8h10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+    </svg>
+);
+
+// Inline SVG trash-can icon — used for the delete chapter action button
+// (clears the chapter's expanded content). Sits next to the rewrite [+]
+// button as its destructive counterpart: "+" adds context, the trash can
+// removes generated content. Keeps the package icon-free (matches the
+// dashboard convention of inline glyphs).
+const TrashIcon: React.FC = () => (
+    <svg
+        width={14}
+        height={14}
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: 'block' }}
+    >
+        {/* Lid bar + lid handle */}
+        <path d="M2.5 4h11" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+        <path d="M6 4V2.8A.8.8 0 0 1 6.8 2h2.4a.8.8 0 0 1 .8.8V4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        {/* Can body */}
+        <path d="M4 4l.7 8.9a1 1 0 0 0 1 .86h4.6a1 1 0 0 0 1-.86L12 4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
 );
 
@@ -630,8 +683,9 @@ const ChapterStickyBar: React.FC<{
                         ))}
                     </select>
                 )}
-                {/* Dropdown actions: sits right next to the dropdown (e.g. rewrite +)
-                    before the right-aligned chapter actions. */}
+                {/* Dropdown actions: sits right next to the dropdown (rewrite +
+                    and the destructive delete-content button) before the
+                    right-aligned chapter actions. */}
                 {dropdownActions}
                 {/* Right: per-chapter actions (re-expand / fork). marginLeft:auto
                     pushes them to the right edge of the bar. */}
@@ -967,6 +1021,87 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         [selected, store.config.baseUrl, store.config.clientId, setStore]
     );
 
+    // ── Delete chapter revision state ────────────────────────────────────
+    // The delete button (trash can, next to the rewrite [+]) removes ONLY the
+    // revision currently selected in the chapter's revision dropdown — the
+    // remaining revisions keep the chapter expanded. Deleting the LAST
+    // revision returns the chapter to plotlines-only (expandable again).
+    // Guarded by a confirmation dialog because the action is destructive and
+    // the buttons sit close enough together for accidental clicks.
+    // Confirming sends PATCH { deleteChapterIndex, deleteChapterRevisionIndex }
+    // — the server deletes synchronously, so no background polling is needed:
+    // a single GET refresh afterwards reflects the new revisions[].
+    const [deleteState, setDeleteState] = React.useState<{
+        isOpen: boolean;
+        chapterIndex: number;
+        // The dropdown-selected revision to remove + how many exist (drives
+        // the dialog copy: "revision N of M" vs the plotlines-only warning).
+        revisionIndex: number;
+        revisionCount: number;
+        isDeleting: boolean;
+        error: string;
+    }>({ isOpen: false, chapterIndex: -1, revisionIndex: -1, revisionCount: 0, isDeleting: false, error: '' });
+
+    // Open the confirmation dialog for a specific chapter revision.
+    const openDeleteDialogue = React.useCallback((chapterIndex: number, revisionIndex: number, revisionCount: number) => {
+        setDeleteState({ isOpen: true, chapterIndex, revisionIndex, revisionCount, isDeleting: false, error: '' });
+    }, []);
+
+    // Close the confirmation dialog without deleting (button or overlay click).
+    const closeDeleteDialogue = React.useCallback(() => {
+        // Ignore closes mid-flight so the dialog cannot vanish while its PATCH
+        // is still outstanding (the confirm would race the cleanup).
+        setDeleteState((prev) => (prev.isOpen && !prev.isDeleting ? { ...prev, isOpen: false } : prev));
+    }, []);
+
+    // Confirm: PATCH the deletion, then refresh the story data once and merge
+    // it into the store (same merge shape as the re-expand completion poll).
+    const handleDeleteChapter = React.useCallback(async () => {
+        if (!selected?.storyId) return;
+        const { chapterIndex, revisionIndex } = deleteState;
+        setDeleteState((prev) => ({ ...prev, isDeleting: true, error: '' }));
+        try {
+            await deleteChapter(store.config.baseUrl, selected.storyId, chapterIndex, revisionIndex);
+            const result = await fetchStoryData(store.config.baseUrl, selected.storyId);
+            if (result.status === 'data') {
+                setStore((prev) => ({
+                    ...prev,
+                    records: prev.records.map((e) =>
+                        e.id === selected.id ? { ...e, data: result.data, error: '' } : e
+                    ),
+                    selected:
+                        prev.selected?.id === selected.id
+                            ? { ...prev.selected, data: result.data, error: '' }
+                            : prev.selected
+                }));
+                // Repair the revision-tab selection: indices after the deleted
+                // one shift down by one, so the entry that now occupies the
+                // deleted slot (or the new latest, when the tail was deleted)
+                // becomes active. When no revisions remain (last revision
+                // deleted → plotlines-only), drop the selection entirely.
+                const remaining = result.data.chapters?.[chapterIndex]?.revisions?.length ?? 0;
+                setActiveRevisions((prev) => {
+                    const next = { ...prev };
+                    if (remaining > 0) {
+                        next[chapterIndex] = Math.min(revisionIndex, remaining - 1);
+                    } else {
+                        delete next[chapterIndex];
+                    }
+                    return next;
+                });
+            }
+            setDeleteState({ isOpen: false, chapterIndex: -1, revisionIndex: -1, revisionCount: 0, isDeleting: false, error: '' });
+        } catch (err: any) {
+            // Server validation/lookup failure — keep the dialog open with the
+            // exact server message (mirrors the append dialog's error flow).
+            setDeleteState((prev) => ({
+                ...prev,
+                isDeleting: false,
+                error: err?.message || 'Failed to delete chapter revision'
+            }));
+        }
+    }, [selected, store.config.baseUrl, deleteState.chapterIndex, deleteState.revisionIndex, setStore]);
+
     // Polling effect.
     React.useEffect(() => {
         if (!selected || !selected.storyId) {
@@ -1252,15 +1387,40 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 activeIndex={activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1}
                                 onSelect={(idx) => setActiveRevisions((prev) => ({ ...prev, [i]: idx }))}
                                 dropdownActions={
-                                    <ChapterActionButton
-                                        onClick={() =>
-                                            openRewriteDialogue(ch.chapterIndex, ch.revisions?.length, activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1)
-                                        }
-                                        title="Rewrite chapter with custom context"
-                                        data-testid={`chapter-${i}-rewrite`}
-                                    >
-                                        <RewriteIcon />
-                                    </ChapterActionButton>
+                                    <>
+                                        <ChapterActionButton
+                                            onClick={() =>
+                                                openRewriteDialogue(ch.chapterIndex, ch.revisions?.length, activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1)
+                                            }
+                                            title="Rewrite chapter with custom context"
+                                            data-testid={`chapter-${i}-rewrite`}
+                                        >
+                                            <RewriteIcon />
+                                        </ChapterActionButton>
+                                        {/* Delete revision button — sits next to the rewrite [+].
+                                            Only rendered for expanded chapters (a pending chapter
+                                            has no revisions to delete). Targets the revision
+                                            currently selected in the dropdown; deleting the last
+                                            remaining revision returns the chapter to plotlines
+                                            only. Opens the confirmation dialog first — the action
+                                            is destructive and easy to hit accidentally next to
+                                            the other chapter icons. */}
+                                        {!!ch.expanded && (
+                                            <ChapterActionButton
+                                                onClick={() =>
+                                                    openDeleteDialogue(
+                                                        ch.chapterIndex,
+                                                        activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1,
+                                                        ch.revisions?.length ?? 0
+                                                    )
+                                                }
+                                                title="Delete the selected revision of this chapter"
+                                                data-testid={`chapter-${i}-delete`}
+                                            >
+                                                <TrashIcon />
+                                            </ChapterActionButton>
+                                        )}
+                                    </>
                                 }
                                 actions={
                                     <>
@@ -1499,6 +1659,62 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         )}
                     </AppendDialog>
                 </AppendOverlay>
+            )}
+
+            {/* Delete-revision confirmation dialog — shown when deleteState.isOpen
+                is true. Guards the destructive action behind an explicit confirm:
+                clicking the trash can only opens this; the PATCH fires on Delete.
+                Overlay click / Cancel abort (no request sent). */}
+            {deleteState.isOpen && (
+                <RewriteOverlay onClick={closeDeleteDialogue}>
+                    <DeleteDialog
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="delete-dialog-title"
+                        data-testid="delete-dialog"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <RewriteDialogTitle id="delete-dialog-title" data-testid="delete-dialog-title">
+                            Delete Chapter {deleteState.chapterIndex + 1} — Revision {deleteState.revisionIndex + 1} of {deleteState.revisionCount}
+                        </RewriteDialogTitle>
+                        <p
+                            style={{
+                                margin: '0 0 12px 0',
+                                fontSize: theme.fontSize.sm,
+                                color: theme.textMuted,
+                                lineHeight: 1.5
+                            }}
+                        >
+                            {/* Only the selected revision is removed; the chapter's
+                                other revisions survive. Deleting the last revision is
+                                what returns the chapter to plotlines only. */}
+                            {deleteState.revisionCount > 1
+                                ? `This removes revision ${deleteState.revisionIndex + 1} of ${deleteState.revisionCount} from Chapter ${deleteState.chapterIndex + 1}. The chapter's other revisions are kept. This cannot be undone.`
+                                : `This removes the chapter's only revision — the chapter returns to plotlines only and can be expanded again. This cannot be undone.`}
+                        </p>
+                        <RewriteDialogActions>
+                            <ActionButton
+                                onClick={closeDeleteDialogue}
+                                disabled={deleteState.isDeleting}
+                                data-testid="delete-cancel"
+                                style={{ pointerEvents: 'auto' }}
+                            >
+                                Cancel
+                            </ActionButton>
+                            <DeleteConfirmButton
+                                onClick={handleDeleteChapter}
+                                disabled={deleteState.isDeleting}
+                                data-testid="delete-confirm"
+                                style={{ pointerEvents: 'auto', opacity: deleteState.isDeleting ? 0.6 : 1 }}
+                            >
+                                {deleteState.isDeleting ? 'Deleting…' : 'Delete'}
+                            </DeleteConfirmButton>
+                        </RewriteDialogActions>
+                        {deleteState.error && (
+                            <AppendError data-testid="delete-error">{deleteState.error}</AppendError>
+                        )}
+                    </DeleteDialog>
+                </RewriteOverlay>
             )}
         </ContentColumn>
     );

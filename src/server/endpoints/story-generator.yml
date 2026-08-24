@@ -15,7 +15,7 @@ info:
     client performs the generation — the id is never stored and must be sent
     with each request. GET /v1/storyboard/clients lists the available client
     ids.
-  version: 1.9.0
+  version: 1.10.0
 servers:
   - url: http://127.0.0.1:5000
     description: Local development server
@@ -196,16 +196,23 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
       operationId: patchStory
-      summary: Update story metadata, re-expand, or rewrite a chapter
+      summary: Update story metadata, re-expand, rewrite, or delete a chapter
       description: >-
         Updates story metadata (e.g. storyName), re-expands a specific chapter
-        (expandChapterIndex), or rewrites a chapter with user-provided context
-        (rewriteChapter + rewriteContext). When storyName is provided, the
+        (expandChapterIndex), rewrites a chapter with user-provided context
+        (rewriteChapter + rewriteContext), or deletes a chapter's expanded
+        content (deleteChapterIndex). When storyName is provided, the
         story's plotpoint.json is updated immediately. expandChapterIndex
         re-expands the chapter and chains to subsequent pending chapters.
         rewriteChapter uses the full story summary + user instructions to
-        rewrite only the targeted chapter (no chain). expandChapterIndex and
-        rewriteChapter are mutually exclusive.
+        rewrite only the targeted chapter (no chain). deleteChapterIndex
+        synchronously deletes ONE revision from the chapter — the revision at
+        deleteChapterRevisionIndex, or the latest when that field is absent;
+        the chapter returns to plotlines-only (expanded=false) only when its
+        last revision is deleted. The stored LLM context is always preserved
+        so the chapter can be expanded again.
+        expandChapterIndex, rewriteChapter, and deleteChapterIndex are
+        mutually exclusive.
       tags:
         - Storyboard
       parameters:
@@ -236,6 +243,11 @@ paths:
                 value:
                   rewriteChapter: 2
                   rewriteContext: Make the scene more dramatic and add more tension
+              delete:
+                summary: Delete the selected revision of chapter 2 (latest revision when omitted)
+                value:
+                  deleteChapterIndex: 2
+                  deleteChapterRevisionIndex: 0
               both:
                 summary: Rename and re-expand
                 value:
@@ -597,6 +609,31 @@ components:
             rewriteChapter is provided. Combined with preset rewrite prompt
             to form the full expansion request.
           example: Make the scene more dramatic and add more tension
+        deleteChapterIndex:
+          type: integer
+          minimum: 0
+          description: >-
+            Zero-based index of the chapter to delete a revision from.
+            Synchronously removes ONE entry from the chapter's revisions[]
+            (see deleteChapterRevisionIndex). The chapter returns to
+            plotlines-only (GET reports expanded=false, markdown mirror
+            removed, chapterCompleted decremented) only when the deleted
+            revision was its last; with revisions remaining the chapter stays
+            expanded. The stored LLM context (context.appending +
+            context.request) is always preserved so a later expandChapterIndex
+            call re-expands it. Mutually exclusive with expandChapterIndex
+            and rewriteChapter.
+          example: 2
+        deleteChapterRevisionIndex:
+          type: integer
+          minimum: 0
+          description: >-
+            Zero-based index of the revision to remove from the chapter's
+            revisions[] (the revision selected in the UI's revision dropdown).
+            Requires deleteChapterIndex. Absent value → the LATEST revision is
+            deleted. 400 when the index is out of range or the chapter has no
+            revisions.
+          example: 0
         clientId:
           type: string
           description: >-
@@ -625,6 +662,18 @@ components:
           type: integer
           description: The zero-based index of the chapter being rewritten (if rewriteChapter was provided)
           example: 2
+        deleteChapterIndex:
+          type: integer
+          description: The zero-based index of the chapter a revision was deleted from (if deleteChapterIndex was provided)
+          example: 2
+        deleteChapterRevisionIndex:
+          type: integer
+          description: The zero-based index of the deleted revisions[] entry (if deleteChapterIndex was provided)
+          example: 0
+        revisionsRemaining:
+          type: integer
+          description: How many revisions the chapter has left after the deletion; 0 means the chapter is plotlines-only again (if deleteChapterIndex was provided)
+          example: 1
         chapterNumber:
           type: string
           description: The chapter number as assigned by the LLM (if expandChapterIndex or rewriteChapter was provided)

@@ -7,8 +7,8 @@
 //   - fetchStoryData: 200 data, 404 not-found, and other-error branches.
 //   - fetchStoryList: 200 with StoryMeta[] (new shape), 200 with empty array,
 //     and error branches.
-//   - updateChapter / rewriteChapter: PATCH payloads (incl. clientId) and
-//     error branches.
+//   - updateChapter / rewriteChapter / deleteChapter: PATCH payloads (incl.
+//     clientId where applicable) and error branches.
 //   - appendStoryPlotpoints: the "[->]" append dialog's POST — append
 //     envelope shape (notes omitted when blank, clientId optional) and
 //     the 400/500 error branches.
@@ -26,6 +26,7 @@ import {
     pollStoryData,
     updateChapter,
     rewriteChapter,
+    deleteChapter,
     appendStoryPlotpoints
 } from './storyboard';
 import type { StoryMeta } from './storyboard';
@@ -274,6 +275,107 @@ describe('rewriteChapter (PATCH)', () => {
         expect((fetch as any).mock.calls[0][1].body).toBe(
             JSON.stringify({ rewriteChapter: 0, rewriteContext: 'Slow it down' })
         );
+    });
+});
+
+describe('deleteChapter (PATCH)', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('patches deleteChapterIndex + deleteChapterRevisionIndex (no clientId — deletion is local, no LLM work)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'story-1',
+                deleteChapterIndex: 2,
+                deleteChapterRevisionIndex: 0,
+                chapterNumber: '3',
+                title: 'Ch3',
+                revisionsRemaining: 1,
+                message: 'Chapter 2 revision 0 deleted'
+            })
+        );
+
+        const result = await deleteChapter(BASE_URL, 'story-1', 2, 0);
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-1`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deleteChapterIndex: 2, deleteChapterRevisionIndex: 0 })
+        });
+        expect(result).toEqual({
+            storyId: 'story-1',
+            deleteChapterIndex: 2,
+            deleteChapterRevisionIndex: 0,
+            chapterNumber: '3',
+            title: 'Ch3',
+            revisionsRemaining: 1,
+            message: 'Chapter 2 revision 0 deleted'
+        });
+    });
+
+    it('omits deleteChapterRevisionIndex when no revision index is given (server deletes the latest)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'story-1',
+                deleteChapterIndex: 0,
+                deleteChapterRevisionIndex: 1,
+                chapterNumber: '1',
+                title: 'Ch1',
+                revisionsRemaining: 1,
+                message: 'Chapter 0 revision 1 deleted'
+            })
+        );
+
+        const result = await deleteChapter(BASE_URL, 'story-1', 0);
+
+        expect((fetch as any).mock.calls[0][1].body).toBe(JSON.stringify({ deleteChapterIndex: 0 }));
+        expect(result.deleteChapterRevisionIndex).toBe(1);
+        expect(result.revisionsRemaining).toBe(1);
+    });
+
+    it('URL-encodes the storyId', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'a/b c',
+                deleteChapterIndex: 0,
+                deleteChapterRevisionIndex: 0,
+                chapterNumber: '1',
+                title: 'Ch1',
+                revisionsRemaining: 0,
+                message: 'Chapter 0 revision 0 deleted — the chapter is plotlines only and can be expanded again'
+            })
+        );
+
+        await deleteChapter(BASE_URL, 'a/b c', 0, 0);
+
+        expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/a%2Fb%20c`);
+    });
+
+    it('throws with the server message on 404 (unknown chapter)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(404, { error: "Chapter 5 not found for story 'story-1'" })
+        );
+
+        await expect(deleteChapter(BASE_URL, 'story-1', 5)).rejects.toThrow(
+            "Chapter 5 not found for story 'story-1'"
+        );
+    });
+
+    it('falls back to a status-based message when the server body is not JSON', async () => {
+        const badResponse = {
+            ok: false,
+            status: 500,
+            json: async () => {
+                throw new SyntaxError('not json');
+            }
+        } as any;
+        (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
+
+        await expect(deleteChapter(BASE_URL, 'story-1', 0)).rejects.toThrow('Failed to delete chapter (HTTP 500)');
     });
 });
 

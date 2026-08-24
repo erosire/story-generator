@@ -1,14 +1,22 @@
 // ---------------------------------------------------------------------------
-// PATCH handler — updates story metadata, re-expands a chapter, or rewrites
-// a chapter with user-provided context.
+// PATCH handler — updates story metadata, re-expands a chapter, rewrites
+// a chapter with user-provided context, or deletes a chapter's expanded
+// content.
 //
 // The handler accepts:
 //   - storyName (string): update story metadata in plotpoint.json
 //   - expandChapterIndex (number): trigger chapter re-expansion (chain)
 //   - rewriteChapter (number) + rewriteContext (string): rewrite a single
 //     chapter using the full story summary context + user instructions
+//   - deleteChapterIndex (number) + deleteChapterRevisionIndex (number,
+//     optional): remove a single revision from a chapter's revisions[].
+//     Absent deleteChapterRevisionIndex → the LATEST revision is removed.
+//     When the deleted revision was the chapter's last, the chapter returns
+//     to plotlines-only (markdown removed, context preserved) so it can be
+//     expanded again.
 //
-// Only one of expandChapterIndex or rewriteChapter may be provided per request.
+// Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be
+// provided per request.
 // When both expandChapterIndex and storyName are provided, metadata is updated
 // first, then re-expansion starts in the background.
 // ---------------------------------------------------------------------------
@@ -20,6 +28,7 @@ import { DATABASE_BASE_DIR, MIN_WORDS_PER_CHAPTER, parseClientId } from './gener
 import {
     buildExpandRequest,
     createStoryClient,
+    decrementPlotpointChapterCompleted,
     expandChapter,
     readChapterPayload,
     readPlotpointData,
@@ -100,17 +109,34 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         console.log(`[PATCH] Updated story '${storyId}' metadata:`, updatedMeta);
     }
 
-    // ── Handle chapter re-expansion ───────────────────────────────────────
+    // ── Chapter operation fields ──────────────────────────────────────────
     const expandChapterIndex = typeof body.expandChapterIndex === 'number' ? body.expandChapterIndex : undefined;
     const rewriteChapterIndex = typeof body.rewriteChapter === 'number' ? body.rewriteChapter : undefined;
     const rewriteContext = typeof body.rewriteContext === 'string' ? body.rewriteContext : undefined;
     const rewriteRevisionIndex = typeof body.rewriteRevisionIndex === 'number' ? body.rewriteRevisionIndex : undefined;
+    const deleteChapterIndex = typeof body.deleteChapterIndex === 'number' ? body.deleteChapterIndex : undefined;
+    const deleteChapterRevisionIndex =
+        typeof body.deleteChapterRevisionIndex === 'number' ? body.deleteChapterRevisionIndex : undefined;
 
-    // Mutually exclusive: cannot provide both expandChapterIndex and rewriteChapter
-    if (expandChapterIndex !== undefined && rewriteChapterIndex !== undefined) {
+    // Mutually exclusive: expandChapterIndex / rewriteChapter / deleteChapterIndex
+    // each drive a distinct chapter operation — only one may run per request.
+    const exclusiveOpCount = [
+        expandChapterIndex !== undefined,
+        rewriteChapterIndex !== undefined,
+        deleteChapterIndex !== undefined
+    ].filter(Boolean).length;
+    if (exclusiveOpCount > 1) {
         return {
             status: 400,
-            response: { error: 'Cannot provide both expandChapterIndex and rewriteChapter. Choose one.' }
+            response: { error: 'Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be provided per request.' }
+        };
+    }
+
+    // deleteChapterRevisionIndex only makes sense alongside deleteChapterIndex.
+    if (deleteChapterRevisionIndex !== undefined && deleteChapterIndex === undefined) {
+        return {
+            status: 400,
+            response: { error: 'deleteChapterRevisionIndex requires deleteChapterIndex' }
         };
     }
 
@@ -125,18 +151,19 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     if (
         expandChapterIndex === undefined &&
         rewriteChapterIndex === undefined &&
+        deleteChapterIndex === undefined &&
         Object.keys(updatedMeta).length === 0
     ) {
         return {
             status: 400,
             response: {
-                error: 'No valid update fields provided. Supported: storyName (string), expandChapterIndex (number), rewriteChapter (number) + rewriteContext (string)'
+                error: 'No valid update fields provided. Supported: storyName (string), expandChapterIndex (number), rewriteChapter (number) + rewriteContext (string), deleteChapterIndex (number)'
             }
         };
     }
 
     // If only metadata was updated, return success immediately
-    if (expandChapterIndex === undefined && rewriteChapterIndex === undefined) {
+    if (expandChapterIndex === undefined && rewriteChapterIndex === undefined && deleteChapterIndex === undefined) {
         return {
             status: 200,
             response: {
@@ -154,6 +181,138 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         chapterCount: plotpointData.chapterCount ?? 0,
         createdAt: plotpointData.createdAt ?? ''
     };
+
+    // ── Handle chapter revision deletion ────────────────────────────────
+    // Synchronous (unlike expand/rewrite): removes ONE revision from the
+    // chapter's revisions[] — the revision currently selected in the UI
+    // (deleteChapterRevisionIndex), or the LATEST revision when the field is
+    // absent. Only when the deleted revision was the chapter's LAST does the
+    // chapter return to plotlines-only (markdown removed, chapterCompleted
+    // decremented); with revisions remaining the chapter stays expanded.
+    //
+    // Markdown mirror handling (chapter-XXX.md exists for filesystem viewing
+    // only — the API never reads it):
+    //   - revisions emptied           → remove the .md entirely
+    //   - the latest revision deleted → rewrite the .md with the new latest
+    //   - an older revision deleted   → .md untouched (it mirrors the latest)
+    //
+    // The payload's context.appending + context.request are deliberately
+    // preserved so PATCH expandChapterIndex can re-expand the chapter at any
+    // point — deleting the only revision is what returns the chapter to a
+    // plotlines-only, expandable-again state.
+    //
+    // Edge case: deleting while a background expansion is in flight is not
+    // blocked — the progressive writer in expandChapter (story-utils.ts) would
+    // repopulate revisions[] on its next flush. Same accepted trade-off as the
+    // rewrite/re-expand paths, which the UI also fires blind.
+    if (deleteChapterIndex !== undefined) {
+        if (deleteChapterIndex < 0) {
+            return {
+                status: 400,
+                response: { error: 'deleteChapterIndex must be a non-negative integer' }
+            };
+        }
+
+        if (deleteChapterRevisionIndex !== undefined && deleteChapterRevisionIndex < 0) {
+            return {
+                status: 400,
+                response: { error: 'deleteChapterRevisionIndex must be a non-negative integer' }
+            };
+        }
+
+        const deletePayload = readChapterPayload(chapterDir, deleteChapterIndex);
+
+        if (!deletePayload) {
+            return {
+                status: 404,
+                response: { error: `Chapter ${deleteChapterIndex} not found for story '${storyId}'` }
+            };
+        }
+
+        const deleteChapterNumber = (deletePayload as any).chapterNumber as string;
+        const deleteChapterTitle = (deletePayload as any).title as string;
+
+        const existingRevisions: Array<{ content: string; wordCount?: number; generationTimeMs?: number }> =
+            Array.isArray((deletePayload as any).revisions) ? (deletePayload as any).revisions : [];
+
+        if (existingRevisions.length === 0) {
+            return {
+                status: 400,
+                response: { error: `Chapter ${deleteChapterIndex} has no revisions to delete` }
+            };
+        }
+
+        // Target: the explicitly selected revision, or the latest one when the
+        // caller passes no revision index.
+        const targetRevisionIndex = deleteChapterRevisionIndex ?? existingRevisions.length - 1;
+
+        if (targetRevisionIndex >= existingRevisions.length) {
+            return {
+                status: 400,
+                response: {
+                    error: `Revision ${targetRevisionIndex} does not exist on chapter ${deleteChapterIndex} (chapter has ${existingRevisions.length} revision${existingRevisions.length === 1 ? '' : 's'})`
+                }
+            };
+        }
+
+        // Whether the deleted revision was the latest — decides the .md rewrite.
+        // Whether the chapter was complete BEFORE the deletion — gates the
+        // chapterCompleted decrement (mirrors the wasPreviouslyComplete gate in
+        // writeChapterFiles, which increments on first completion).
+        const wasLatest = targetRevisionIndex === existingRevisions.length - 1;
+        const wasComplete = existingRevisions.some(
+            (r) => typeof r?.generationTimeMs === 'number' && r.generationTimeMs > 0
+        );
+
+        existingRevisions.splice(targetRevisionIndex, 1);
+        (deletePayload as any).revisions = existingRevisions;
+
+        const paddedDelete = String(deleteChapterIndex + 1).padStart(3, '0');
+        const deleteJsonPath = path.join(chapterDir, `chapter-${paddedDelete}.json`);
+        fs.writeFileSync(deleteJsonPath, JSON.stringify(deletePayload, null, 2), 'utf-8');
+
+        const deleteMdPath = path.join(chapterDir, `chapter-${paddedDelete}.md`);
+        if (existingRevisions.length === 0) {
+            // No content left — remove the mirror entirely.
+            if (fs.existsSync(deleteMdPath)) {
+                fs.rmSync(deleteMdPath);
+            }
+        } else if (wasLatest && fs.existsSync(deleteMdPath)) {
+            // The deleted revision was the mirrored one — rewrite the .md with
+            // the new latest revision. Per-revision titles are not stored
+            // (revisions carry content/wordCount/generationTimeMs only), so
+            // the payload's title is the best heading available.
+            const newLatest = existingRevisions[existingRevisions.length - 1];
+            fs.writeFileSync(deleteMdPath, `## ${deleteChapterTitle}\n\n${newLatest.content}`, 'utf-8');
+        }
+
+        // Only when the revision array empties does the chapter drop out of
+        // "complete" — otherwise it remains expanded and the counter stands.
+        if (existingRevisions.length === 0 && wasComplete) {
+            decrementPlotpointChapterCompleted(databaseDir);
+        }
+
+        console.log(
+            `[PATCH] Deleted chapter ${deleteChapterIndex} revision ${targetRevisionIndex} for story '${storyId}' (remaining: ${existingRevisions.length})`
+        );
+
+        return {
+            status: 200,
+            response: {
+                storyId,
+                ...updatedMeta,
+                deleteChapterIndex,
+                deleteChapterRevisionIndex: targetRevisionIndex,
+                chapterNumber: deleteChapterNumber,
+                title: deleteChapterTitle,
+                revisionsRemaining: existingRevisions.length,
+                message:
+                    existingRevisions.length === 0
+                        ? `Chapter ${deleteChapterIndex} revision ${targetRevisionIndex} deleted — the chapter is plotlines only and can be expanded again`
+                        : `Chapter ${deleteChapterIndex} revision ${targetRevisionIndex} deleted`
+            }
+        };
+    }
 
     // ── Handle chapter rewrite ────────────────────────────────────────────
     if (rewriteChapterIndex !== undefined) {

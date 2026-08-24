@@ -438,6 +438,24 @@ export const incrementPlotpointChapterCompleted = (databaseDir: string): void =>
 };
 
 /**
+ * Decrement the chapterCompleted counter in plotpoint.json (floor at 0).
+ * The inverse of incrementPlotpointChapterCompleted — called by the PATCH
+ * deleteChapterIndex branch (generation-update-chapter.ts) when a chapter's
+ * finalized content is removed, so the list endpoint's completion badge
+ * (generation-list-stories.ts) drops back to the true expanded count.
+ */
+export const decrementPlotpointChapterCompleted = (databaseDir: string): void => {
+    const plotpointJsonPath = path.join(databaseDir, 'plotpoint.json');
+    try {
+        const data = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        data.chapterCompleted = Math.max(0, (data.chapterCompleted ?? 0) - 1);
+        fs.writeFileSync(plotpointJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch {
+        // If plotpoint.json is missing or corrupted, skip silently
+    }
+};
+
+/**
  * Read the plotpoint.json for a story.
  * Returns null if the file doesn't exist or is corrupted.
  */
