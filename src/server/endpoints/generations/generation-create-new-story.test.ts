@@ -34,11 +34,16 @@ vi.mock('./generation-config', () => {
                 // retries of the same chapter re-serve identical data. The
                 // schema no longer asks the model for a chapter number — the
                 // server assigns it by position — so fixtures omit `number`.
+                // Every fixture carries exactly the mocked
+                // MIN_PLOTPOINTS_PER_CHAPTER (10) plotpoints via the hoisted
+                // plotpointsFor() helper — fewer would trip the per-chapter
+                // minimum-count validation and exhaust the retry budget instead
+                // of completing.
                 const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
                 const chapterFixtures = [
-                    { title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
-                    { title: 'Chapter Two', plotpoints: ['Plot point C'] },
-                    { title: 'Chapter Three', plotpoints: ['Plot point D'] }
+                    { title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
+                    { title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B') },
+                    { title: 'Chapter Three', plotpoints: plotpointsFor('Plot point C') }
                 ];
                 return Promise.resolve({ response: chapterFixtures[chapterIndex] ?? chapterFixtures[0] });
             }),
@@ -156,6 +161,23 @@ const createMockParameters = (storyId: string, body: Record<string, any> = {}) =
 // that exact value (verified against the on-disk chapter-XXX.json context).
 const SUMMARY_SEP = '\n\n\n\n\n\n';
 
+// Generate `count` deterministic plotpoints sharing one label. The mocked
+// MIN_PLOTPOINTS_PER_CHAPTER is 10 (mirrors production generation-config.ts:58),
+// so every plotline fixture must carry >= 10 plotpoints to pass the
+// per-chapter minimum-count validation (generation-create-new-story.ts) on its
+// first attempt — fewer is retried as an invalid response.
+// Declared as a function (fully hoisted) so the vi.mock factory above can call it.
+function plotpointsFor(label: string, count = 10): string[] {
+    return Array.from({ length: count }, (_, index) => `${label} ${index + 1}`);
+}
+
+// Exact bullet rendering used by the production summary/context writer
+// (generation-create-new-story.ts): plotpoints.map((plot) => `- ${plot}`).join('\n').
+// Declared as a function for the same hoisting reason as plotpointsFor.
+function bulletList(points: string[]): string {
+    return points.map((point) => `- ${point}`).join('\n');
+}
+
 // Exact per-chapter plotline request text (mirrors the request builder in
 // generation-create-new-story.ts; the mocked MIN_PLOTPOINTS_PER_CHAPTER = 10).
 // Every retry of a chapter re-issues this byte-identical payload — no
@@ -163,9 +185,9 @@ const SUMMARY_SEP = '\n\n\n\n\n\n';
 const basePlotRequest = (label: number, count: number) =>
     [
         `> Submit me the detailed plotpoints of the next chapter (chapter ${label} of ${count})`,
-        '> The plotpoint must includes all the important dialogues',
-        '> There must be at least 10 plotpoints for this chapter',
-        '> Must clearly outlines how the chapter starts, and how the chapter ends',
+        '> The plotpoint must includes all the important dialogues happens in the chapter',
+        '> There must be at least 10 plotpoints for the chapter',
+        '> Must clearly outlines how the chapter starts, and how the chapter ends with the first and last plotpoints only',
         '> Do not include plotpoints or events that belong to any other chapter'
     ].join('\n');
 
@@ -256,9 +278,9 @@ describe('generationCreateNewStory', () => {
         expect(storyMeta.status).toBe('completed');
         expect(storyMeta.validation).toEqual({ valid: true, reason: 'plotline complete', attempt: 0 });
         expect(storyMeta.chapters).toEqual([
-            { number: '1', title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
-            { number: '2', title: 'Chapter Two', plotpoints: ['Plot point C'] },
-            { number: '3', title: 'Chapter Three', plotpoints: ['Plot point D'] }
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
+            { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B') },
+            { number: '3', title: 'Chapter Three', plotpoints: plotpointsFor('Plot point C') }
         ]);
 
         // plotpoint.md should also be created
@@ -291,14 +313,14 @@ describe('generationCreateNewStory', () => {
             chapterNumber: '1',
             chapterIndex: 0,
             title: 'Chapter 1',
-            plotpoints: ['Plot point A', 'Plot point B'],
+            plotpoints: plotpointsFor('Plot point A'),
             context: {
                 // All-plotline summaries — exactly what the first expansion of
                 // chapter 1 will see in context (no expanded prose exists yet).
                 appending: [
-                    '> 1: Chapter One' + SUMMARY_SEP + '- Plot point A\n- Plot point B',
-                    '> 2: Chapter Two' + SUMMARY_SEP + '- Plot point C',
-                    '> 3: Chapter Three' + SUMMARY_SEP + '- Plot point D'
+                    '> 1: Chapter One' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point A')),
+                    '> 2: Chapter Two' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point B')),
+                    '> 3: Chapter Three' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point C'))
                 ],
                 request: buildExpandRequest('1', 'Chapter One')
             },
@@ -476,8 +498,8 @@ describe('generationCreateNewStory', () => {
                 return Promise.resolve({
                     response:
                         idx === 2
-                            ? { title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] }
-                            : { title: 'Chapter One', plotpoints: ['Plot A'] }
+                            ? { title: 'Chapter Two', plotpoints: plotpointsFor('Plot B') }
+                            : { title: 'Chapter One', plotpoints: plotpointsFor('Plot A') }
                 });
             })
         } as any);
@@ -518,11 +540,11 @@ describe('generationCreateNewStory', () => {
             chapterNumber: '2',
             chapterIndex: 1,
             title: 'Chapter 2',
-            plotpoints: ['Plot B', 'Plot C'],
+            plotpoints: plotpointsFor('Plot B'),
             context: {
                 appending: [
-                    '> 1: Chapter One' + SUMMARY_SEP + '- Plot A',
-                    '> 2: Chapter Two' + SUMMARY_SEP + '- Plot B\n- Plot C'
+                    '> 1: Chapter One' + SUMMARY_SEP + bulletList(plotpointsFor('Plot A')),
+                    '> 2: Chapter Two' + SUMMARY_SEP + bulletList(plotpointsFor('Plot B'))
                 ],
                 request: buildExpandRequest('2', 'Chapter Two')
             },
@@ -540,8 +562,8 @@ describe('generationCreateNewStory', () => {
         expect(finalMeta.status).toBe('completed');
         expect(finalMeta.validation).toEqual({ valid: true, reason: 'plotline complete', attempt: 0 });
         expect(finalMeta.chapters).toEqual([
-            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
-            { number: '2', title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] }
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot A') },
+            { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot B') }
         ]);
     });
 
@@ -557,9 +579,9 @@ describe('generationCreateNewStory', () => {
         createdStoryIds.push(storyId);
 
         const chapterFixtures = [
-            { number: '1', title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
-            { number: '2', title: 'Chapter Two', plotpoints: ['Plot point C'] },
-            { number: '3', title: 'Chapter Three', plotpoints: ['Plot point D'] }
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
+            { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B') },
+            { number: '3', title: 'Chapter Three', plotpoints: plotpointsFor('Plot point C') }
         ];
 
         const exchanges: Array<[string, string]> = [];
@@ -712,14 +734,16 @@ describe('generationCreateNewStory', () => {
                 const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
                 if (chapterIndex === 1) {
                     chapter2Calls++;
-                    // Attempts 1-2: usable structure but no plotpoints.
+                    // Attempts 1-2: usable structure but no plotpoints — 0 is
+                    // below the mocked 10-plotpoint minimum, so the count
+                    // validation rejects them.
                     if (chapter2Calls <= 2) {
                         return Promise.resolve({ response: { title: 'Chapter Two', plotpoints: [] } });
                     }
                     // Attempt 3: valid chapter — the story completes.
-                    return Promise.resolve({ response: { title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] } });
+                    return Promise.resolve({ response: { title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B') } });
                 }
-                return Promise.resolve({ response: { title: 'Chapter One', plotpoints: ['Plot A'] } });
+                return Promise.resolve({ response: { title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') } });
             })
         } as any);
 
@@ -752,8 +776,80 @@ describe('generationCreateNewStory', () => {
         const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
         expect(finalMeta.validation).toEqual({ valid: true, reason: 'plotline complete', attempt: 2 });
         expect(finalMeta.chapters).toEqual([
-            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
-            { number: '2', title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] }
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
+            { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B') }
+        ]);
+
+        // No [retry N] story entry may have been spawned.
+        expect(fs.existsSync(getStoryboardDir(`${storyId}-retry-1`))).toBe(false);
+    }, 30000);
+
+    it('should retry a chapter below MIN_PLOTPOINTS_PER_CHAPTER and accept one with more than the minimum', async () => {
+        // The minimum-count validation (generation-create-new-story.ts): a
+        // NON-EMPTY chapter with fewer than the mocked minimum (10) plotpoints
+        // fails validation and retries the byte-identical payload — while a
+        // chapter with MORE than the minimum is accepted.
+        const storyId = `test-story-min-plotpoints-${Date.now()}`;
+        createdStoryIds.push(storyId, `${storyId}-retry-1`); // retry dir must NOT appear
+
+        const seenRequests: string[] = [];
+        let chapter2Calls = 0;
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                seenRequests.push(request);
+
+                const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+                if (chapterIndex === 1) {
+                    chapter2Calls++;
+                    // Attempts 1-2: non-empty but BELOW the 10-plotpoint
+                    // minimum — each consumes an in-place retry.
+                    if (chapter2Calls <= 2) {
+                        return Promise.resolve({ response: { title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B', 4) } });
+                    }
+                    // Attempt 3: MORE than the minimum (12 > 10) — accepted.
+                    return Promise.resolve({ response: { title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B', 12) } });
+                }
+                return Promise.resolve({ response: { title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') } });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 2 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Chapter 2's three attempts are byte-identical re-issues of the same
+        // payload — the below-minimum signal never enters the request text.
+        expect(seenRequests).toEqual([
+            basePlotRequest(1, 2),
+            basePlotRequest(2, 2),
+            basePlotRequest(2, 2),
+            basePlotRequest(2, 2)
+        ]);
+
+        // The accepted chapter keeps ALL 12 plotpoints — more than the minimum
+        // is fine; the two below-minimum attempts count as retries.
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.validation).toEqual({ valid: true, reason: 'plotline complete', attempt: 2 });
+        expect(finalMeta.chapters).toEqual([
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
+            { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B', 12) }
         ]);
 
         // No [retry N] story entry may have been spawned.
@@ -792,7 +888,10 @@ describe('generationCreateNewStory', () => {
                 // Chapter 1 succeeds on its first call; chapter 2 answers EVERY
                 // attempt with a refusal plotpoint — 1 initial +
                 // MAX_PLOT_ATTEMPTS(3) retries = 4 calls of the identical
-                // payload, then the story fails in place.
+                // payload, then the story fails in place. Refusals are checked
+                // BEFORE the minimum-count validation, so this 1-item refusing
+                // response still reports the refusal reason (not a count
+                // failure).
                 // (No `number` in responses — the server assigns it.)
                 if (chapterIndex === 1) {
                     return Promise.resolve({
@@ -800,7 +899,7 @@ describe('generationCreateNewStory', () => {
                     });
                 }
                 return Promise.resolve({
-                    response: { title: 'Chapter One', plotpoints: ['Plot A'] }
+                    response: { title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') }
                 });
             })
         } as any);
@@ -842,7 +941,7 @@ describe('generationCreateNewStory', () => {
 
         // The accepted chapter and the broken chapter are both preserved.
         expect(originalMeta.chapters).toEqual([
-            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
             { number: '2', title: 'Chapter Two', plotpoints: ['I cannot fulfill this request.'] }
         ]);
 
@@ -936,14 +1035,16 @@ describe('generationCreateNewStory', () => {
                 const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
 
                 // Chapter 1 succeeds; chapter 2 never supplies plotpoints —
-                // its identical payload is retried until the budget exhausts.
+                // 0 is below the mocked 10-plotpoint minimum, so the count
+                // validation retries its identical payload until the budget
+                // exhausts.
                 if (chapterIndex === 1) {
                     return Promise.resolve({
                         response: { title: 'Chapter Two', plotpoints: [] }
                     });
                 }
                 return Promise.resolve({
-                    response: { title: 'Chapter One', plotpoints: ['Plot A'] }
+                    response: { title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') }
                 });
             })
         } as any);
@@ -975,7 +1076,7 @@ describe('generationCreateNewStory', () => {
 
         // The accepted chapter and the broken chapter are both preserved.
         expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).chapters).toEqual([
-            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
             { number: '2', title: 'Chapter Two', plotpoints: [] }
         ]);
 
@@ -1241,9 +1342,9 @@ describe('generationCreateNewStory', () => {
                 // (No `number` in responses — the server assigns it.)
                 const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
                 const initial = [
-                    { title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
-                    { title: 'Chapter Two', plotpoints: ['Plot point C'] },
-                    { title: 'Chapter Three', plotpoints: ['Plot point D'] }
+                    { title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
+                    { title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B') },
+                    { title: 'Chapter Three', plotpoints: plotpointsFor('Plot point C') }
                 ];
                 return Promise.resolve({ response: initial[chapterIndex] ?? initial[0] });
             })
@@ -1304,9 +1405,9 @@ describe('generationCreateNewStory', () => {
         expect(finalMeta.chapterCount).toBe(6);
         expect(finalMeta.status).toBe('completed');
         expect(finalMeta.chapters).toEqual([
-            { number: '1', title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
-            { number: '2', title: 'Chapter Two', plotpoints: ['Plot point C'] },
-            { number: '3', title: 'Chapter Three', plotpoints: ['Plot point D'] },
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
+            { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B') },
+            { number: '3', title: 'Chapter Three', plotpoints: plotpointsFor('Plot point C') },
             { number: '4', title: 'New Arc Begins', plotpoints: ['Plot E', 'Plot F'] },
             { number: '5', title: 'The Split', plotpoints: ['Plot G'] },
             { number: '6', title: 'Final Stand', plotpoints: ['Plot H', 'Plot I'] }
@@ -1342,9 +1443,9 @@ describe('generationCreateNewStory', () => {
             plotpoints: ['Plot E', 'Plot F'],
             context: {
                 appending: [
-                    '> 1: Chapter One' + SUMMARY_SEP + '- Plot point A\n- Plot point B',
-                    '> 2: Chapter Two' + SUMMARY_SEP + '- Plot point C',
-                    '> 3: Chapter Three' + SUMMARY_SEP + '- Plot point D',
+                    '> 1: Chapter One' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point A')),
+                    '> 2: Chapter Two' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point B')),
+                    '> 3: Chapter Three' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point C')),
                     '> 4: New Arc Begins' + SUMMARY_SEP + '- Plot E\n- Plot F',
                     '> 5: The Split' + SUMMARY_SEP + '- Plot G',
                     '> 6: Final Stand' + SUMMARY_SEP + '- Plot H\n- Plot I'

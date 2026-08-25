@@ -432,10 +432,11 @@ const generateStory = async (options: {
     // Benefits over the one-shot outline this replaced:
     //   - Each response spans a single chapter → smaller outputs, less stall
     //     surface, fewer truncated/malformed JSON failures.
-    //   - Validation (empty plotpoints, refusal phrases) retries ONLY the
-    //     failing chapter instead of regenerating the whole outline; the old
-    //     validation and missing-plotpoint loops collapsed into the
-    //     per-chapter retry budget below.
+    //   - Validation (plotpoint count below MIN_PLOTPOINTS_PER_CHAPTER,
+    //     refusal phrases) retries ONLY the failing chapter instead of
+    //     regenerating the whole outline; the old validation and
+    //     missing-plotpoint loops collapsed into the per-chapter retry
+    //     budget below.
     //   - The chapter count is structurally guaranteed by the loop, so the
     //     old "Chapter count mismatch" failure mode no longer exists.
     // No `number` field in the schema: chapters are generated one call at a
@@ -445,7 +446,8 @@ const generateStory = async (options: {
     const chapterPlotpointSchema = Type.Object({
         title: Type.String({ description: 'the title of the chapter without the chapter number' }),
         plotpoints: Type.Array(Type.String(), {
-            description: 'the detailed plotpoints describes the important events in the chapter'
+            description:
+                'each entry describes the important events and dialogues that happens in the chapter. Must be in simple and concise dot points'
         })
     });
 
@@ -522,19 +524,30 @@ const generateStory = async (options: {
             // last invalid whole-outline response.
             chapters[chapterIndex] = normalized;
 
-            // Per-chapter validation: plotpoints must be non-empty and free of
-            // refusal phrases. Both checks share this retry budget — the retry
+            // Per-chapter validation, sharing this retry budget — the retry
             // itself is the identical request above, not a corrective prompt.
-            if (normalized.plotpoints.length === 0) {
-                chapterFailureReason = `chapter ${chapterLabel} returned no plotpoints`;
+            //
+            // Refusal phrases are checked FIRST: a refusal is a content-level
+            // rejection and must keep its distinct terminal failure reason
+            // even when the refusing response also falls short of the minimum
+            // plotpoint count.
+            if (detectRefusals([normalized])) {
+                chapterFailureReason = `chapter ${chapterLabel} contains refusal phrase ("I cannot fulfill" or "I will not")`;
                 console.error(
                     `Chapter ${chapterLabel} plotpoint validation failed ` +
                         `(attempt ${chapterAttempt + 1}/${MAX_PLOT_ATTEMPTS + 1}): ${chapterFailureReason}. Retrying identical request...`
                 );
                 continue;
             }
-            if (detectRefusals([normalized])) {
-                chapterFailureReason = `chapter ${chapterLabel} contains refusal phrase ("I cannot fulfill" or "I will not")`;
+            // Minimum count: the prompt above demands at least
+            // MIN_PLOTPOINTS_PER_CHAPTER plotpoints, so any SHORTER list fails
+            // validation and retries the byte-identical payload. MORE than the
+            // minimum is always accepted. This check subsumes the old
+            // empty-plotpoints branch (0 is below the minimum).
+            if (normalized.plotpoints.length < MIN_PLOTPOINTS_PER_CHAPTER) {
+                chapterFailureReason =
+                    `chapter ${chapterLabel} returned ${normalized.plotpoints.length} plotpoints ` +
+                    `(minimum: ${MIN_PLOTPOINTS_PER_CHAPTER})`;
                 console.error(
                     `Chapter ${chapterLabel} plotpoint validation failed ` +
                         `(attempt ${chapterAttempt + 1}/${MAX_PLOT_ATTEMPTS + 1}): ${chapterFailureReason}. Retrying identical request...`
