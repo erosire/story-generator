@@ -1115,6 +1115,319 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('chapter-1-plotpoints-toggle').textContent).toBe('Show Plot Points(1)');
     });
 
+    // ── Local cache (localStorage) behavior ────────────────────────────────
+    // Cache-first contract:
+    //   1. Page load renders from the cache INSTANTLY (server check happens
+    //      after, in the background).
+    //   2. Server sync updates the cache (metadata refresh, new stories) and
+    //      RETAINS cache-only stories (missing from the server) in the sidebar.
+    //   3. Deleting a cache-only story skips the DELETE call and purges the
+    //      local cache completely; deleting a server-known story still sends
+    //      the DELETE request.
+    //   4. Story data fetched while a story is open is written into the cache.
+    //
+    // Seed helper: writes one PersistableStoryEntry into the records cache the
+    // way scheduleSaveRecordsToStorage would (see src/context/store.tsx).
+    const seedRecordsCache = (entries: unknown[]) => {
+        localStorage.setItem('storyGenerator:records', JSON.stringify(entries));
+    };
+
+    it('hydrates the sidebar and content from the cache instantly, then checks the server', async () => {
+        // One cached story with a fully-expanded chapter. The server knows
+        // NOTHING about it (list is empty, per-story GET 404s) — the cache is
+        // the only source of truth here.
+        seedRecordsCache([
+            {
+                id: 42,
+                storyId: 'cache-story-1',
+                storyName: 'Cached Tale',
+                title: 'Cached Tale',
+                storyline: 'A cached storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-10T09:00:00.000Z',
+                status: 'completed',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Cached Chapter',
+                            plotpoints: ['cached plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Cached Chapter\n\nCached body text', wordCount: 3, generationTimeMs: 500 }]
+                        }
+                    ],
+                    meta: { storyline: 'A cached storyline', chapterCount: 1, createdAt: '2026-08-10T09:00:00Z' }
+                },
+                isRemote: false
+            }
+        ]);
+
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                // Collection endpoint → empty; per-story GET → 404 (absent).
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                return Promise.resolve(mockResponse(404, { error: 'Story not found' }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // INSTANT (synchronous post-render): the cached story and its chapter
+        // content are already visible — no server round-trip happened yet.
+        expect(screen.getByTestId('story-tab-cache-story-1').textContent).toContain('Cached Tale');
+        expect(screen.getByTestId('chapter-0-content').textContent).toContain('Cached body text');
+        expect(screen.queryByTestId('sidebar-empty')).toBeNull();
+
+        // The server check follows the cache render: the collection endpoint
+        // is requested in the background.
+        await waitFor(() => {
+            expect(
+                fetchMock.mock.calls.some(
+                    ([url, init]: any[]) => (url === BASE_URL || url === `${BASE_URL}/`) && (!init || init.method === 'GET')
+                )
+            ).toBe(true);
+        });
+    });
+
+    it('keeps cache-only stories in the sidebar after the server list sync and polls them quietly', async () => {
+        seedRecordsCache([
+            {
+                id: 7,
+                storyId: 'local-only-1',
+                storyName: 'Local Tale',
+                title: 'Local Tale',
+                storyline: 'cached storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-09T09:00:00.000Z',
+                status: 'completed',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Cached Chapter',
+                            plotpoints: ['cached plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Cached Chapter\n\nCached body text', wordCount: 3, generationTimeMs: 500 }]
+                        }
+                    ],
+                    meta: { storyline: 'cached storyline', chapterCount: 1, createdAt: '2026-08-09T09:00:00Z' }
+                },
+                isRemote: false
+            }
+        ]);
+
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    // The server list does NOT contain local-only-1.
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'server-1', storyName: 'Server Tale', chapterRequested: 2, chapterCompleted: 2, createdDate: '2026-08-11T09:00:00Z', status: 'completed' }
+                            ]
+                        })
+                    );
+                }
+                if (url === `${BASE_URL}/local-only-1`) {
+                    // Cache-only story: absent on the server.
+                    return Promise.resolve(mockResponse(404, { error: 'Story not found' }));
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Both the cache-only story and the server-known story are listed.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-local-only-1')).toBeDefined();
+            expect(screen.getByTestId('story-tab-server-1')).toBeDefined();
+        });
+        expect(screen.getByTestId('story-tab-server-1').textContent).toContain('Server Tale');
+
+        // The cached story stays selected (hydration picked it) and its cached
+        // chapter content remains visible.
+        expect(screen.getByTestId('story-tab-local-only-1').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('chapter-0-content').textContent).toContain('Cached body text');
+
+        // Quiet polling: the cache-only story shows NO processing badge while
+        // its (permanently 404-ing) server check repeats in the background.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-local-only-1').textContent).not.toContain('⏳');
+        });
+    });
+
+    it('deleting a cache-only story purges it completely from the cache without calling the server', async () => {
+        seedRecordsCache([
+            {
+                id: 7,
+                storyId: 'local-only-1',
+                storyName: 'Local Tale',
+                title: 'Local Tale',
+                storyline: 'cached storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-09T09:00:00.000Z',
+                status: 'completed',
+                data: { chapters: [], meta: null },
+                isRemote: false
+            }
+        ]);
+        // Per-story expanded-chapters cache must be purged alongside the record.
+        localStorage.setItem('storyGenerator:expanded:local-only-1', JSON.stringify([0]));
+
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'server-1', storyName: 'Server Tale', chapterRequested: 2, chapterCompleted: 2, createdDate: '2026-08-11T09:00:00Z', status: 'completed' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(mockResponse(404, { error: 'Story not found' }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Wait for the server sync so local-only-1 is confirmed cache-only.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-local-only-1')).toBeDefined();
+            expect(screen.getByTestId('story-tab-server-1')).toBeDefined();
+        });
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('story-delete-local-only-1'));
+        });
+
+        // The tile is gone, the server-known story stays, and NO DELETE
+        // request was issued (a cache-only story has no server counterpart).
+        await waitFor(() => {
+            expect(screen.queryByTestId('story-tab-local-only-1')).toBeNull();
+        });
+        expect(screen.getByTestId('story-tab-server-1')).toBeDefined();
+        expect(fetchMock.mock.calls.filter(([, init]: any[]) => init?.method === 'DELETE')).toEqual([]);
+
+        // The records cache no longer contains the story, the surviving story
+        // is still cached, and the per-story expanded key is removed.
+        await waitFor(() => {
+            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            expect(raw).not.toContain('local-only-1');
+            expect(raw).toContain('server-1');
+        });
+        expect(localStorage.getItem('storyGenerator:expanded:local-only-1')).toBeNull();
+    });
+
+    it('deleting a server-known story still sends the DELETE request', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'server-1', storyName: 'Server Tale', chapterRequested: 2, chapterCompleted: 2, createdDate: '2026-08-11T09:00:00Z', status: 'completed' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            if (init?.method === 'DELETE') {
+                return Promise.resolve(mockResponse(200, { success: true, storyId: 'server-1' }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-server-1')).toBeDefined();
+        });
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('story-delete-server-1'));
+        });
+
+        // Exactly one DELETE, targeting the story's own URL.
+        await waitFor(() => {
+            const deleteCalls = fetchMock.mock.calls.filter(([, init]: any[]) => init?.method === 'DELETE');
+            expect(deleteCalls.length).toBe(1);
+            expect(deleteCalls[0][0]).toBe(`${BASE_URL}/server-1`);
+        });
+
+        // The tile is removed from the sidebar (and the cache via auto-persist).
+        await waitFor(() => {
+            expect(screen.queryByTestId('story-tab-server-1')).toBeNull();
+        });
+    });
+
+    it('writes story data fetched while a story is open into the records cache', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'cache-data-1', chapterRequested: 1, chapterCompleted: 0, createdDate: '2026-08-11T09:00:00Z', status: 'generating' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'Fetched Chapter',
+                                plotpoints: ['plot'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [{ content: '## Fetched Chapter\n\nfetched body', wordCount: 2, generationTimeMs: 800 }]
+                            }
+                        ],
+                        meta: { storyline: 'remote storyline', chapterCount: 1, createdAt: '2026-08-11T09:00:00Z' }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // The opened story renders the fetched chapter…
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('fetched body');
+        });
+
+        // …and the fetched data lands in the localStorage records cache (so the
+        // next page load shows it instantly, before any server check).
+        await waitFor(() => {
+            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            expect(raw).toContain('"storyId":"cache-data-1"');
+            expect(raw).toContain('Fetched Chapter');
+            expect(raw).toContain('fetched body');
+        });
+    });
+
     it('closes the delete confirmation dialog without deleting on cancel', async () => {
         const fetchMock = globalThis.fetch as any;
         const story = seedDeleteStory(

@@ -14,7 +14,7 @@
 // pattern (read + mutate triggers re-render).
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { deleteStory as deleteStoryApi } from '../api';
+import { deleteStory as deleteStoryApi, type StoryMeta } from '../api';
 
 // ── localStorage helpers ──────────────────────────────────────────────
 const STORAGE_KEY_STORY = 'storyGenerator:lastStoryId';
@@ -90,6 +90,15 @@ export const setExpandedChapters = (storyId: string, indices: number[]) => {
     }
 };
 
+/** Remove the expanded-chapters key for a story (called when the story is deleted). */
+export const clearExpandedChapters = (storyId: string) => {
+    try {
+        localStorage.removeItem(STORAGE_KEY_EXPANDED_PREFIX + storyId);
+    } catch {
+        // ignore
+    }
+};
+
 // ── Records persistence (async) ────────────────────────────────────────
 // Persists the full story records array to localStorage so the dashboard
 // loads instantly with cached data even if the server is unreachable.
@@ -98,7 +107,7 @@ export const setExpandedChapters = (storyId: string, indices: number[]) => {
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
 // that don't survive across sessions (error, isProcessing).
-type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterRequested' | 'chapterCompleted' | 'createdDate' | 'status' | 'isRemote'> & {
+type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterRequested' | 'chapterCompleted' | 'createdDate' | 'status' | 'isRemote' | 'missingFromServer'> & {
     data: StoryData | null;
 };
 
@@ -114,7 +123,8 @@ const toPersistable = (entry: StoryEntry): PersistableStoryEntry => ({
     createdDate: entry.createdDate,
     status: entry.status,
     data: entry.data,
-    isRemote: entry.isRemote
+    isRemote: entry.isRemote,
+    missingFromServer: entry.missingFromServer
 });
 
 /**
@@ -137,12 +147,114 @@ export const loadRecordsFromStorage = (): StoryEntry[] => {
             chapterRequested: entry.chapterRequested || 0,
             chapterCompleted: entry.chapterCompleted || 0,
             status: entry.status || 'generating',
+            // Cache-only flag persists across reloads so the story still renders
+            // (and deletes locally) before the next successful list sync.
+            missingFromServer: entry.missingFromServer ?? false,
             isProcessing: false,
             error: ''
         }));
     } catch {
         return [];
     }
+};
+
+/**
+ * Merge a fresh server story list into the current store records.
+ *
+ * This is the single cache↔server sync path used by BOTH the initial
+ * bootstrap (BootstrapLayer) and the periodic sidebar refresh
+ * (SectionStoryTabs), so the cache-first contract stays consistent:
+ *
+ *   load cache → check server → update cache (via the records-persist
+ *   effect downstream) → repeat at interval.
+ *
+ * Rules:
+ *   - Stories present on the server keep any locally-cached payload
+ *     (chapter `data`, `storyline`, transient flags) while their metadata
+ *     (storyName, chapterRequested/Completed, createdDate, status) is
+ *     refreshed from the server — the server is the source of truth for
+ *     metadata, the cache is the source of truth for content.
+ *   - Stories present ONLY in the cache (absent from a successful server
+ *     response) are RETAINED and flagged `missingFromServer: true` — they
+ *     must stay visible in the sidebar and deletable without a server call.
+ *   - An empty server response is treated as "no information" and returns
+ *     null so callers leave the cached records untouched (we cannot tell a
+ *     wiped server from an unreachable/misbehaving one).
+ *   - The current selection is re-resolved against the merged records by
+ *     storyId (entries may have been replaced); when nothing is selected
+ *     the last-used storyId (localStorage) wins, then the first record.
+ */
+export const mergeServerStoryList = (
+    prev: Pick<StoryStore, 'records' | 'selected'>,
+    stories: StoryMeta[] | undefined
+): { records: StoryEntry[]; selected: StoryEntry | null } | null => {
+    // Empty/missing list → not a sync signal; keep cached records as-is.
+    if (!stories || stories.length === 0) return null;
+
+    const prevByStoryId = new Map(prev.records.map((r) => [r.storyId, r]));
+    const serverIds = new Set(stories.map((s) => s.storyId));
+
+    // Server-known entries: overlay fresh metadata onto the existing entry
+    // (or build a new remote entry for stories never seen before).
+    const serverEntries: StoryEntry[] = stories.map((meta, index) => {
+        const existing = prevByStoryId.get(meta.storyId);
+        if (existing) {
+            return {
+                ...existing,
+                storyName: meta.storyName,
+                title: meta.storyName || existing.title,
+                chapterRequested: meta.chapterRequested,
+                chapterCompleted: meta.chapterCompleted,
+                createdDate: meta.createdDate || existing.createdDate,
+                status: meta.status,
+                missingFromServer: false
+            };
+        }
+        // New server story — negative id namespace (see BootstrapLayer) so
+        // server-seeded entries never collide with locally created
+        // Date.now() ids. data starts null; SectionStoryContent polls it in
+        // on selection.
+        return {
+            id: -(Date.now() + index + 1),
+            storyId: meta.storyId,
+            storyName: meta.storyName,
+            title: meta.storyName || meta.storyId.slice(0, 8),
+            storyline: '',
+            chapterRequested: meta.chapterRequested,
+            chapterCompleted: meta.chapterCompleted,
+            createdDate: meta.createdDate,
+            status: meta.status,
+            data: null,
+            isProcessing: false,
+            error: '',
+            isRemote: true,
+            missingFromServer: false
+        };
+    });
+
+    // Cache-only entries: NOT on the server but cached locally — keep them
+    // visible (requirement: "stories may exist in cache but missing in
+    // server — display on the sidebar regardless") and flag them so the
+    // delete path knows to purge the cache instead of calling DELETE.
+    const cacheOnlyEntries: StoryEntry[] = prev.records
+        .filter((r) => !serverIds.has(r.storyId))
+        .map((r) => ({ ...r, missingFromServer: true }));
+
+    const records = [...serverEntries, ...cacheOnlyEntries];
+
+    // Re-resolve the selection against the merged list. The previously
+    // selected storyId always survives the merge (server entry or retained
+    // cache-only entry), so this only fails when prev.selected pointed at
+    // an entry that was never in records (e.g. ad-hoc initialStore seeds).
+    let selected: StoryEntry | null = null;
+    if (prev.selected) {
+        selected = records.find((r) => r.storyId === prev.selected!.storyId) ?? null;
+    }
+    if (!selected && records.length > 0) {
+        const lastStoryId = getLastStoryId();
+        selected = (lastStoryId ? records.find((r) => r.storyId === lastStoryId) : undefined) ?? records[0];
+    }
+    return { records, selected };
 };
 
 // Handle for the pending idle write — allows coalescing rapid updates.
@@ -257,6 +369,15 @@ export type StoryEntry = {
     // Locally-added entries (Add button / SectionStoryInput) have isRemote = false
     // and may carry a storyline from the input form.
     isRemote: boolean;
+    // True when the story exists in the local cache but was ABSENT from the last
+    // successful server list fetch (e.g. deleted on the server by another
+    // session, or created while the server was unreachable). Such stories stay
+    // visible in the sidebar regardless (cache is the source of truth for
+    // display); deleting them skips the server DELETE and purges the local
+    // cache only. Cleared by the next list sync that contains the storyId, or
+    // as soon as the story's own GET endpoint answers data again.
+    // Optional because entries seeded by tests / initialStore may omit it.
+    missingFromServer?: boolean;
 };
 
 // The full store shape. `selected` is `StoryEntry | null` (null = nothing selected).
@@ -382,10 +503,27 @@ export const StoryStoreProvider: React.FC<{
         scheduleSaveRecordsToStorage(store.records);
     }, [store.records]);
 
-    // Delete a story: call DELETE API, then remove from local store.
+    // Delete a story by storyId.
+    //
+    // Two paths:
+    //   - Server-known story: call the DELETE API, then remove the entry.
+    //   - Cache-only story (flagged missingFromServer by the last successful
+    //     list sync): the server has no record of it, so the DELETE would just
+    //     404 — skip the network call and purge the local cache instead.
+    //
+    // Removing the entry from `records` feeds the records-persist effect
+    // above, which rewrites localStorage without the story — that is what
+    // "removes it completely from the cache" (plus the per-story
+    // expanded-chapters key cleared here, and lastStoryId cleared by the
+    // selected-persist effect when the deleted story was selected).
     const deleteStory = useCallback(
         async (storyId: string) => {
-            await deleteStoryApi(store.config.baseUrl, storyId);
+            const entry = store.records.find((r) => r.storyId === storyId);
+            if (!entry?.missingFromServer) {
+                await deleteStoryApi(store.config.baseUrl, storyId);
+            }
+            // Purge the per-story UI preference cache alongside the record.
+            clearExpandedChapters(storyId);
             setStore((prev) => ({
                 ...prev,
                 records: prev.records.filter((r) => r.storyId !== storyId),
@@ -393,7 +531,7 @@ export const StoryStoreProvider: React.FC<{
                 selected: prev.selected?.storyId === storyId ? null : prev.selected
             }));
         },
-        [store.config.baseUrl, setStore]
+        [store.records, store.config.baseUrl, setStore]
     );
 
     return (

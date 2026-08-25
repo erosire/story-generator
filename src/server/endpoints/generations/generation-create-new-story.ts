@@ -7,14 +7,13 @@ import {
     DATABASE_BASE_DIR,
     MAX_PLOT_ATTEMPTS,
     MAX_STALL_RETRIES,
-    MAX_STORY_ATTEMPTS,
     MIN_PLOTPOINTS_PER_CHAPTER,
     MIN_WORDS_PER_CHAPTER,
+    parseClientId,
     PLOTPOINT_STALL_TIMEOUT_MS,
     PREVIOUS_EXPANDED_CHAPTERS,
     REFUSAL_PATTERNS,
-    STORY_REQUEST_MESSAGE,
-    parseClientId
+    STORY_REQUEST_MESSAGE
 } from './generation-config';
 import {
     buildExpandRequest,
@@ -33,34 +32,27 @@ const generateStory = async (options: {
     storyName: string;
     storyline: string;
     chapterCount: number;
-    attempt?: number;
-    retryIndex?: number;
     root: string;
     // Per-request LLM client id (validated by parseClientId in the handler).
-    // Not persisted — travels with the request and is re-used for every retry
-    // so a generation attempt and its retries always use the same client.
+    // Not persisted — travels with the request and is used for every
+    // per-chapter attempt of the generation.
     clientId?: string;
     // Plotline-only mode (the dashboard Generate button): after plotline
     // validation writes a skeleton chapter-XXX.json payload for EVERY chapter
     // and stops — chapters are never auto-expanded by this call. The user
     // expands chapters one at a time via PATCH expandChapterIndex
     // (generation-update-chapter.ts), which reads each skeleton's stored LLM
-    // context. Retries (markCompleteAndRetry) must carry the flag forward so a
-    // retry of a plotline-only story is also plotline-only.
+    // context.
     plotOnly?: boolean;
 }) => {
     const { storyId, storyName, storyline, chapterCount, root: projectRoot } = options;
     const plotOnly = options.plotOnly ?? false;
-    const attempt = options.attempt ?? 1;
-    // Keep the retry number independent from the logical attempt number so a
-    // pre-existing retry directory can be skipped without reusing its path.
-    const retryIndex = options.retryIndex ?? Number(storyId.match(/-retry-(\d+)$/)?.[1] ?? 0);
 
     const databaseDir = path.join(projectRoot, DATABASE_BASE_DIR, storyId);
 
     // Reserve the story directory before any asynchronous work begins. A
-    // duplicate POST or a racing retry must never reopen an existing story,
-    // especially a failed story whose plotpoints are being kept for manual use.
+    // duplicate POST must never reopen an existing story, especially a failed
+    // story whose plotpoints are being kept for manual use.
     // The non-recursive mkdir is the filesystem-level guard that prevents two
     // same-ID generators from both passing an existsSync check.
     fs.mkdirSync(path.dirname(databaseDir), { recursive: true });
@@ -118,9 +110,12 @@ const generateStory = async (options: {
     let plotpointLastWriteTime = 0;
     let progressiveError: Error | null = null;
 
-    // Keep the latest parsed stream result so a failed generation retains
-    // usable partial chapters instead of replacing them with an empty array.
-    let chapters: Array<{ number: string; title: string; plotpoints: string[] }> = [];
+    // Accumulated outline: one slot per chapter, filled sequentially by the
+    // per-chapter generation loop. Streaming partials land in the slot of the
+    // chapter currently being generated; accepted chapters stay put. A failed
+    // generation therefore retains every usable chapter instead of an empty
+    // array (markStoryFailed writes this array verbatim).
+    const chapters: Array<{ number: string; title: string; plotpoints: string[] }> = [];
     let plotAttempts = 0;
 
     // Once failure is committed, every late callback from the failed LLM call
@@ -133,7 +128,12 @@ const generateStory = async (options: {
     // older request tokens must not write over the current story state.
     let activePlotCallId = 0;
 
-    const progressivePlotpointWrite = async (rawContent: string) => {
+    // Chapter-scoped progressive write: the streamed JSON is ONE chapter
+    // object ({number,title,plotpoints}) for the chapter currently being
+    // generated. The on-disk outline is the accepted chapters (slots
+    // 0..chapterIndex-1) plus this streamed chapter merged at its slot —
+    // the outline grows one chapter at a time as calls succeed.
+    const progressivePlotpointWrite = async (chapterIndex: number, rawContent: string) => {
         // A completed failure is intentionally terminal for this story entry.
         if (storyFailed) return;
 
@@ -159,36 +159,37 @@ const generateStory = async (options: {
         plotpointLastWriteTime = now;
 
         assertStoryExists();
-        const partialChapters = Array.isArray(parsed.chapters)
-            ? parsed.chapters.map((ch: any) => ({
-                  number: String(ch.number ?? ''),
-                  title: String(ch.title ?? ''),
-                  plotpoints: Array.isArray(ch.plotpoints) ? ch.plotpoints : []
-              }))
-            : [];
+        // Chapter numbers are not model output — the chapter being streamed is
+        // known by position (chapterIndex), so the number is assigned here.
+        const partialChapter = {
+            number: String(chapterIndex + 1),
+            title: String(parsed.title ?? ''),
+            plotpoints: Array.isArray(parsed.plotpoints) ? parsed.plotpoints : []
+        };
 
-        // Capture the latest complete partial response so markCompleteAndRetry
+        // Merge the streaming chapter into its slot so markStoryFailed
         // can preserve the plotpoints that were available before the failure.
-        if (Array.isArray(parsed.chapters)) {
-            chapters = partialChapters;
-        }
+        chapters[chapterIndex] = partialChapter;
 
         // The stream can yield control through an async callback boundary. Check
         // the terminal flag again immediately before touching the failed entry.
         if (storyFailed) return;
 
+        // Only slots 0..chapterIndex are materialized — slice guards against
+        // a sparse tail if a later chapter somehow streamed first.
+        const visibleChapters = chapters.slice(0, chapterIndex + 1);
         const plotpointJson = {
             storyId,
             storyName,
             storyline,
             chapterCount,
-            chapters: partialChapters,
+            chapters: visibleChapters,
             status: 'generating',
             createdAt
         };
         fs.writeFileSync(plotpointJsonPath, JSON.stringify(plotpointJson, null, 2), 'utf-8');
         console.log(
-            `Plotpoint JSON (progressive) written to ${plotpointJsonPath} (${partialChapters.length} chapters)`
+            `Plotpoint JSON (progressive) written to ${plotpointJsonPath} (${visibleChapters.length} chapters, streaming chapter ${chapterIndex + 1})`
         );
     };
 
@@ -301,19 +302,24 @@ const generateStory = async (options: {
     client.user(STORY_REQUEST_MESSAGE);
     client.assistant(storyline);
 
-    // ── Plotpoint Generation ──────────────────────────────────────────
-    // On any failure (validation, stall, etc.), mark the current story
-    // as "complete" (without chapter expansion) and spin up a new story
-    // entry for the next attempt. This preserves the failed story in the
-    // list so it can be inspected, forked, or expanded manually.
+    // ── Terminal failure handling ─────────────────────────────────────────
+    // On any unrecoverable failure (validation exhaustion, repeated call
+    // errors, stalls), mark the current story as "failed" — WITHOUT spinning
+    // up a new story entry. The old one-shot outline (a single response
+    // covering every chapter) needed the story-level [retry N] chain because
+    // a bad response meant regenerating everything from scratch. Progressive
+    // generation instead retries the failed chapter's IDENTICAL payload in
+    // place (see the chapter loop below) — the model gets another attempt
+    // without the server telling it that it was wrong — so a terminal failure
+    // here just preserves the entry in the list, where it can be inspected,
+    // forked, or expanded manually.
     /**
-     * Mark the current story as complete (without chapter expansion) and
-     * spin up a new story entry for the next attempt, if attempts remain.
+     * Mark the current story as failed and stop generation for this entry.
      */
-    const markCompleteAndRetry = (reason: string) => {
+    const markStoryFailed = (reason: string) => {
         // Failure handling can be reached by more than one asynchronous path
-        // when a stream races a timeout. Commit it once so no retry can rewrite
-        // the failed entry or create duplicate retry entries.
+        // when a stream races a timeout. Commit it once so no late callback
+        // can rewrite the failed entry.
         if (storyFailed) return;
         storyFailed = true;
         activePlotCallId = 0;
@@ -337,96 +343,9 @@ const generateStory = async (options: {
         fs.writeFileSync(plotpointPath, `> Plotpoint generation failed: ${reason}`, 'utf-8');
         console.log(
             `Story ${storyId} marked as failed (plotpoint generation failed: ${reason}, ` +
-                `${chapters.length} chapters with plotpoints)`
+                `${chapters.length} chapter(s) preserved)`
         );
-
-        // Spin up a new story entry for the next attempt
-        // Strip any existing retry suffixes from storyId/storyName to keep retry IDs flat.
-        // Without this, nested retries produce compound IDs like "abc-retry-1-retry-2-retry-3"
-        // instead of the intended flat pattern "abc-retry-1", "abc-retry-2", "abc-retry-3".
-        if (attempt < MAX_STORY_ATTEMPTS) {
-            const baseStoryId = storyId.replace(/-retry-\d+$/, '');
-            const baseStoryName = storyName.replace(/\s*\[retry \d+\]$/, '');
-            // Never reuse a directory, including one left by an earlier failed
-            // run. This preserves both the current failure and old retry history.
-            let nextRetryIndex = Math.max(attempt, retryIndex + 1);
-            let retryStoryId = `${baseStoryId}-retry-${nextRetryIndex}`;
-            while (fs.existsSync(path.join(projectRoot, DATABASE_BASE_DIR, retryStoryId))) {
-                nextRetryIndex++;
-                retryStoryId = `${baseStoryId}-retry-${nextRetryIndex}`;
-            }
-            const retryStoryName = `${baseStoryName} [retry ${nextRetryIndex}]`;
-            console.log(
-                `Spinning up retry story ${retryStoryId} (attempt ${attempt + 1}/${MAX_STORY_ATTEMPTS})`
-            );
-            generateStory({
-                storyId: retryStoryId,
-                storyName: retryStoryName,
-                storyline,
-                chapterCount,
-                attempt: attempt + 1,
-                retryIndex: nextRetryIndex,
-                root: projectRoot,
-                // Carry the per-request clientId into the retry so the whole
-                // story (original + every retry) is generated by the same LLM client.
-                clientId: options.clientId,
-                // Plotline-only mode must survive retries — a retry of a
-                // Generate-button (plotline-only) story stays plotline-only.
-                plotOnly: options.plotOnly
-            }).catch((err) => {
-                console.error(`Retry story generation failed for ${retryStoryId}:`, err);
-            });
-        } else {
-            console.log(
-                `Max story attempts (${MAX_STORY_ATTEMPTS}) reached for original story ${storyId}. ` +
-                    `No more retries.`
-            );
-        }
     };
-
-    try {
-        ({
-            response: { chapters }
-        } = await callStructuredWithStallRetry({
-            request: [
-                //
-                `> Submit me the detailed plotpoints of the next ${chapterCount} chapters`,
-                '> The plotpoint must includes all the important dialogues',
-                `> There must be at least ${MIN_PLOTPOINTS_PER_CHAPTER} plotpoints per chapter`,
-                '> Must clearly outlines how each chapter starts, and how each chapter ends'
-            ].join('\n'),
-            response: Type.Object({
-                chapters: Type.Array(
-                    Type.Object({
-                        number: Type.String({ description: 'the chapter number' }),
-                        title: Type.String({ description: 'the title of the chapter' }),
-                        plotpoints: Type.Array(Type.String(), { description: 'the detailed plotpoints of the chapter' })
-                    }),
-                    { description: 'a list of chapter plotpoints to submit' }
-                )
-            }),
-            onUpdate: progressivePlotpointWrite
-        }));
-    } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        console.error(`[PLOTPOINT] Initial call failed for storyId ${storyId} (attempt ${attempt}): ${reason}`);
-        markCompleteAndRetry(reason);
-        return;
-    }
-
-    // Immediately after format() returns, check whether the progressive
-    // write buffer detected invalid JSON during streaming. Only force an
-    // empty chapters array when format() did NOT return valid data.
-    // This prevents stale intermediate streaming errors from discarding
-    // a successful final parse (the root cause of false validation triggers).
-    if (!Array.isArray(chapters) || chapters.length === 0) {
-        if (consumeProgressiveError()) {
-            chapters = [];
-        }
-    } else {
-        // format() returned valid data — discard any stale progressive error
-        consumeProgressiveError();
-    }
 
     // Helper: detect refusal phrases in plotlines
     const detectRefusals = (chapterList: Array<{ plotpoints?: string[] }>): boolean => {
@@ -443,11 +362,6 @@ const generateStory = async (options: {
         return false;
     };
 
-    // Helper: validate chapter count matches requested amount
-    const validateChapterCount = (chapterList: Array<unknown>): boolean => {
-        return chapterList.length === chapterCount;
-    };
-
     // Write the LLM's plotpoint response to disk immediately (before validation).
     // This ensures plotpoint.json always reflects the latest LLM output
     // so it can be inspected even when validation fails.
@@ -459,7 +373,14 @@ const generateStory = async (options: {
     // — would otherwise report 'generating' forever). Full-generation calls
     // omit it: those stories never write a top-level status field and keep
     // deriving 'completed' from chapter-completion counts.
-    const writePlotpointFile = (validationStatus?: { valid: boolean; reason?: string; attempt: number }, status?: string) => {
+    const writePlotpointFile = (
+        validationStatus?: {
+            valid: boolean;
+            reason?: string;
+            attempt: number;
+        },
+        status?: string
+    ) => {
         // A late validation callback must not turn a committed failed entry
         // back into a generating entry or replace its preserved output.
         if (storyFailed) return;
@@ -499,167 +420,173 @@ const generateStory = async (options: {
         console.log(`Plotpoint MD written to ${plotpointPath} (${chapters.length} chapters)`);
     };
 
-    // Write the initial LLM response immediately so it's on disk regardless of validation outcome
-    writePlotpointFile();
+    // ── Progressive per-chapter plotpoint generation (agentic chain) ────────
+    // Request ONE chapter's plotpoints per structured call until all
+    // chapterCount chapters are collected, instead of asking for the entire
+    // outline in a single response. After each successful call the request and
+    // the model's tool call are committed to the conversation history, so the
+    // request for chapter N sees chapters 1..N-1 already present as sequential
+    // tool calls — the model returns each chapter's plotpoints in a tool call
+    // and we request the next one from there.
+    //
+    // Benefits over the one-shot outline this replaced:
+    //   - Each response spans a single chapter → smaller outputs, less stall
+    //     surface, fewer truncated/malformed JSON failures.
+    //   - Validation (empty plotpoints, refusal phrases) retries ONLY the
+    //     failing chapter instead of regenerating the whole outline; the old
+    //     validation and missing-plotpoint loops collapsed into the
+    //     per-chapter retry budget below.
+    //   - The chapter count is structurally guaranteed by the loop, so the
+    //     old "Chapter count mismatch" failure mode no longer exists.
+    // No `number` field in the schema: chapters are generated one call at a
+    // time, so the server already knows each chapter's sequential position and
+    // assigns the number itself (chapterLabel) — asking the model to echo a
+    // number would only invite off-by-one drift.
+    const chapterPlotpointSchema = Type.Object({
+        title: Type.String({ description: 'the title of the chapter' }),
+        plotpoints: Type.Array(Type.String(), { description: 'the detailed plotpoints of the chapter' })
+    });
 
-    // Validate plot generation: check for refusals and chapter count mismatch.
-    // Retry up to MAX_PLOT_ATTEMPTS times if validation fails.
-    plotAttempts = 0;
+    for (let chapterIndex = 0; chapterIndex < chapterCount; chapterIndex++) {
+        const chapterLabel = chapterIndex + 1;
+        console.log(`Generating plotpoints for chapter ${chapterLabel}/${chapterCount} (storyId: ${storyId})`);
 
-    const validatePlot = (chapterList: unknown): { valid: boolean; reason?: string } => {
-        if (!Array.isArray(chapterList)) {
-            return { valid: false, reason: `chapters is not an array (type: ${typeof chapterList})` };
-        }
-        if (chapterList.length === 0) {
-            return { valid: false, reason: 'chapters array is empty' };
-        }
-        if (!validateChapterCount(chapterList)) {
-            return {
-                valid: false,
-                reason: `Chapter count mismatch: requested ${chapterCount} chapters but got ${chapterList.length}`
+        // The chapter's request — re-issued VERBATIM on every retry. The model
+        // gets another attempt without the server telling it that it was wrong:
+        // no escalation, no refusal meta-instructions, no mention of prior
+        // failures (the failed attempt never enters the conversation chain).
+        const request = [
+            `> Submit me the detailed plotpoints of the next chapter (chapter ${chapterLabel} of ${chapterCount})`,
+            '> The plotpoint must includes all the important dialogues',
+            `> There must be at least ${MIN_PLOTPOINTS_PER_CHAPTER} plotpoints for this chapter`,
+            '> Must clearly outlines how the chapter starts, and how the chapter ends',
+            '> Do not include plotpoints or events that belong to any other chapter'
+        ].join('\n');
+
+        let acceptedChapter: { number: string; title: string; plotpoints: string[] } | null = null;
+        let chapterFailureReason = `chapter ${chapterLabel} plotpoint generation produced no usable response`;
+
+        // 1 initial attempt + up to MAX_PLOT_ATTEMPTS retries for THIS chapter.
+        // On retry only this chapter is re-asked, with the byte-identical
+        // payload — earlier accepted chapters stay untouched in the
+        // conversation chain.
+        for (let chapterAttempt = 0; chapterAttempt <= MAX_PLOT_ATTEMPTS && !acceptedChapter; chapterAttempt++) {
+            assertStoryExists();
+            // Count retry attempts (not the initial call) for the validation record.
+            if (chapterAttempt > 0) plotAttempts++;
+
+            let response: { title: string; plotpoints: string[] };
+            try {
+                ({ response } = await callStructuredWithStallRetry({
+                    request,
+                    response: chapterPlotpointSchema,
+                    // Chapter-scoped progressive write: merges this streaming
+                    // chapter into the accumulated outline on disk.
+                    onUpdate: (raw) => progressivePlotpointWrite(chapterIndex, raw)
+                }));
+            } catch (err) {
+                const reason = err instanceof Error ? err.message : String(err);
+                // A deleted story folder aborts immediately — there is nothing
+                // left to retry into (assertStoryExists contract).
+                if (!fs.existsSync(databaseDir)) throw err;
+                // Any other failure retries the identical payload in place.
+                chapterFailureReason = reason;
+                console.error(
+                    `[PLOTPOINT] Chapter ${chapterLabel} call failed ` +
+                        `(attempt ${chapterAttempt + 1}/${MAX_PLOT_ATTEMPTS + 1}): ${reason}. Retrying identical request...`
+                );
+                continue;
+            }
+
+            // format()/structure() only resolve on schema-valid data — any
+            // streaming JSON error recorded by the progressive buffer is stale
+            // (same stale-error guard as the old flow, minus the empty-chapters
+            // branch: the outline is accumulated, never wholesale replaced).
+            consumeProgressiveError();
+
+            // Normalize. The chapter number is server-assigned (sequential
+            // generation, see chapterPlotpointSchema); only title/plotpoints
+            // come from the model (the fallbacks keep proxies/models that echo
+            // blank fields from breaking the chain).
+            const normalized = {
+                number: String(chapterLabel),
+                title: String(response.title ?? ''),
+                plotpoints: Array.isArray(response.plotpoints) ? response.plotpoints : []
             };
+
+            // Preserve the latest attempt (accepted or not) under the chapter's
+            // slot so a terminal failure keeps the broken chapter inspectable in
+            // the failed plotpoint.json — the old flow did the same with the
+            // last invalid whole-outline response.
+            chapters[chapterIndex] = normalized;
+
+            // Per-chapter validation: plotpoints must be non-empty and free of
+            // refusal phrases. Both checks share this retry budget — the retry
+            // itself is the identical request above, not a corrective prompt.
+            if (normalized.plotpoints.length === 0) {
+                chapterFailureReason = `chapter ${chapterLabel} returned no plotpoints`;
+                console.error(
+                    `Chapter ${chapterLabel} plotpoint validation failed ` +
+                        `(attempt ${chapterAttempt + 1}/${MAX_PLOT_ATTEMPTS + 1}): ${chapterFailureReason}. Retrying identical request...`
+                );
+                continue;
+            }
+            if (detectRefusals([normalized])) {
+                chapterFailureReason = `chapter ${chapterLabel} contains refusal phrase ("I cannot fulfill" or "I will not")`;
+                console.error(
+                    `Chapter ${chapterLabel} plotpoint validation failed ` +
+                        `(attempt ${chapterAttempt + 1}/${MAX_PLOT_ATTEMPTS + 1}): ${chapterFailureReason}. Retrying identical request...`
+                );
+                continue;
+            }
+
+            acceptedChapter = normalized;
         }
-        if (detectRefusals(chapterList as Array<{ plotpoints?: string[] }>)) {
-            return { valid: false, reason: 'Plot contains refusal phrase ("I cannot fulfill" or "I will not")' };
-        }
-        return { valid: true };
-    };
 
-    let validation = validatePlot(chapters);
-
-    while (!validation.valid && plotAttempts < MAX_PLOT_ATTEMPTS) {
-        assertStoryExists();
-        plotAttempts++;
-        console.error(
-            `Plot validation failed (attempt ${plotAttempts}/${MAX_PLOT_ATTEMPTS}): ${validation.reason}. Retrying...`
-        );
-
-        try {
-            ({
-                response: { chapters }
-            } = await callStructuredWithStallRetry({
-                request: [
-                    `> Submit me the detailed plotpoints of the next ${chapterCount} chapters`,
-                    '> The plotpoint must includes all the important dialogues',
-                    `> There must be at least ${MIN_PLOTPOINTS_PER_CHAPTER} plotpoints per chapter`,
-                    '> Must clearly outlines how each chapter starts, and how each chapter ends',
-                    '> CRITICAL: You MUST return exactly the number of chapters requested. Do NOT refuse or decline.',
-                    '> Do NOT include phrases like "I cannot fulfill" or "I will not" in the plotpoints.'
-                ].join('\n'),
-                response: Type.Object({
-                    chapters: Type.Array(
-                        Type.Object({
-                            number: Type.String({ description: 'the chapter number' }),
-                            title: Type.String({ description: 'the title of the chapter without chapter number' }),
-                            plotpoints: Type.Array(Type.String(), {
-                                description: 'the detailed plotpoints of the chapter'
-                            })
-                        }),
-                        { description: 'a list of chapter plotpoints to submit' }
-                    )
-                }),
-                onUpdate: progressivePlotpointWrite
-            }));
-        } catch (err) {
-            const reason = err instanceof Error ? err.message : String(err);
-            console.error(`[PLOTPOINT] Validation retry failed for storyId ${storyId} (attempt ${attempt}): ${reason}`);
-            markCompleteAndRetry(reason);
+        // Terminal per-chapter failure — keep the broken chapter in the failed
+        // entry and stop (no [retry N] story entry is spun up).
+        if (!acceptedChapter) {
+            markStoryFailed(chapterFailureReason);
             return;
         }
 
-        // Check for progressive write errors — only force empty chapters when
-        // format() did NOT return valid data (prevents stale error false positives)
-        if (!Array.isArray(chapters) || chapters.length === 0) {
-            if (consumeProgressiveError()) {
-                chapters = [];
-            }
-        } else {
-            // format() returned valid data — discard any stale progressive error
-            consumeProgressiveError();
-        }
+        // ── Agentic chain step ────────────────────────────────────────────
+        // Commit the successful exchange to the conversation history: the user
+        // request that produced this chapter, then an assistant message
+        // carrying the chapter's tool call. structure()/format() append the
+        // NEXT request only to a local copy of the messages (they never mutate
+        // client.messages — simple-client.ts:1010-1013/:1279-1281), so only
+        // what is committed here is visible to the next chapter's call: chapter
+        // N+1 is generated with chapters 1..N present as sequential tool calls.
+        // The tool-call JSON follows the harness convention of storing tool
+        // calls as assistant message content (simple-harness.ts:208-215) and
+        // uses the well-known structure tool name 'respond'
+        // (simple-client.ts:1025) — exactly what the model emitted.
+        client.user(request);
+        client.assistant(
+            JSON.stringify({
+                tool_calls: [
+                    {
+                        id: `call_plotpoint_chapter_${chapterLabel}`,
+                        type: 'function',
+                        function: { name: 'respond', arguments: JSON.stringify(acceptedChapter) }
+                    }
+                ]
+            })
+        );
 
-        // Write updated response to disk with validation status before re-validating
-        validation = validatePlot(chapters);
-        writePlotpointFile({ valid: validation.valid, reason: validation.reason, attempt: plotAttempts });
-    }
-
-    // If validation still fails after all retries, mark as complete and spin up retry
-    if (!validation.valid) {
-        markCompleteAndRetry(validation.reason ?? 'validation failed after max attempts');
-        return;
-    }
-
-    // Validate all chapters have plotpoints, retry if any are missing.
-    // Capped at MAX_PLOT_ATTEMPTS to prevent infinite loops when the LLM
-    // consistently returns some chapters without plotpoints.
-    let outlineAttempts = 0;
-    while (
-        chapters.some((ch) => !Array.isArray(ch.plotpoints) || ch.plotpoints.length === 0) &&
-        outlineAttempts < MAX_PLOT_ATTEMPTS
-    ) {
-        assertStoryExists();
-        outlineAttempts++;
+        // Finalize the chapter on disk (plotpoint.json + plotpoint.md). This
+        // per-chapter validation record is informational — the terminal
+        // plotline-only write below overwrites it with 'plotline complete'.
+        writePlotpointFile({
+            valid: true,
+            reason: `chapter ${chapterLabel}/${chapterCount} plotpoints accepted`,
+            attempt: plotAttempts
+        });
         console.log(
-            `Outline missing plotpoints in some chapters (attempt ${outlineAttempts}/${MAX_PLOT_ATTEMPTS}). Retrying...`
+            `Chapter ${chapterLabel}/${chapterCount} plotpoints accepted: "${acceptedChapter.title}" ` +
+                `(${acceptedChapter.plotpoints.length} plotpoints)`
         );
-
-        try {
-            ({
-                response: { chapters }
-            } = await callStructuredWithStallRetry({
-                request: [
-                    `> Give me the detailed plotpoints of the next ${chapterCount} chapters`,
-                    '> The plotpoint MUST be a non-empty array of strings for EVERY chapter',
-                    '> The plotpoint must includes important dialogues',
-                    '> Must clearly outlines the start and ending of each chapter'
-                ].join('\n'),
-                response: Type.Object({
-                    chapters: Type.Array(
-                        Type.Object({
-                            number: Type.String({ description: 'the chapter number' }),
-                            title: Type.String({ description: 'the title of the chapter' }),
-                            plotpoints: Type.Array(Type.String(), {
-                                description: 'the detailed plotpoints of the chapter'
-                            })
-                        }),
-                        { description: 'A list of chapters to submit' }
-                    )
-                }),
-                onUpdate: progressivePlotpointWrite
-            }));
-        } catch (err) {
-            const reason = err instanceof Error ? err.message : String(err);
-            console.error(`[PLOTPOINT] Outline retry failed for storyId ${storyId} (attempt ${attempt}): ${reason}`);
-            markCompleteAndRetry(reason);
-            return;
-        }
-
-        // Check for progressive write errors — only discard when format()
-        // did NOT return valid data (prevents stale error false positives)
-        if (!Array.isArray(chapters) || chapters.length === 0) {
-            if (consumeProgressiveError()) {
-                chapters = [];
-            }
-        } else {
-            consumeProgressiveError();
-        }
-
-        // Override plotpoint file with the new response
-        writePlotpointFile();
-    }
-
-    // A response with the requested chapter count is still unusable when one
-    // or more chapters has no plotpoints. Treat exhaustion of outline retries
-    // as a terminal plot failure so the incomplete outline remains inspectable
-    // and a separate story entry receives the next generation attempt.
-    const missingPlotpointChapters = chapters.filter(
-        (chapter) => !Array.isArray(chapter.plotpoints) || chapter.plotpoints.length === 0
-    );
-    if (missingPlotpointChapters.length > 0) {
-        markCompleteAndRetry(
-            `Plotpoint generation exhausted retries with ${missingPlotpointChapters.length} chapter(s) missing plotpoints`
-        );
-        return;
     }
 
     // ── Plotline-only completion (dashboard Generate button) ──────────────
@@ -690,8 +617,8 @@ const generateStory = async (options: {
         // what the expansion pass below would push into appending[] at the
         // start. Plotlines are guaranteed non-empty here (missingPlotpointChapters
         // check above), so map is safe and deterministic.
-        const summaryList = chapters.map(
-            ({ number, title, plotpoints }) => [`> ${number}: ${title}`, '\n\n', plotpoints.map((plot) => `- ${plot}`).join('\n')].join('\n\n')
+        const summaryList = chapters.map(({ number, title, plotpoints }) =>
+            [`> ${number}: ${title}`, '\n\n', plotpoints.map((plot) => `- ${plot}`).join('\n')].join('\n\n')
         );
 
         // Persist a skeleton payload per chapter so each one is immediately
@@ -859,7 +786,7 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
     // an explicit unknown or non-string clientId is a 400, an absent clientId
     // is legal (generation falls back to the default client in resolveClient).
     // The value is never stored — it only selects the client for this request
-    // and its background retries (see markCompleteAndRetry below).
+    // and every per-chapter attempt of its background generation.
     const clientIdCheck = parseClientId(body.clientId);
     if (clientIdCheck.error) {
         return {
@@ -995,7 +922,15 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
     // chapters afterwards via PATCH expandChapterIndex (generation-update-chapter.ts),
     // which consumes the skeleton chapter payloads written by the plotline
     // pass. Fork requests above keep the full plotline + expansion flow.
-    generateStory({ storyId, storyName, storyline, chapterCount, clientId, plotOnly: true, root: projectRoot }).catch((err) => {
+    generateStory({
+        storyId,
+        storyName,
+        storyline,
+        chapterCount,
+        clientId,
+        plotOnly: true,
+        root: projectRoot
+    }).catch((err) => {
         console.error(`Story generation failed for storyId ${storyId}:`, err);
     });
 

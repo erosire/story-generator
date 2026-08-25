@@ -28,28 +28,19 @@ vi.mock('./generation-config', () => {
                         }
                     });
                 }
-                // All other calls (plotpoint generation, validation retries, outline retries)
-                return Promise.resolve({
-                    response: {
-                        chapters: [
-                            {
-                                number: '1',
-                                title: 'Chapter One',
-                                plotpoints: ['Plot point A', 'Plot point B']
-                            },
-                            {
-                                number: '2',
-                                title: 'Chapter Two',
-                                plotpoints: ['Plot point C']
-                            },
-                            {
-                                number: '3',
-                                title: 'Chapter Three',
-                                plotpoints: ['Plot point D']
-                            }
-                        ]
-                    }
-                });
+                // Progressive plotline generation (generation-create-new-story.ts):
+                // ONE chapter per structured call. The request names the chapter
+                // as "(chapter N of M)" — resolve N to a deterministic fixture so
+                // retries of the same chapter re-serve identical data. The
+                // schema no longer asks the model for a chapter number — the
+                // server assigns it by position — so fixtures omit `number`.
+                const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+                const chapterFixtures = [
+                    { title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
+                    { title: 'Chapter Two', plotpoints: ['Plot point C'] },
+                    { title: 'Chapter Three', plotpoints: ['Plot point D'] }
+                ];
+                return Promise.resolve({ response: chapterFixtures[chapterIndex] ?? chapterFixtures[0] });
             }),
             structure: vi.fn().mockResolvedValue({ response: { chapters: [], title: '', content: '' } }),
             messages: []
@@ -72,7 +63,6 @@ vi.mock('./generation-config', () => {
         OPENING_USER_MESSAGE: 'Hey ENI',
         STORY_REQUEST_MESSAGE: 'You know the story I like',
         MAX_PLOT_ATTEMPTS: 3,
-        MAX_STORY_ATTEMPTS: 3,
         MAX_STALL_RETRIES: 10,
         PLOTPOINT_STALL_TIMEOUT_MS: 5 * 60 * 1000,
         PREVIOUS_EXPANDED_CHAPTERS: 4,
@@ -165,6 +155,19 @@ const createMockParameters = (storyId: string, body: Record<string, any> = {}) =
 // lines) between the heading and the bullet list. The literals below hardcode
 // that exact value (verified against the on-disk chapter-XXX.json context).
 const SUMMARY_SEP = '\n\n\n\n\n\n';
+
+// Exact per-chapter plotline request text (mirrors the request builder in
+// generation-create-new-story.ts; the mocked MIN_PLOTPOINTS_PER_CHAPTER = 10).
+// Every retry of a chapter re-issues this byte-identical payload — no
+// escalation instructions are ever added to it.
+const basePlotRequest = (label: number, count: number) =>
+    [
+        `> Submit me the detailed plotpoints of the next chapter (chapter ${label} of ${count})`,
+        '> The plotpoint must includes all the important dialogues',
+        '> There must be at least 10 plotpoints for this chapter',
+        '> Must clearly outlines how the chapter starts, and how the chapter ends',
+        '> Do not include plotpoints or events that belong to any other chapter'
+    ].join('\n');
 
 describe('generationCreateNewStory', () => {
     // Track created test directories for cleanup
@@ -442,7 +445,12 @@ describe('generationCreateNewStory', () => {
     // no expansion request ("Expand the chapter ...") ever reaches the LLM.
     // Chapters are expanded afterwards, one at a time, via the PATCH
     // { expandChapterIndex } endpoint (generation-update-chapter.test.ts).
-    it('should generate the plotline only: one LLM call, skeleton payloads, no expansion', async () => {
+    //
+    // The plotline itself is generated PROGRESSIVELY: one structured call per
+    // chapter with each accepted chapter kept in the conversation as a tool
+    // call (generation-create-new-story.ts, "Progressive per-chapter plotpoint
+    // generation").
+    it('should generate the plotline only: one LLM call per chapter, skeleton payloads, no expansion', async () => {
         const storyId = `test-story-plotonly-${Date.now()}`;
         createdStoryIds.push(storyId);
         const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
@@ -460,14 +468,16 @@ describe('generationCreateNewStory', () => {
             format: vi.fn().mockImplementation((config: any) => {
                 const request = typeof config?.request === 'string' ? config.request : '';
                 seenRequests.push(request);
-                // A valid 2-chapter plotline — exactly matches chapterCount below.
+                // Progressive plotline: exactly ONE chapter per call — the
+                // request names it as "(chapter N of M)". Serve a valid
+                // chapter for each — 2 chapters matches chapterCount below.
+                // No `number` in the response: the server assigns it.
+                const idx = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1');
                 return Promise.resolve({
-                    response: {
-                        chapters: [
-                            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
-                            { number: '2', title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] }
-                        ]
-                    }
+                    response:
+                        idx === 2
+                            ? { title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] }
+                            : { title: 'Chapter One', plotpoints: ['Plot A'] }
                 });
             })
         } as any);
@@ -490,11 +500,10 @@ describe('generationCreateNewStory', () => {
             { timeout: 5000, interval: 10 }
         );
 
-        // Exactly ONE LLM call — the plotline request. No chapter expansion
+        // Exactly TWO LLM calls — one progressive plotline request per chapter
+        // (exact prompt text asserted). No chapter expansion request
         // (buildExpandRequest prompts) may have been attempted by this request.
-        expect(seenRequests.length).toBe(1);
-        const expandRequests = seenRequests.filter((r) => r.includes('Expand the chapter'));
-        expect(expandRequests).toEqual([]);
+        expect(seenRequests).toEqual([basePlotRequest(1, 2), basePlotRequest(2, 2)]);
 
         // No expanded .md files (the .md is only written during expansion).
         expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md'))).toEqual([]);
@@ -536,18 +545,99 @@ describe('generationCreateNewStory', () => {
         ]);
     });
 
-    it('should keep retries plotline-only: a retried story completes as a plotline without expansion', async () => {
-        // NOTE: the storyId must NOT end in `-retry-<digits>` — generateStory
-        // parses that suffix via /-retry-(\d+)$/ to seed retryIndex, so a
-        // literal `-retry-` in a fresh (non-retry) storyId would corrupt the
-        // retry-ID derivation (the new retry story would get a bogus id).
-        const storyId = `test-story-plotonlychain-${Date.now()}`;
-        const retryStoryId = `${storyId}-retry-1`;
-        const noRetryStoryId = `${storyId}-retry-2`;
-        createdStoryIds.push(storyId, retryStoryId, noRetryStoryId);
+    // ── Agentic plotline chain ────────────────────────────────────────────
+    // The progressive plotline generation must not only call the LLM once per
+    // chapter — it must also keep every accepted chapter in the conversation
+    // as a sequential tool call, so the request for chapter N sees the tool
+    // calls that produced chapters 1..N-1 (generation-create-new-story.ts,
+    // "Agentic chain step"). This test records every user/assistant message
+    // pushed to the client and asserts the FULL exact exchange sequence.
+    it('should chain chapter plotpoints as sequential tool calls in the conversation history (agentic)', async () => {
+        const storyId = `test-story-agentic-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const chapterFixtures = [
+            { number: '1', title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
+            { number: '2', title: 'Chapter Two', plotpoints: ['Plot point C'] },
+            { number: '3', title: 'Chapter Three', plotpoints: ['Plot point D'] }
+        ];
+
+        const exchanges: Array<[string, string]> = [];
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn((content: string) => {
+                exchanges.push(['user', content]);
+            }),
+            assistant: vi.fn((content: string) => {
+                exchanges.push(['assistant', content]);
+            }),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                const idx = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+                // The schema no longer asks the model for a chapter number —
+                // respond with only title/plotpoints; the server assigns the
+                // number by position (which lands in the tool-call message).
+                const { title, plotpoints } = chapterFixtures[idx] ?? chapterFixtures[0];
+                return Promise.resolve({ response: { title, plotpoints } });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 3 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Exact tool-call message committed after each accepted chapter —
+        // mirrors the 'respond' tool convention (simple-client.ts:1025).
+        const toolCallMessage = (label: number, chapter: (typeof chapterFixtures)[number]) =>
+            JSON.stringify({
+                tool_calls: [
+                    {
+                        id: `call_plotpoint_chapter_${label}`,
+                        type: 'function',
+                        function: { name: 'respond', arguments: JSON.stringify(chapter) }
+                    }
+                ]
+            });
+
+        // Full exact exchange sequence: client priming (createStoryClient +
+        // STORY_REQUEST_MESSAGE/storyline), then per chapter the committed
+        // request followed by the chapter's tool call.
+        expect(exchanges).toEqual([
+            ['user', 'Hey ENI'],
+            ['assistant', 'test opening'],
+            ['user', 'You know the story I like'],
+            ['assistant', TEST_STORYLINE],
+            ['user', basePlotRequest(1, 3)],
+            ['assistant', toolCallMessage(1, chapterFixtures[0])],
+            ['user', basePlotRequest(2, 3)],
+            ['assistant', toolCallMessage(2, chapterFixtures[1])],
+            ['user', basePlotRequest(3, 3)],
+            ['assistant', toolCallMessage(3, chapterFixtures[2])]
+        ]);
+    }, 30000);
+
+    it('should fail in place with byte-identical retries when the chapter call keeps rejecting', async () => {
+        // Exception-path retry: EVERY attempt of the failing chapter re-issues
+        // the identical payload (no escalation, no "you were wrong" hints),
+        // and NO [retry N] story entry is ever created — that chain only
+        // existed for the removed one-shot outline flow.
+        const storyId = `test-story-failinplace-${Date.now()}`;
+        createdStoryIds.push(storyId, `${storyId}-retry-1`); // retry dir must NOT appear
 
         const seenRequests: string[] = [];
-        let plotCalls = 0;
         vi.mocked(CLIENT.clone).mockReturnValue({
             system: vi.fn(),
             user: vi.fn(),
@@ -557,22 +647,9 @@ describe('generationCreateNewStory', () => {
             format: vi.fn().mockImplementation((config: any) => {
                 const request = typeof config?.request === 'string' ? config.request : '';
                 seenRequests.push(request);
-                // A plotline-only story must NEVER send an expansion request —
-                // if one appears, the plotOnly flag failed to carry over.
+                // A plotline-only story must NEVER send an expansion request.
                 expect(request.includes('Expand the chapter')).toBe(false);
-
-                plotCalls++;
-                // Attempt 1 (original story): the plot request fails → the
-                // story is marked failed and a retry story is spun up.
-                if (plotCalls === 1) {
-                    return Promise.reject(new Error('plot exploded'));
-                }
-                // Attempt 2 (retry story): a valid 1-chapter plotline.
-                return Promise.resolve({
-                    response: {
-                        chapters: [{ number: '1', title: 'Recovered Plot', plotpoints: ['Recovered plot point'] }]
-                    }
-                });
+                return Promise.reject(new Error('plot exploded'));
             })
         } as any);
 
@@ -583,58 +660,45 @@ describe('generationCreateNewStory', () => {
         );
         expect(result.status).toBe(200);
 
-        const originalPlotpointPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
-        const retryPlotpointPath = path.join(getStoryboardDir(retryStoryId), 'plotpoint.json');
-        // The original fails; the retry must complete AS PLOTLINE-ONLY.
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
         await vi.waitFor(
             () => {
-                expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).status).toBe('failed');
-                expect(JSON.parse(fs.readFileSync(retryPlotpointPath, 'utf-8')).status).toBe('completed');
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('failed');
             },
             { timeout: 5000, interval: 10 }
         );
 
-        // The original failure is recorded with the plot error.
-        expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8'))).toMatchObject({
+        // The failing chapter was retried in place: 1 initial +
+        // MAX_PLOT_ATTEMPTS(3) — EVERY attempt issued the byte-identical
+        // request (no strict/CRITICAL escalation lines ever appear).
+        expect(seenRequests).toEqual([
+            basePlotRequest(1, 1),
+            basePlotRequest(1, 1),
+            basePlotRequest(1, 1),
+            basePlotRequest(1, 1)
+        ]);
+
+        // The failure is recorded with the plot error.
+        expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'))).toMatchObject({
             storyId,
             status: 'failed',
             validation: { valid: false, reason: 'plot exploded' }
         });
 
-        // The retry story is plotline-complete: its chapter is a SKELETON
-        // (empty revisions, no .md file), not an expanded chapter.
-        const retryChapterDir = path.join(getStoryboardDir(retryStoryId), 'chapter');
-        expect(fs.readdirSync(retryChapterDir).filter((f) => f.endsWith('.md'))).toEqual([]);
-        const retrySkeleton = JSON.parse(fs.readFileSync(path.join(retryChapterDir, 'chapter-001.json'), 'utf-8'));
-        expect(retrySkeleton).toEqual({
-            storyId: retryStoryId,
-            storyline: TEST_STORYLINE,
-            chapterCount: 1,
-            chapterNumber: '1',
-            chapterIndex: 0,
-            title: 'Chapter 1',
-            plotpoints: ['Recovered plot point'],
-            context: {
-                appending: ['> 1: Recovered Plot' + SUMMARY_SEP + '- Recovered plot point'],
-                request: buildExpandRequest('1', 'Recovered Plot')
-            },
-            config: {
-                systemInstructions: 'test instructions',
-                openingMessage: 'test opening'
-            },
-            revisions: []
-        });
-
-        // The retry succeeded, so no third story (retry-2) may be spawned.
-        expect(fs.existsSync(getStoryboardDir(noRetryStoryId))).toBe(false);
+        // No [retry N] story entry may have been spawned.
+        expect(fs.existsSync(getStoryboardDir(`${storyId}-retry-1`))).toBe(false);
     }, 30000);
 
-    it('should mark current story as failed and spin up flat retry story when plotlines validation fails', async () => {
-        const storyId = `test-story-validation-${Date.now()}`;
-        createdStoryIds.push(storyId);
+    it('should retry a failing chapter with the byte-identical payload and complete once it succeeds', async () => {
+        // The core of the in-place retry: chapter 2 fails validation twice
+        // (empty plotpoints), then succeeds on the third attempt. All three
+        // chapter-2 requests must be byte-identical — the model gets another
+        // attempt without the server telling it that it was wrong.
+        const storyId = `test-story-chapter-retry-${Date.now()}`;
+        createdStoryIds.push(storyId, `${storyId}-retry-1`); // retry dir must NOT appear
 
-        let formatCalls = 0;
-
+        const seenRequests: string[] = [];
+        let chapter2Calls = 0;
         vi.mocked(CLIENT.clone).mockReturnValue({
             system: vi.fn(),
             user: vi.fn(),
@@ -643,7 +707,73 @@ describe('generationCreateNewStory', () => {
             messages: [],
             format: vi.fn().mockImplementation((config: any) => {
                 const request = typeof config?.request === 'string' ? config.request : '';
-                formatCalls++;
+                seenRequests.push(request);
+
+                const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+                if (chapterIndex === 1) {
+                    chapter2Calls++;
+                    // Attempts 1-2: usable structure but no plotpoints.
+                    if (chapter2Calls <= 2) {
+                        return Promise.resolve({ response: { title: 'Chapter Two', plotpoints: [] } });
+                    }
+                    // Attempt 3: valid chapter — the story completes.
+                    return Promise.resolve({ response: { title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] } });
+                }
+                return Promise.resolve({ response: { title: 'Chapter One', plotpoints: ['Plot A'] } });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 2 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Chapter 2's three attempts are byte-identical re-issues of the same
+        // payload — no escalation lines, no "your previous answer was wrong".
+        expect(seenRequests).toEqual([
+            basePlotRequest(1, 2),
+            basePlotRequest(2, 2),
+            basePlotRequest(2, 2),
+            basePlotRequest(2, 2)
+        ]);
+
+        // The story completes once the chapter succeeds; the validation record
+        // counts the 2 in-place retries chapter 2 consumed.
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.validation).toEqual({ valid: true, reason: 'plotline complete', attempt: 2 });
+        expect(finalMeta.chapters).toEqual([
+            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+            { number: '2', title: 'Chapter Two', plotpoints: ['Plot B', 'Plot C'] }
+        ]);
+
+        // No [retry N] story entry may have been spawned.
+        expect(fs.existsSync(getStoryboardDir(`${storyId}-retry-1`))).toBe(false);
+    }, 30000);
+
+    it('should mark current story as failed in place (no retry entry) when a chapter keeps failing validation', async () => {
+        const storyId = `test-story-validation-${Date.now()}`;
+        createdStoryIds.push(storyId, `${storyId}-retry-1`); // retry dir must NOT appear
+
+        const seenRequests: string[] = [];
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                seenRequests.push(request);
 
                 // Chapter expansion calls — always succeed
                 if (request.includes('Expand the chapter')) {
@@ -655,30 +785,22 @@ describe('generationCreateNewStory', () => {
                     });
                 }
 
-                // Plotpoint generation calls for the ORIGINAL story (calls 1-4):
-                // Return wrong chapter count (2 instead of requested 3) to trigger validation failure.
-                // 1 initial call + 3 validation retries = 4 calls before markCompleteAndRetry fires.
-                if (formatCalls <= 4) {
+                // Progressive plotline calls: ONE chapter per call, named by
+                // "(chapter N of M)" in the request.
+                const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+
+                // Chapter 1 succeeds on its first call; chapter 2 answers EVERY
+                // attempt with a refusal plotpoint — 1 initial +
+                // MAX_PLOT_ATTEMPTS(3) retries = 4 calls of the identical
+                // payload, then the story fails in place.
+                // (No `number` in responses — the server assigns it.)
+                if (chapterIndex === 1) {
                     return Promise.resolve({
-                        response: {
-                            chapters: [
-                                { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
-                                { number: '2', title: 'Chapter Two', plotpoints: ['Plot B'] }
-                            ]
-                        }
+                        response: { title: 'Chapter Two', plotpoints: ['I cannot fulfill this request.'] }
                     });
                 }
-
-                // Plotpoint generation calls for the RETRY story (call 5+):
-                // Return correct chapter count so retry succeeds.
                 return Promise.resolve({
-                    response: {
-                        chapters: [
-                            { number: '1', title: 'Chapter One', plotpoints: ['Plot A', 'Plot B'] },
-                            { number: '2', title: 'Chapter Two', plotpoints: ['Plot C', 'Plot D'] },
-                            { number: '3', title: 'Chapter Three', plotpoints: ['Plot E', 'Plot F'] }
-                        ]
-                    }
+                    response: { title: 'Chapter One', plotpoints: ['Plot A'] }
                 });
             })
         } as any);
@@ -691,50 +813,52 @@ describe('generationCreateNewStory', () => {
         const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
         expect(result.status).toBe(200);
 
-        // Wait for the initial story to exhaust validation retries and fire retry
-        // Then wait for the retry story to complete plotpoint + chapter expansion
-        await new Promise((resolve) => setTimeout(resolve, 8000));
+        // Deterministic failure signal: markStoryFailed writes 'failed'.
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('failed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
 
-        // Verify the original story was marked as failed
-        const storyboardDir = getStoryboardDir(storyId);
-        const plotpointJsonPath = path.join(storyboardDir, 'plotpoint.json');
-        expect(fs.existsSync(plotpointJsonPath)).toBe(true);
+        // 5 calls total: 1 accepted (chapter 1) + 4 identical chapter-2
+        // attempts — every retry re-issued the byte-identical payload.
+        expect(seenRequests).toEqual([
+            basePlotRequest(1, 3),
+            basePlotRequest(2, 3),
+            basePlotRequest(2, 3),
+            basePlotRequest(2, 3),
+            basePlotRequest(2, 3)
+        ]);
 
+        // Verify the story was marked as failed with the refusal reason
         const originalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
         expect(originalMeta.status).toBe('failed');
-        expect(originalMeta.validation).toBeDefined();
         expect(originalMeta.validation.valid).toBe(false);
-        expect(originalMeta.validation.reason).toContain('Chapter count mismatch');
+        expect(originalMeta.validation.reason).toContain('refusal phrase');
+        // 3 retry attempts were consumed by chapter 2 before giving up.
+        expect(originalMeta.validation.attempt).toBe(3);
 
-        // Verify retry story was created with FLAT ID (not nested)
-        const retryStoryId = `${storyId}-retry-1`;
-        const retryStoryboardDir = getStoryboardDir(retryStoryId);
-        createdStoryIds.push(retryStoryId);
+        // The accepted chapter and the broken chapter are both preserved.
+        expect(originalMeta.chapters).toEqual([
+            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
+            { number: '2', title: 'Chapter Two', plotpoints: ['I cannot fulfill this request.'] }
+        ]);
 
-        expect(fs.existsSync(retryStoryboardDir)).toBe(true);
-
-        // Verify retry plotpoint.json exists and has correct metadata
-        const retryPlotpointJsonPath = path.join(retryStoryboardDir, 'plotpoint.json');
-        expect(fs.existsSync(retryPlotpointJsonPath)).toBe(true);
-
-        const retryMeta = JSON.parse(fs.readFileSync(retryPlotpointJsonPath, 'utf-8'));
-        expect(retryMeta.storyId).toBe(retryStoryId);
-        expect(retryMeta.storyName).toContain('[retry 1]');
-        expect(retryMeta.storyline).toBe(TEST_STORYLINE);
-        expect(retryMeta.chapterCount).toBe(TEST_CHAPTER_COUNT);
-
-        // Verify the retry story ID is flat (not nested like "story-retry-1-retry-2")
-        expect(retryStoryId).not.toContain('retry-retry');
-        expect(retryStoryId.endsWith('-retry-1')).toBe(true);
+        // No [retry N] story entry may have been spawned.
+        expect(fs.existsSync(getStoryboardDir(`${storyId}-retry-1`))).toBe(false);
     }, 30000);
 
-    it('should produce flat retry IDs across multiple consecutive failures', async () => {
-        const storyId = `test-story-flat-${Date.now()}`;
-        createdStoryIds.push(storyId);
+    it('should never create retry entries, even across consecutive failing stories', async () => {
+        // Two independent stories both fail (every chapter refuses). Neither
+        // may spawn a -retry-N entry — the storyboard directory must contain
+        // exactly the two requested story entries.
+        const storyA = `test-story-chain-a-${Date.now()}`;
+        const storyB = `test-story-chain-b-${Date.now()}`;
+        createdStoryIds.push(storyA, storyB);
 
-        let formatCalls = 0;
-
-        vi.mocked(CLIENT.clone).mockReturnValue({
+        vi.mocked(CLIENT.clone).mockImplementation((): any => ({
             system: vi.fn(),
             user: vi.fn(),
             assistant: vi.fn(),
@@ -742,9 +866,6 @@ describe('generationCreateNewStory', () => {
             messages: [],
             format: vi.fn().mockImplementation((config: any) => {
                 const request = typeof config?.request === 'string' ? config.request : '';
-                formatCalls++;
-
-                // Chapter expansion calls — always succeed
                 if (request.includes('Expand the chapter')) {
                     return Promise.resolve({
                         response: {
@@ -753,71 +874,44 @@ describe('generationCreateNewStory', () => {
                         }
                     });
                 }
-
-                // ALL plotpoint calls return wrong chapter count (1 instead of 3).
-                // This exhausts MAX_PLOT_ATTEMPTS for every story and triggers markCompleteAndRetry.
-                // Each story makes 1 initial + MAX_PLOT_ATTEMPTS(3) retries = 4 format calls.
+                // Every plotpoint call refuses — chapter 1 of both stories
+                // exhausts its per-chapter retry budget (4 calls each).
                 return Promise.resolve({
-                    response: {
-                        chapters: [
-                            { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] }
-                        ]
-                    }
+                    response: { title: 'Chapter One', plotpoints: ['I cannot fulfill this request.'] }
                 });
             })
-        } as any);
+        }));
 
-        const parameters = createMockParameters(storyId, {
-            storyline: TEST_STORYLINE,
-            chapterCount: 3
-        });
+        for (const storyId of [storyA, storyB]) {
+            const result = await generationCreateNewStory(
+                mockContext,
+                createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 3 }),
+                { root: projectRoot }
+            );
+            expect(result.status).toBe(200);
+        }
 
-        const result = await generationCreateNewStory(mockContext, parameters, { root: projectRoot });
-        expect(result.status).toBe(200);
-
-        // Wait long enough for: original → retry-1 → retry-2 to all exhaust and fail
-        // Each story takes ~4 fast format calls. Wait generously for async processing.
-        await new Promise((resolve) => setTimeout(resolve, 12000));
-
-        // Verify first retry exists with flat ID
-        const retry1StoryId = `${storyId}-retry-1`;
-        const retry1Dir = getStoryboardDir(retry1StoryId);
-        createdStoryIds.push(retry1StoryId);
-        expect(fs.existsSync(retry1Dir)).toBe(true);
-
-        // Verify retry-1 plotpoint.json has failed status
-        const retry1Meta = JSON.parse(
-            fs.readFileSync(path.join(retry1Dir, 'plotpoint.json'), 'utf-8')
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(path.join(getStoryboardDir(storyA), 'plotpoint.json'), 'utf-8')).status).toBe('failed');
+                expect(JSON.parse(fs.readFileSync(path.join(getStoryboardDir(storyB), 'plotpoint.json'), 'utf-8')).status).toBe('failed');
+            },
+            { timeout: 5000, interval: 10 }
         );
-        expect(retry1Meta.status).toBe('failed');
-        expect(retry1Meta.storyId).toBe(retry1StoryId);
 
-        // The critical assertion: retry-1 ID is flat
-        expect(retry1StoryId).toBe(`${storyId}-retry-1`);
-
-        // Verify second retry exists with flat ID (NOT "story-retry-1-retry-2")
-        const retry2StoryId = `${storyId}-retry-2`;
-        const retry2Dir = getStoryboardDir(retry2StoryId);
-        createdStoryIds.push(retry2StoryId);
-        expect(fs.existsSync(retry2Dir)).toBe(true);
-
-        const retry2Meta = JSON.parse(
-            fs.readFileSync(path.join(retry2Dir, 'plotpoint.json'), 'utf-8')
-        );
-        expect(retry2Meta.storyId).toBe(retry2StoryId);
-        expect(retry2Meta.storyName).toContain('[retry 2]');
-
-        // The critical assertion: retry-2 ID is flat, NOT nested
-        expect(retry2StoryId).toBe(`${storyId}-retry-2`);
-        expect(retry2StoryId).not.toContain('retry-retry');
+        // The storyboard directory contains exactly the two story entries —
+        // failure never spawns -retry-N directories.
+        const entries = fs
+            .readdirSync(path.join(projectRoot, DATABASE_BASE_DIR))
+            .filter((id) => id.includes('-retry-'));
+        expect(entries).toEqual([]);
     }, 30000);
 
-    it('should create a separate retry when outline retries exhaust with missing plotpoints', async () => {
+    it('should fail in place preserving chapters when a chapter never supplies plotpoints', async () => {
         const storyId = `test-story-outline-failure-${Date.now()}`;
-        const retryStoryId = `${storyId}-retry-1`;
-        createdStoryIds.push(storyId, retryStoryId);
+        createdStoryIds.push(storyId, `${storyId}-retry-1`); // retry dir must NOT appear
 
-        let formatCalls = 0;
+        const seenRequests: string[] = [];
         vi.mocked(CLIENT.clone).mockReturnValue({
             system: vi.fn(),
             user: vi.fn(),
@@ -826,7 +920,7 @@ describe('generationCreateNewStory', () => {
             messages: [],
             format: vi.fn().mockImplementation((config: any) => {
                 const request = typeof config?.request === 'string' ? config.request : '';
-                formatCalls++;
+                seenRequests.push(request);
 
                 if (request.includes('Expand the chapter')) {
                     return Promise.resolve({
@@ -837,27 +931,19 @@ describe('generationCreateNewStory', () => {
                     });
                 }
 
-                // The original story returns the correct chapter count but never
-                // supplies plotpoints for chapter two, exhausting outline retries.
-                if (formatCalls <= 4) {
+                // Progressive plotline calls: ONE chapter per call, named by
+                // "(chapter N of M)" in the request.
+                const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+
+                // Chapter 1 succeeds; chapter 2 never supplies plotpoints —
+                // its identical payload is retried until the budget exhausts.
+                if (chapterIndex === 1) {
                     return Promise.resolve({
-                        response: {
-                            chapters: [
-                                { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
-                                { number: '2', title: 'Chapter Two', plotpoints: [] }
-                            ]
-                        }
+                        response: { title: 'Chapter Two', plotpoints: [] }
                     });
                 }
-
-                // The separate retry receives a complete outline and can expand.
                 return Promise.resolve({
-                    response: {
-                        chapters: [
-                            { number: '1', title: 'Chapter One', plotpoints: ['Retry Plot A'] },
-                            { number: '2', title: 'Chapter Two', plotpoints: ['Retry Plot B'] }
-                        ]
-                    }
+                    response: { title: 'Chapter One', plotpoints: ['Plot A'] }
                 });
             })
         } as any);
@@ -874,21 +960,32 @@ describe('generationCreateNewStory', () => {
             () => {
                 expect(fs.existsSync(originalPlotpointPath)).toBe(true);
                 expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).status).toBe('failed');
-                expect(fs.existsSync(getStoryboardDir(retryStoryId))).toBe(true);
             },
             { timeout: 5000, interval: 10 }
         );
 
+        // 1 accepted chapter-1 call + 4 identical chapter-2 attempts.
+        expect(seenRequests).toEqual([
+            basePlotRequest(1, 2),
+            basePlotRequest(2, 2),
+            basePlotRequest(2, 2),
+            basePlotRequest(2, 2),
+            basePlotRequest(2, 2)
+        ]);
+
+        // The accepted chapter and the broken chapter are both preserved.
         expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).chapters).toEqual([
             { number: '1', title: 'Chapter One', plotpoints: ['Plot A'] },
             { number: '2', title: 'Chapter Two', plotpoints: [] }
         ]);
+
+        // No [retry N] story entry may have been spawned.
+        expect(fs.existsSync(getStoryboardDir(`${storyId}-retry-1`))).toBe(false);
     }, 30000);
 
     it('should keep a failed story immutable when a late plot stream callback arrives', async () => {
         const storyId = `test-story-late-failure-${Date.now()}`;
-        const retryStoryId = `${storyId}-retry-1`;
-        createdStoryIds.push(storyId, retryStoryId);
+        createdStoryIds.push(storyId, `${storyId}-retry-1`); // retry dir must NOT appear
 
         let formatCalls = 0;
         let latePlotUpdate: ((update: string) => Promise<void>) | undefined;
@@ -900,33 +997,17 @@ describe('generationCreateNewStory', () => {
             clone: vi.fn().mockReturnThis(),
             messages: [],
             format: vi.fn().mockImplementation((config: any) => {
-                const request = typeof config?.request === 'string' ? config.request : '';
                 formatCalls++;
-
-                // The retry story must finish its chapter so the test covers
-                // the real fire-and-forget retry path, not only directory setup.
-                if (request.includes('Expand the chapter')) {
-                    return Promise.resolve({
-                        response: {
-                            title: 'Recovered Chapter',
-                            content: 'Recovered chapter content. ' + 'word '.repeat(3500)
-                        }
-                    });
-                }
 
                 if (formatCalls === 1) {
                     // Capture the wrapped callback and reject the initial plot
                     // request. Calling it after failure simulates a late SSE
                     // update from a request that could not be cancelled.
-                    latePlotUpdate = config.onUpdate;
-                    return Promise.reject(new Error('Initial plot request failed'));
+                    latePlotUpdate = config?.onUpdate;
                 }
-
-                return Promise.resolve({
-                    response: {
-                        chapters: [{ number: '1', title: 'Recovered Plot', plotpoints: ['Recovered plot point'] }]
-                    }
-                });
+                // Every attempt of the single chapter rejects — the story
+                // fails in place after the retry budget is exhausted.
+                return Promise.reject(new Error('Initial plot request failed'));
             })
         } as any);
 
@@ -950,120 +1031,29 @@ describe('generationCreateNewStory', () => {
         const failedSnapshot = fs.readFileSync(originalPlotpointPath, 'utf-8');
 
         // This callback would previously rewrite the failed plotpoint.json with
-        // status="generating" and partial chapters after the retry started.
-        await latePlotUpdate!(JSON.stringify({ chapters: [{ number: '1', title: 'Late', plotpoints: ['Late'] }] }));
+        // status="generating" and partial chapters after failure was committed.
+        // Progressive plotpoint streaming sends ONE chapter object per call.
+        await latePlotUpdate!(JSON.stringify({ number: '1', title: 'Late', plotpoints: ['Late'] }));
 
         expect(fs.readFileSync(originalPlotpointPath, 'utf-8')).toBe(failedSnapshot);
-        expect(fs.existsSync(getStoryboardDir(retryStoryId))).toBe(true);
-    }, 30000);
-
-    it('should skip an existing retry directory instead of overwriting its failed output', async () => {
-        const storyId = `test-story-retry-collision-${Date.now()}`;
-        const existingRetryId = `${storyId}-retry-1`;
-        const nextRetryId = `${storyId}-retry-2`;
-        createdStoryIds.push(storyId, existingRetryId, nextRetryId);
-
-        // Simulate a failed retry from an earlier generation chain. Its exact
-        // bytes are asserted after the new chain selects the next free ID.
-        const existingRetryDir = getStoryboardDir(existingRetryId);
-        fs.mkdirSync(existingRetryDir, { recursive: true });
-        const existingRetryData = {
-            storyId: existingRetryId,
-            status: 'failed',
-            validation: { valid: false, reason: 'preserve this retry' },
-            chapters: [{ number: '1', title: 'Old failure', plotpoints: ['Old plot'] }]
-        };
-        const existingRetryPath = path.join(existingRetryDir, 'plotpoint.json');
-        fs.writeFileSync(existingRetryPath, JSON.stringify(existingRetryData, null, 2), 'utf-8');
-
-        let formatCalls = 0;
-        vi.mocked(CLIENT.clone).mockReturnValue({
-            system: vi.fn(),
-            user: vi.fn(),
-            assistant: vi.fn(),
-            clone: vi.fn().mockReturnThis(),
-            messages: [],
-            format: vi.fn().mockImplementation((config: any) => {
-                const request = typeof config?.request === 'string' ? config.request : '';
-                formatCalls++;
-
-                if (request.includes('Expand the chapter')) {
-                    return Promise.resolve({
-                        response: {
-                            title: 'Recovered Chapter',
-                            content: 'Recovered chapter content. ' + 'word '.repeat(3500)
-                        }
-                    });
-                }
-
-                if (formatCalls === 1) {
-                    return Promise.reject(new Error('Initial plot request failed'));
-                }
-
-                return Promise.resolve({
-                    response: {
-                        chapters: [{ number: '1', title: 'Recovered Plot', plotpoints: ['Recovered plot point'] }]
-                    }
-                });
-            })
-        } as any);
-
-        const result = await generationCreateNewStory(
-            mockContext,
-            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 1 }),
-            { root: projectRoot }
-        );
-        expect(result.status).toBe(200);
-
-        const originalPlotpointPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
-        await vi.waitFor(
-            () => {
-                expect(fs.existsSync(originalPlotpointPath)).toBe(true);
-                expect(JSON.parse(fs.readFileSync(originalPlotpointPath, 'utf-8')).status).toBe('failed');
-                expect(fs.existsSync(getStoryboardDir(nextRetryId))).toBe(true);
-            },
-            { timeout: 5000, interval: 10 }
-        );
-
-        expect(JSON.parse(fs.readFileSync(existingRetryPath, 'utf-8'))).toEqual(existingRetryData);
-        expect(fs.existsSync(getStoryboardDir(existingRetryId))).toBe(true);
-        expect(fs.existsSync(getStoryboardDir(nextRetryId))).toBe(true);
+        // No [retry N] story entry may have been spawned.
+        expect(fs.existsSync(getStoryboardDir(`${storyId}-retry-1`))).toBe(false);
     }, 30000);
 
     it('should keep the failed story unchanged when the same story request is submitted again', async () => {
         const storyId = `test-story-duplicate-request-${Date.now()}`;
-        const retryStoryId = `${storyId}-retry-1`;
-        createdStoryIds.push(storyId, retryStoryId);
+        createdStoryIds.push(storyId, `${storyId}-retry-1`); // retry dir must NOT appear
 
-        let formatCalls = 0;
         vi.mocked(CLIENT.clone).mockReturnValue({
             system: vi.fn(),
             user: vi.fn(),
             assistant: vi.fn(),
             clone: vi.fn().mockReturnThis(),
             messages: [],
-            format: vi.fn().mockImplementation((config: any) => {
-                const request = typeof config?.request === 'string' ? config.request : '';
-                formatCalls++;
-
-                if (request.includes('Expand the chapter')) {
-                    return Promise.resolve({
-                        response: {
-                            title: 'Recovered Chapter',
-                            content: 'Recovered chapter content. ' + 'word '.repeat(3500)
-                        }
-                    });
-                }
-
-                if (formatCalls === 1) {
-                    return Promise.reject(new Error('Initial plot request failed'));
-                }
-
-                return Promise.resolve({
-                    response: {
-                        chapters: [{ number: '1', title: 'Recovered Plot', plotpoints: ['Recovered plot point'] }]
-                    }
-                });
+            format: vi.fn().mockImplementation(() => {
+                // Every attempt of the single chapter rejects — the story
+                // fails in place after its retry budget is exhausted.
+                return Promise.reject(new Error('Initial plot request failed'));
             })
         } as any);
 
@@ -1097,7 +1087,8 @@ describe('generationCreateNewStory', () => {
 
         await new Promise((resolve) => setTimeout(resolve, 25));
         expect(fs.readFileSync(originalPlotpointPath, 'utf-8')).toBe(failedSnapshot);
-        expect(fs.existsSync(getStoryboardDir(retryStoryId))).toBe(true);
+        // Neither the failure nor the duplicate may spawn a [retry N] entry.
+        expect(fs.existsSync(getStoryboardDir(`${storyId}-retry-1`))).toBe(false);
     }, 30000);
 
     // ── Append request (the dashboard's "[->]" append dialog) ─────────────
@@ -1245,16 +1236,16 @@ describe('generationCreateNewStory', () => {
                         }
                     });
                 }
-                // Initial plotline generation: the standard 3 chapters.
-                return Promise.resolve({
-                    response: {
-                        chapters: [
-                            { number: '1', title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
-                            { number: '2', title: 'Chapter Two', plotpoints: ['Plot point C'] },
-                            { number: '3', title: 'Chapter Three', plotpoints: ['Plot point D'] }
-                        ]
-                    }
-                });
+                // Initial plotline generation: progressive, ONE chapter per
+                // call — the request names it as "(chapter N of M)".
+                // (No `number` in responses — the server assigns it.)
+                const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+                const initial = [
+                    { title: 'Chapter One', plotpoints: ['Plot point A', 'Plot point B'] },
+                    { title: 'Chapter Two', plotpoints: ['Plot point C'] },
+                    { title: 'Chapter Three', plotpoints: ['Plot point D'] }
+                ];
+                return Promise.resolve({ response: initial[chapterIndex] ?? initial[0] });
             })
         } as any);
 

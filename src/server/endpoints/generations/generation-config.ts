@@ -28,7 +28,13 @@ export const STORY_REQUEST_MESSAGE = 'You know the story I like';
 // Retry & Timeout
 // ---------------------------------------------------------------------------
 
-/** Maximum number of attempts when plotpoint validation fails. */
+/**
+ * Maximum number of retries per chapter when plotpoint generation or
+ * validation fails. The failed chapter's payload is re-issued VERBATIM on
+ * every retry — the model gets another attempt without the server telling it
+ * that it was wrong (progressive per-chapter generation,
+ * generation-create-new-story.ts).
+ */
 export const MAX_PLOT_ATTEMPTS = 3;
 
 /**
@@ -87,17 +93,6 @@ export const MAX_STALL_RETRIES = 10;
  * is terminated and retried (up to MAX_STALL_RETRIES times).
  */
 export const PLOTPOINT_STALL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
-// ---------------------------------------------------------------------------
-// Story Retry on Failure
-// ---------------------------------------------------------------------------
-
-/**
- * Maximum number of story entries to create (original + retries) when
- * plotpoint generation keeps failing. Each failure marks the current story
- * as "complete" (without chapter expansion) and spins up a new story entry.
- */
-export const MAX_STORY_ATTEMPTS = 3;
 
 // ---------------------------------------------------------------------------
 // File System Paths (relative to the injected temporary/database root)

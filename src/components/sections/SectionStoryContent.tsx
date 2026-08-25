@@ -8,11 +8,16 @@
 //
 // Polling lifecycle (driven by useEffect on selected.id):
 //   1. When a story with chapterRequested > 0 is selected, start a pollStoryData
-//      loop (see api/storyboard.ts). Mark entry.isProcessing = true.
-//   2. Each onData callback updates the entry's data in the store — chapters
-//      appear as soon as plotpoint.json is written, then expand one by one.
+//      loop (see api/storyboard.ts). Mark entry.isProcessing = true on the
+//      FIRST poll of an entry; cache-only (missingFromServer) stories poll
+//      quietly in the background so the cached content stays undisturbed.
+//   2. Each onData callback updates the entry's data in the store (auto-
+//      persisted to the localStorage records cache) — chapters appear as soon
+//      as plotpoint.json is written, then expand one by one.
 //   3. The loop terminates when chapters.length >= chapterRequested, a hard error
-//      occurs, or the user selects a different story (cancellation).
+//      occurs, or the user selects a different story (cancellation). After
+//      termination a timer re-arms the effect after pollIntervalMs so the
+//      opened story keeps re-checking the server for updates at interval.
 //
 // Edge cases:
 //   - chapterRequested == 0 means the story was added locally but never submitted
@@ -710,8 +715,24 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
     // Ref that holds the *currently polled* entry.id so the effect's cleanup
     // can flip shouldStop(). Using a ref avoids stale-closure problems across
-    // re-renders.
+    // re-renders. Nulled ONLY by the effect cleanup (deselect/unmount) — after
+    // a poll loop resolves, the ref stays set so the "repeat at interval"
+    // refresh timer can verify it's still serving the selected story.
     const activePollIdRef = React.useRef<number | null>(null);
+
+    // Entries that already had their FIRST visible poll pass. Subsequent
+    // poll runs for the same entry (effect restarts from onData growth,
+    // refresh cycles, re-selection) are quiet: they must not re-flip
+    // isProcessing on, otherwise the tab chip/banner would flicker on every
+    // background cache↔server sync. Component-scoped (lives for the whole
+    // dashboard session), keyed by the stable client-side entry id.
+    const polledStoriesRef = React.useRef<Set<number>>(new Set());
+
+    // Refresh-cycle ticker. When a poll loop terminates (data / error) a
+    // timer bumps this counter after pollIntervalMs, re-running the polling
+    // effect — the opened story keeps syncing server→cache at interval even
+    // after its first load completes.
+    const [pollCycle, setPollCycle] = React.useState(0);
 
     // ── Expanded chapter state ─────────────────────────────────────────
     // Tracks which chapter indices are currently expanded. Persisted to
@@ -1102,7 +1123,17 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         }
     }, [selected, store.config.baseUrl, deleteState.chapterIndex, deleteState.revisionIndex, setStore]);
 
-    // Polling effect.
+    // Polling effect — the per-story leg of the cache-first cycle:
+    //   load cached data (already on the entry from hydration/merge, rendered
+    //   immediately below) → check the server (pollStoryData GETs) → update the
+    //   store on every response (auto-persisted to the cache) → repeat at
+    //   interval (a resolved loop re-arms itself via pollCycle).
+    //
+    // Cache-only stories (missingFromServer) are polled QUIETLY: the server
+    // answers 404, pollStoryData keeps looping (its built-in interval), and
+    // the moment the story reappears on the server its data streams in — but
+    // the cached content on screen is the truth until then, so the processing
+    // badge/banner stays off.
     React.useEffect(() => {
         if (!selected || !selected.storyId) {
             return;
@@ -1117,23 +1148,54 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         const { storyId, chapterRequested, isRemote } = selected;
         const baseUrl = store.config.baseUrl;
         const pollIntervalMs = store.config.pollIntervalMs;
+        const cacheOnly = Boolean(selected.missingFromServer);
+        const firstPoll = !polledStoriesRef.current.has(entryId);
+        polledStoriesRef.current.add(entryId);
 
-        // Mark as processing so the tab chip shows the badge.
-        setStore((prev) => ({
-            ...prev,
-            records: prev.records.map((e) =>
-                e.id === entryId ? { ...e, isProcessing: true, error: '' } : e
-            )
-        }));
+        // Processing-flag policy at poll start:
+        //   - cache-only story         → force OFF (the cached copy is the
+        //                                truth; the server check is silent).
+        //   - first poll of an entry   → ON (fresh generate / first open — the
+        //                                badge communicates real generation).
+        //   - later runs (data-driven restarts, refresh cycles) → untouched
+        //                                (append/re-expand own their own flag).
+        // selected is re-synced from the patched records so the banner reflects
+        // the flag immediately instead of waiting for the next onData tick.
+        setStore((prev) => {
+            const records = prev.records.map((e) => {
+                if (e.id !== entryId) return e;
+                if (cacheOnly) return { ...e, isProcessing: false, error: '' };
+                if (firstPoll) return { ...e, isProcessing: true, error: '' };
+                return { ...e, error: '' };
+            });
+            const selected =
+                prev.selected?.id === entryId
+                    ? records.find((e) => e.id === entryId) ?? prev.selected
+                    : prev.selected;
+            return { ...prev, records, selected };
+        });
 
         activePollIdRef.current = entryId;
 
         const shouldStop = () => activePollIdRef.current !== entryId;
 
+        // Re-arm timer for the next cache↔server sync cycle (see pollCycle).
+        let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleRefresh = () => {
+            refreshTimer = setTimeout(() => {
+                // Only re-arm while this effect still owns the entry — the
+                // cleanup clears both the timer and the ref on deselect/unmount.
+                if (activePollIdRef.current === entryId) {
+                    setPollCycle((c) => c + 1);
+                }
+            }, pollIntervalMs);
+        };
+
         // onData fires on every successful GET; updates the store entry in place.
         // Also propagates meta.storyline into entry.storyline and meta.storyName
         // into entry.storyName/title so the sidebar and header update with a
-        // meaningful name once the server responds.
+        // meaningful name once the server responds. A data answer also clears
+        // missingFromServer — the story provably exists on the server again.
         const onData = (data: { chapters: any[]; meta: any }) => {
             setStore((prev) => {
                 const records = prev.records.map((e) =>
@@ -1142,6 +1204,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                               ...e,
                               data: { chapters: data.chapters, meta: data.meta },
                               storyline: data.meta?.storyline ?? e.storyline,
+                              missingFromServer: false,
                               ...(data.meta?.storyName
                                   ? { storyName: data.meta.storyName, title: data.meta.storyName }
                                   : {})
@@ -1165,38 +1228,47 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             onData
         })
             .then((result) => {
-                setStore((prev) => {
-                    const records = prev.records.map((e) => {
-                        if (e.id !== entryId) return e;
-                        if (result.status === 'error') {
-                            return { ...e, isProcessing: false, error: result.error };
-                        }
-                        return { ...e, isProcessing: false };
+                // 'stopped' means a newer effect run (or unmount) owns this
+                // entry — leave the store alone so the replacement run's flag
+                // isn't raced back off.
+                if (result.status === 'stopped') return;
+                if (activePollIdRef.current === entryId) {
+                    setStore((prev) => {
+                        const records = prev.records.map((e) => {
+                            if (e.id !== entryId) return e;
+                            if (result.status === 'error') {
+                                return { ...e, isProcessing: false, error: result.error };
+                            }
+                            return { ...e, isProcessing: false };
+                        });
+                        const selected =
+                            prev.selected?.id === entryId
+                                ? records.find((e) => e.id === entryId) ?? prev.selected
+                                : prev.selected;
+                        return { ...prev, records, selected };
                     });
-                    const selected =
-                        prev.selected?.id === entryId
-                            ? records.find((e) => e.id === entryId) ?? prev.selected
-                            : prev.selected;
-                    return { ...prev, records, selected };
-                });
+                }
+                // Repeat at interval: check the server again after pollIntervalMs.
+                scheduleRefresh();
             })
             .catch((err: Error) => {
-                setStore((prev) => ({
-                    ...prev,
-                    records: prev.records.map((e) =>
-                        e.id === entryId
-                            ? { ...e, isProcessing: false, error: err.message }
-                            : e
-                    )
-                }));
-            })
-            .finally(() => {
                 if (activePollIdRef.current === entryId) {
-                    activePollIdRef.current = null;
+                    setStore((prev) => ({
+                        ...prev,
+                        records: prev.records.map((e) =>
+                            e.id === entryId
+                                ? { ...e, isProcessing: false, error: err.message }
+                                : e
+                        )
+                    }));
                 }
+                // Even a hard failure deserves a later retry — the server may
+                // just be briefly down.
+                scheduleRefresh();
             });
 
         return () => {
+            if (refreshTimer !== null) clearTimeout(refreshTimer);
             if (activePollIdRef.current === entryId) {
                 activePollIdRef.current = null;
             }
@@ -1207,7 +1279,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         selected?.storyId,
         selected?.chapterRequested,
         selected?.isRemote,
+        selected?.missingFromServer,
         selected?.data?.chapters.length,
+        pollCycle,
         store.config.baseUrl,
         store.config.pollIntervalMs
     ]);

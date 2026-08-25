@@ -13,8 +13,10 @@
 // Auto-refresh behavior:
 //   - On mount, fetches the collection once (via BootstrapLayer) to seed the store.
 //   - A useEffect runs every REFRESH_INTERVAL_MS (30s) to re-fetch the collection
-//     and merge new entries while preserving the current selection and any
-//     locally-cached chapter data.
+//     and merge new entries while preserving the current selection, any
+//     locally-cached chapter data, and any cache-only stories that are missing
+//     from the server response (they stay visible — deleting them purges the
+//     local cache without a server call). See mergeServerStoryList.
 //   - Errors surface as a non-blocking loadWarning (same as BootstrapLayer).
 //
 // Visual: elevated translucent sidebar with modern story TILES. Each tile is
@@ -32,7 +34,7 @@ import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
 import { fetchStoryList } from '../../api';
-import { getLastStoryId } from '../../context/store';
+import { mergeServerStoryList } from '../../context/store';
 
 // How often to auto-refresh the story list from the server (30 seconds).
 const REFRESH_INTERVAL_MS = 30_000;
@@ -275,46 +277,29 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
     );
 
     // Auto-refresh: periodically fetch collection to pick up new stories.
+    // Uses the same cache↔server merge as the initial bootstrap (see
+    // mergeServerStoryList in src/context/store.tsx): server metadata refreshes
+    // cached entries, new server stories are added, and cache-only stories
+    // stay visible (flagged missingFromServer). The merged records are written
+    // back to localStorage by the store's auto-persist effect — this is the
+    // "repeat at interval" leg of the cache-first cycle.
     React.useEffect(() => {
         const baseUrl = store.config.baseUrl;
 
         const refresh = async () => {
             try {
                 const { stories } = await fetchStoryList(baseUrl);
-                if (!stories || stories.length === 0) return;
-
-                const entries = stories.map((meta, i) => ({
-                    id: -(Date.now() + i + 1),
-                    storyId: meta.storyId,
-                    storyName: meta.storyName,
-                    title: meta.storyName || meta.storyId.slice(0, 8),
-                    storyline: '',
-                    chapterRequested: meta.chapterRequested,
-                    chapterCompleted: meta.chapterCompleted,
-                    createdDate: meta.createdDate,
-                    status: meta.status,
-                    data: null,
-                    isProcessing: false,
-                    error: '',
-                    isRemote: true
-                }));
-
                 setStore((prev) => {
-                    const prevByStoryId = new Map(prev.records.map((r) => [r.storyId, r]));
-                    const merged = entries.map((e) => prevByStoryId.get(e.storyId) ?? e);
-
-                    let selected = prev.selected;
-                    if (prev.selected) {
-                        selected = merged.find((m) => m.storyId === prev.selected!.storyId) ?? (merged.length > 0 ? merged[0] : null);
-                    } else if (merged.length > 0) {
-                        // No current selection — try localStorage, then fall back to first entry
-                        const lastStoryId = getLastStoryId();
-                        selected = (lastStoryId ? merged.find((m) => m.storyId === lastStoryId) : null) ?? merged[0];
-                    }
-                    return { ...prev, records: merged, selected, loadWarning: undefined };
+                    // Empty server list → null: keep the cached records as-is
+                    // (the cache may hold stories the server lost; only a
+                    // non-empty response is a trustworthy sync signal).
+                    const merged = mergeServerStoryList(prev, stories ?? []);
+                    if (!merged) return prev;
+                    return { ...prev, records: merged.records, selected: merged.selected, loadWarning: undefined };
                 });
             } catch {
-                // Silently ignore refresh errors.
+                // Silently ignore refresh errors — cached records remain the
+                // displayed source of truth while the server is unreachable.
             }
         };
 

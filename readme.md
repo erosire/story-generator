@@ -210,11 +210,13 @@ All server code lives in `src/server/endpoints/generations/`.
 4. **PATCH** reads stored LLM context from `chapter-XXX.json` → expands (single chapter + chain to pending chapters) or rewrites via background task
 5. **DELETE** removes the entire `temporary/database/storyboard/{storyId}/` directory
 
-### Story Retry
+### Progressive Plotline Generation + Chapter Retry
 
-When plotpoint generation fails (refusals, validation errors, stalls), the handler:
-1. Marks the current story as `status: "failed"` in `plotpoint.json`
-2. Spins up a new story entry with `-retry-N` suffix (up to `MAX_STORY_ATTEMPTS = 3`)
+Plotline generation is progressive: the server requests ONE chapter's plotpoints per LLM call, accumulating accepted chapters in the conversation as sequential tool calls (the request for chapter N sees the tool calls that produced chapters 1..N-1).
+
+When a chapter's call fails (refusals, validation errors, stalls), the SAME chapter payload is retried in place — byte-identical, up to `MAX_PLOT_ATTEMPTS = 3` retries. The model gets another attempt without the server telling it that it was wrong; the failed attempt never enters the conversation chain.
+
+If a chapter still fails after its retries, the story is marked `status: "failed"` in `plotpoint.json` with every accepted chapter preserved. No `-retry-N` story entries are created; the failed entry can be inspected, forked, or expanded manually.
 
 ### Rolling Context Window
 
@@ -333,9 +335,8 @@ distribution/story-generator/
 | `MIN_WORDS_PER_CHAPTER` | 3000 | Minimum words per expanded chapter |
 | `TARGET_WORD_COUNT_PROMPT` | 15,000 words | Target word count in expansion prompt |
 | `MIN_PLOTPOINTS_PER_CHAPTER` | 10 | Minimum plotpoints per chapter |
-| `MAX_PLOT_ATTEMPTS` | 3 | Retries when plotpoint validation fails |
+| `MAX_PLOT_ATTEMPTS` | 3 | Retries per chapter when plotpoint generation/validation fails (identical payload re-issued) |
 | `MAX_STALL_RETRIES` | 10 | Retries when LLM streaming stalls |
-| `MAX_STORY_ATTEMPTS` | 3 | Maximum story entries (original + retries) |
 | `PREVIOUS_EXPANDED_CHAPTERS` | 4 | Rolling context window size |
 | `PLOTPOINT_STALL_TIMEOUT_MS` | 5 min | Stall detection timeout |
 | `DATABASE_BASE_DIR` | `temporary/database/storyboard` | Story storage path |
