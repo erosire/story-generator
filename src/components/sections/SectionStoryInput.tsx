@@ -195,7 +195,7 @@ export const SectionStoryInput: React.FC = React.memo(() => {
             }));
 
             // POST to the server. clientId is the top-right dropdown selection
-            // (persisted in store.config.clientId, default 'Qwen3_8') — the
+            // (persisted in store.config.clientId, default 'Qwen27B') — the
             // server validates it against its CLIENTS map and applies it to
             // this generation only; it is never stored with the story.
             await createNewStory(

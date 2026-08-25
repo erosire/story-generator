@@ -49,13 +49,14 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         // Order is the object insertion order of CLIENTS — the UI preserves it.
+        // 'Qwen27B' is the renamed 'Qwen3_8' entry; the retired Modal (GLM52)
+        // and Router (OpenRouter) deployments stay commented out of CLIENTS.
         expect(result.response.clients).toEqual([
             'Nvidia',
-            'Modal',
             'KIMIK3',
-            'Qwen3_8',
+            'Qwen27B',
             'Makora',
-            'Router',
+            'DeepSeek',
             'Telnyx'
         ]);
     });
@@ -77,6 +78,8 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        expect(result.response.clients.length).toBe(7);
+        // 6 selectable ids: Nvidia, KIMIK3, Qwen27B, Makora, DeepSeek, Telnyx
+        // (Modal/Router commented out of the CLIENTS map).
+        expect(result.response.clients.length).toBe(6);
     });
 });

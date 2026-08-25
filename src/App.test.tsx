@@ -69,10 +69,10 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('sidebar')).toBeDefined();
         // The top-right LLM client dropdown is always rendered. Before the
         // server's client list arrives it offers only the default client id
-        // (localStorage cleared in beforeEach → DEFAULT_CLIENT_ID 'Qwen3_8').
+        // (localStorage cleared in beforeEach → DEFAULT_CLIENT_ID 'Qwen27B').
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
         expect(clientSelect).toBeDefined();
-        expect(clientSelect.value).toBe('Qwen3_8');
+        expect(clientSelect.value).toBe('Qwen27B');
         // Theming contract: the native select opts into the dark color scheme
         // (inline, so the UA paints the control + popup dark instead of the
         // default grey-on-white) and carries the sg-select/sg-input class
@@ -94,7 +94,7 @@ describe('StoryGeneratorApp', () => {
             }
             if (url === CLIENTS_URL) {
                 // Server advertises its selectable CLIENTS keys (generation-config.ts).
-                return Promise.resolve(mockResponse(200, { clients: ['Nvidia', 'Modal', 'Qwen3_8'] }));
+                return Promise.resolve(mockResponse(200, { clients: ['Nvidia', 'KIMIK3', 'Qwen27B'] }));
             }
             return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
         });
@@ -103,12 +103,12 @@ describe('StoryGeneratorApp', () => {
 
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
         // Default selection is the package default client id.
-        expect(clientSelect.value).toBe('Qwen3_8');
+        expect(clientSelect.value).toBe('Qwen27B');
 
         // The options fetch resolves and replaces the options list.
         await waitFor(() => {
             const options = Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value);
-            expect(options).toEqual(['Nvidia', 'Modal', 'Qwen3_8']);
+            expect(options).toEqual(['Nvidia', 'KIMIK3', 'Qwen27B']);
         });
 
         // Pick a different LLM client.
@@ -154,7 +154,7 @@ describe('StoryGeneratorApp', () => {
         const CLIENTS_URL = `${BASE_URL.replace(/\/generations$/, '/clients')}`;
         let clientsCalls = 0;
         // Full key set from the server's CLIENTS map (generation-config.ts).
-        const ALL_CLIENTS = ['Nvidia', 'Modal', 'KIMIK3', 'Qwen3_8', 'Makora', 'Router', 'Telnyx'];
+        const ALL_CLIENTS = ['Nvidia', 'KIMIK3', 'Qwen27B', 'Makora', 'DeepSeek', 'Telnyx'];
         fetchMock.mockImplementation((url: string, init?: any) => {
             if (url === CLIENTS_URL && (!init || init.method === 'GET')) {
                 clientsCalls++;
@@ -179,7 +179,7 @@ describe('StoryGeneratorApp', () => {
         await act(async () => {
             for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
         });
-        expect(readOptions()).toEqual(['Qwen3_8']);
+        expect(readOptions()).toEqual(['Qwen27B']);
 
         // Advance past CLIENTS_FETCH_RETRY_MS (10s) to fire the first retry.
         await act(async () => {
@@ -206,7 +206,7 @@ describe('StoryGeneratorApp', () => {
         const CLIENTS_URL = `${BASE_URL.replace(/\/generations$/, '/clients')}`;
         let clientsCalls = 0;
         // Full key set from the server's CLIENTS map (generation-config.ts).
-        const ALL_CLIENTS = ['Nvidia', 'Modal', 'KIMIK3', 'Qwen3_8', 'Makora', 'Router', 'Telnyx'];
+        const ALL_CLIENTS = ['Nvidia', 'KIMIK3', 'Qwen27B', 'Makora', 'DeepSeek', 'Telnyx'];
         fetchMock.mockImplementation((url: string, init?: any) => {
             if (url === CLIENTS_URL && (!init || init.method === 'GET')) {
                 clientsCalls++;
@@ -228,11 +228,11 @@ describe('StoryGeneratorApp', () => {
 
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
         // Before any fetch resolves the dropdown offers only the default id.
-        expect(clientSelect.value).toBe('Qwen3_8');
+        expect(clientSelect.value).toBe('Qwen27B');
 
         // The StrictMode remount's own fetch must complete and populate the
         // dropdown with every client — not just the first (disposed) attempt,
-        // which would leave the options pinned to Qwen3_8.
+        // which would leave the options pinned to Qwen27B.
         await waitFor(() => {
             const options = Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value);
             expect(options).toEqual(ALL_CLIENTS);
@@ -250,14 +250,14 @@ describe('StoryGeneratorApp', () => {
         const view = render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
-        expect(clientSelect.value).toBe('Qwen3_8'); // no stored choice yet → default
+        expect(clientSelect.value).toBe('Qwen27B'); // no stored choice yet → default
         // Default fetch mock answers the clients URL with 200 { stories: [] } →
         // fetchClientOptions degrades to [] (no clients key), so the option
-        // list stays pinned to the selected id and 'Modal' is not selectable.
-        // Simulate the server advertising Modal to make the choice meaningful.
+        // list stays pinned to the selected id and 'Nvidia' is not selectable.
+        // Simulate the server advertising Nvidia to make the choice meaningful.
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (url === `${BASE_URL.replace(/\/generations$/, '/clients')}`) {
-                return Promise.resolve(mockResponse(200, { clients: ['Qwen3_8', 'Modal'] }));
+                return Promise.resolve(mockResponse(200, { clients: ['Qwen27B', 'Nvidia'] }));
             }
             return Promise.resolve(mockResponse(200, { stories: [] }));
         });
@@ -267,13 +267,21 @@ describe('StoryGeneratorApp', () => {
         const select2 = screen.getByTestId('client-select') as HTMLSelectElement;
         await waitFor(() => {
             const options = Array.from(select2.querySelectorAll('option')).map((o) => o.value);
-            expect(options).toEqual(['Qwen3_8', 'Modal']);
+            expect(options).toEqual(['Qwen27B', 'Nvidia']);
         });
 
-        // Choose Modal — the store's effect persists it to localStorage.
-        fireEvent.change(select2, { target: { value: 'Modal' } });
+        // Choose Nvidia — the change handler persists it SYNCHRONOUSLY (the
+        // write completes before the event dispatch returns). This is the real
+        // durability contract: passive useEffect writes are deferred and can be
+        // skipped when the page reloads/unloads before the flush, which lost
+        // the user's selection in production. (jsdom fireEvent/act flushes
+        // passive effects too, so this line cannot fail for an effect-based
+        // write in isolation — the reload-restore round-trip below is the
+        // regression guard; keep both.)
+        fireEvent.change(select2, { target: { value: 'Nvidia' } });
+        expect(localStorage.getItem('storyGenerator:clientId')).toBe('Nvidia');
         await waitFor(() => {
-            expect(localStorage.getItem('storyGenerator:clientId')).toBe('Modal');
+            expect(localStorage.getItem('storyGenerator:clientId')).toBe('Nvidia');
         });
         view2.unmount();
 
@@ -282,7 +290,7 @@ describe('StoryGeneratorApp', () => {
         const select3 = screen.getByTestId('client-select') as HTMLSelectElement;
         // The provider reads localStorage before any options fetch resolves,
         // so the FIRST render already reflects the user's previous choice.
-        expect(select3.value).toBe('Modal');
+        expect(select3.value).toBe('Nvidia');
     });
 
     it('toggles the sidebar open and closed via the hamburger icon', async () => {
@@ -407,7 +415,7 @@ describe('StoryGeneratorApp', () => {
         // The POST should have been made.
         //
         // The payload carries the top-right dropdown selection as clientId
-        // (store.config.clientId, default 'Qwen3_8' — localStorage is cleared
+        // (store.config.clientId, default 'Qwen27B' — localStorage is cleared
         // in beforeEach so the package default always applies in tests).
         await waitFor(() => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
@@ -415,7 +423,7 @@ describe('StoryGeneratorApp', () => {
             expect(JSON.parse(postCall![1].body)).toEqual({
                 storyline: 'A test story',
                 chapterCount: 3,
-                clientId: 'Qwen3_8'
+                clientId: 'Qwen27B'
             });
         });
     });
@@ -477,11 +485,11 @@ describe('StoryGeneratorApp', () => {
             expect(postCall).toBeDefined();
             expect(postCall![0]).toBe(`${BASE_URL}/${storyId}`);
             // clientId is the store's default client id (localStorage cleared
-            // in beforeEach → DEFAULT_CLIENT_ID = 'Qwen3_8').
+            // in beforeEach → DEFAULT_CLIENT_ID = 'Qwen27B').
             expect(JSON.parse(postCall![1].body)).toEqual({
                 storyline: 'A sci-fi adventure on Mars.',
                 chapterCount: 3,
-                clientId: 'Qwen3_8'
+                clientId: 'Qwen27B'
             });
         });
 
@@ -789,14 +797,14 @@ describe('StoryGeneratorApp', () => {
         });
 
         // The append POST hits the SAME storyId with the append envelope +
-        // the top-right dropdown's clientId (default 'Qwen3_8' in tests).
+        // the top-right dropdown's clientId (default 'Qwen27B' in tests).
         await waitFor(() => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
             expect(postCall).toBeDefined();
             expect(postCall[0]).toBe(`${BASE_URL}/append-story-1`);
             expect(JSON.parse(postCall![1].body)).toEqual({
                 append: { chapterCount: 2, notes: 'the arc turns dark' },
-                clientId: 'Qwen3_8'
+                clientId: 'Qwen27B'
             });
         });
 

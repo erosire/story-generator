@@ -296,10 +296,14 @@ type StoryStoreContextValue = {
 };
 
 // Default LLM client id. Must stay in sync with the server-side fallback in
-// generation-config.ts (`CLIENT = CLIENTS.Qwen3_8`) — the server applies the
+// generation-config.ts (`CLIENT = CLIENTS.Qwen27B`) — the server applies the
 // same default when a payload carries no clientId, so a fresh UI and a
 // server-only fallback can never disagree on which model a story is written by.
-export const DEFAULT_CLIENT_ID = 'Qwen3_8';
+// ('Qwen27B' is the selectable-id rename of the old 'Qwen3_8' CLIENTS entry —
+// see generation-config.ts. A stale 'Qwen3_8' persisted in localStorage is
+// rejected by the server's parseClientId with the current id list, which is
+// why this constant must move in lockstep with the CLIENTS map.)
+export const DEFAULT_CLIENT_ID = 'Qwen27B';
 
 const DEFAULT_CONFIG: StoryStore['config'] = {
     // Default to the same base the runtime service tests use
@@ -350,9 +354,16 @@ export const StoryStoreProvider: React.FC<{
         setLastStoryId(store.selected?.storyId ?? null);
     }, [store.selected?.storyId]);
 
-    // Persist the selected LLM client id whenever it changes (dropdown choice in
-    // the dashboard header). Client-local convenience only — the server never
-    // stores clientId with a story.
+    // Persist the selected LLM client id whenever it changes. Client-local
+    // convenience only — the server never stores clientId with a story.
+    //
+    // BACKSTOP ONLY: the primary write happens synchronously in the dropdown's
+    // change handler (HeaderControls.handleClientChange in
+    // src/components/StoryGeneratorApp.tsx). Passive effects are deferred and
+    // not guaranteed to flush before page unload, so this effect must NOT be
+    // the only persistence path — it exists to cover any OTHER caller that
+    // writes config.clientId directly through setStore (tests, future
+    // consumers) without going through the dropdown handler.
     useEffect(() => {
         setClientId(store.config.clientId || null);
     }, [store.config.clientId]);

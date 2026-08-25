@@ -18,7 +18,7 @@
 
 import React from 'react';
 import { styled, theme } from '../styles';
-import { StoryStoreProvider, useStoryStore } from '../context';
+import { StoryStoreProvider, useStoryStore, setClientId } from '../context';
 import { updateStoryMeta, fetchClientOptions } from '../api';
 import { StoryGeneratorDashboard } from './StoryGeneratorDashboard';
 import { BootstrapLayer } from './BootstrapLayer';
@@ -239,7 +239,7 @@ const HeaderControls: React.FC<{
     // CLIENTS_FETCH_MAX_ATTEMPTS): the most common failure is a STALE server
     // deployment that predates the /v1/storyboard/clients route (answers 404)
     // — without retries the dropdown would be stuck on the persisted/default
-    // clientId forever (only 'Qwen3_8' visible) even after the deployment is
+    // clientId forever (only DEFAULT_CLIENT_ID visible) even after the deployment is
     // updated, forcing a full page reload. Retry stops after the first success;
     // on every failure the option list is left as-is so the dropdown always
     // stays usable (the current clientId is always offered as an option).
@@ -305,6 +305,15 @@ const HeaderControls: React.FC<{
 
     const handleClientChange = React.useCallback(
         (clientId: string) => {
+            // Persist SYNCHRONOUSLY inside the event handler — do not rely on
+            // the provider's passive useEffect backstop alone. React defers
+            // passive effects until after paint and never guarantees they flush
+            // before a page reload/navigation; a user who changed the dropdown
+            // and reloaded immediately lost the write (reported: "model
+            // selection does not remember on next page reload"). Event handlers
+            // always run to completion, so the localStorage write here is
+            // durable even if the page unloads before the next effect flush.
+            setClientId(clientId);
             setStore((prev) => ({
                 ...prev,
                 config: { ...prev.config, clientId }

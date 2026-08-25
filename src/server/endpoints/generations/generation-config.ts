@@ -190,8 +190,13 @@ export const CLIENTS = {
  * The default story-generation client, used when a request does not specify a
  * clientId. Kept for backward compatibility with code/tests that import CLIENT
  * directly — treat resolveClient() as the canonical selector.
+ *
+ * Qwen27B is the renamed Qwen3_8 entry (same QWEN3_8_CLIENT instance and
+ * QWEN3_8_SAMPLING_PARAMS — see the CLIENTS map above); the UI pins the same
+ * id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and a
+ * server-only fallback can never disagree on which model writes a story.
  */
-export const CLIENT = CLIENTS.Qwen3_8;
+export const CLIENT = CLIENTS.Qwen27B;
 
 // ---------------------------------------------------------------------------
 // Client Selection (per-request clientId)
@@ -206,7 +211,7 @@ export const CLIENT = CLIENTS.Qwen3_8;
  * here, the single source of truth for selectable story clients.
  *
  * Fallback behaviour: an absent, empty, or unknown clientId resolves to the
- * default client (CLIENT = CLIENTS.Qwen3_8) so a missing value can never
+ * default client (CLIENT = CLIENTS.Qwen27B) so a missing value can never
  * crash a generation. Request payloads that carry an EXPLICIT unknown id are
  * rejected earlier by parseClientId() — this fallback only covers calls that
  * never set a clientId at all.
