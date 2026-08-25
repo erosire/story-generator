@@ -443,8 +443,10 @@ const generateStory = async (options: {
     // assigns the number itself (chapterLabel) — asking the model to echo a
     // number would only invite off-by-one drift.
     const chapterPlotpointSchema = Type.Object({
-        title: Type.String({ description: 'the title of the chapter' }),
-        plotpoints: Type.Array(Type.String(), { description: 'the detailed plotpoints of the chapter' })
+        title: Type.String({ description: 'the title of the chapter without the chapter number' }),
+        plotpoints: Type.Array(Type.String(), {
+            description: 'the detailed plotpoints describes the important events in the chapter'
+        })
     });
 
     for (let chapterIndex = 0; chapterIndex < chapterCount; chapterIndex++) {
@@ -457,9 +459,9 @@ const generateStory = async (options: {
         // failures (the failed attempt never enters the conversation chain).
         const request = [
             `> Submit me the detailed plotpoints of the next chapter (chapter ${chapterLabel} of ${chapterCount})`,
-            '> The plotpoint must includes all the important dialogues',
-            `> There must be at least ${MIN_PLOTPOINTS_PER_CHAPTER} plotpoints for this chapter`,
-            '> Must clearly outlines how the chapter starts, and how the chapter ends',
+            '> The plotpoint must includes all the important dialogues happens in the chapter',
+            `> There must be at least ${MIN_PLOTPOINTS_PER_CHAPTER} plotpoints for the chapter`,
+            '> Must clearly outlines how the chapter starts, and how the chapter ends with the first and last plotpoints only',
             '> Do not include plotpoints or events that belong to any other chapter'
         ].join('\n');
 
