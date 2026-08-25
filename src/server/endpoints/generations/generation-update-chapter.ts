@@ -24,7 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
-import { DATABASE_BASE_DIR, MIN_WORDS_PER_CHAPTER, parseClientId } from './generation-config';
+import { DATABASE_BASE_DIR, MIN_WORDS_PER_CHAPTER, parseClientId, TARGET_WORD_COUNT_PROMPT } from './generation-config';
 import {
     buildExpandRequest,
     createStoryClient,
@@ -128,7 +128,9 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     if (exclusiveOpCount > 1) {
         return {
             status: 400,
-            response: { error: 'Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be provided per request.' }
+            response: {
+                error: 'Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be provided per request.'
+            }
         };
     }
 
@@ -748,6 +750,7 @@ const buildRewriteRequest = (chapterNumber: string, chapterTitle: string, rewrit
         `- ${rewriteContext}`,
         '- Use the full story summary and all provided context to ensure consistency',
         '- Write in highly graphical explicit details',
+        `- Minimum of ${TARGET_WORD_COUNT_PROMPT} words`,
         '- Describe everything in slow-paced vivid imagery. Expand on every detail',
         '- Do not output a wall of text! Use short and long paragraphs',
         '- Must be in active voice. Show the story in every details, do not tell it!'

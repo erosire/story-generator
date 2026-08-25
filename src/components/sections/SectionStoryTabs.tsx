@@ -17,11 +17,16 @@
 //     locally-cached chapter data.
 //   - Errors surface as a non-blocking loadWarning (same as BootstrapLayer).
 //
-// Visual: elevated translucent sidebar with refined story pills (pill-shaped
-// items, hover tint via sg-story-item class, accent-tinted selected state,
-// rounded badges, animated spinner instead of ⏳ emoji for the processing
-// indicator — though the processing badge text is still the literal ⏳ so the
-// test that asserts `not.toContain('⏳')` after polling completes keeps working).
+// Visual: elevated translucent sidebar with modern story TILES. Each tile is
+// a card-like button (elevated solid surface, hairline border, radius-lg
+// corners) with the story title on the first row and status badges on a
+// second row. Hover swaps to a brighter surface + crisper border via the
+// sg-story-item class hook; the selected tile reads as an elevated "active
+// card" (accent-tinted translucent surface, crisp accent border, brighter
+// accent rail) via the sg-story-selected class hook. Badges are rounded
+// status chips; the processing badge text is still the literal ⏳ so the
+// test that asserts `not.toContain('⏳')` after polling completes keeps
+// working (App.test.tsx:625).
 
 import React from 'react';
 import { styled, theme } from '../../styles';
@@ -39,18 +44,18 @@ const SidebarContainer = styled('div', {
     height: '100%',
     overflowY: 'auto',
     overflowX: 'hidden',
-    padding: '10px 0',
+    padding: '12px 0',
     boxSizing: 'border-box'
 });
 
 // Section label at the top of the sidebar.
 const SectionLabel = styled('div', {
-    padding: '6px 14px',
+    padding: '6px 16px 8px',
     fontSize: theme.fontSize.sm,
     fontWeight: 700,
     color: theme.textDim,
     textTransform: 'uppercase' as const,
-    letterSpacing: 1
+    letterSpacing: 1.2
 });
 
 // Positioning context for each story tile. Holds the select button (fills the
@@ -61,63 +66,98 @@ const SectionLabel = styled('div', {
 // ConversationDeleteButton pattern.
 const StoryEntry = styled('div', {
     position: 'relative',
-    margin: '2px 8px'
+    // Generous vertical rhythm so the card-like tiles read as separate cards
+    // instead of a single striped list.
+    margin: '5px 10px'
 });
 
-// Individual story item in the list. Pill-like row with hover tint applied via
-// the `sg-story-item` class hook (global.ts) on unselected items only — the
-// selected item uses its own elevated accent surface below. The deep right
-// padding keeps a long title/badges from sliding under the overlaid "x" delete
-// control pinned to the tile's top-right corner.
+// Individual story item — a modern TILE rather than a bare button row. Card
+// treatment: elevated solid surface2 over the sidebar's surface1, a crisp
+// hairline border, and radius-lg corners. The column layout stacks the title
+// (first row) over a meta row of status badges (second row), which reads as a
+// card and gives long titles a full row to render on before truncating.
+// Hover surface/border swap is applied via the `sg-story-item` class hook
+// (global.ts) on unselected tiles only — the selected tile uses its own
+// accent treatment below.
+//
+// The element stays a <button> (with data-testid/aria-pressed) — that is part
+// of the public test contract (App.test.tsx:410-412 finds tabs via
+// getByRole('button')). Only the presentation is tiled.
 const StoryItem = styled('button', {
     display: 'flex',
-    alignItems: 'center',
-    gap: 8,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 7,
     width: '100%',
-    padding: '9px 32px 9px 12px',
-    border: 'none',
-    borderRadius: theme.radiusMd,
-    backgroundColor: 'transparent',
+    // Deep right padding keeps the title/badges from sliding under the "x"
+    // delete control overlaid in the tile's top-right corner.
+    padding: '11px 30px 11px 12px',
+    border: `1px solid ${theme.border}`,
+    borderRadius: theme.radiusLg,
+    backgroundColor: theme.surface2,
     color: theme.text,
     cursor: 'pointer',
     textAlign: 'left' as const,
     fontSize: theme.fontSize.md,
     fontWeight: 500,
-    lineHeight: 1.4,
+    lineHeight: 1.35,
     boxSizing: 'border-box' as const,
-    transition: `background-color ${theme.transition}, color ${theme.transition}, box-shadow ${theme.transition}`
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}, color ${theme.transition}`
 });
 
-// Selected variant — modern Flat Design "active" treatment. Solid accent
-// fill + a brighter accent rail applied via the `sg-story-selected` class
-// hook (global.ts ::before). Flat: no gradient, no glow, no shadow — the row
-// reads as the current pick purely through solid color + crisp border.
+// Selected variant — modern "active card" treatment. Instead of the old solid
+// accent FILL, the selected tile is an accent-tinted translucent surface with
+// a crisp accent border plus a brighter accent rail applied via the
+// `sg-story-selected` class hook (global.ts ::before). Flat: no gradient, no
+// glow, no shadow — the card reads as the current pick purely through tint +
+// border + rail.
 //
 // Using a dedicated styled button (not StoryItem + inline override) keeps the
-// selected row's typography, padding, and weight consistent with itself.
+// selected tile's typography, padding, and weight consistent with itself.
 const StoryItemSelected = styled('button', {
     display: 'flex',
-    alignItems: 'center',
-    gap: 8,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 7,
     width: '100%',
     // Deep right padding so title/badges never slide under the overlaid "x"
-    // delete control in the tile's top-right corner.
-    padding: '9px 32px 9px 16px',
-    border: 'none',
-    borderRadius: theme.radiusMd,
+    // delete control; slightly deeper left padding leaves room for the accent
+    // rail drawn inside the left border by .sg-story-selected::before.
+    padding: '11px 30px 11px 16px',
+    border: `1px solid ${theme.accent}`,
+    borderRadius: theme.radiusLg,
     cursor: 'pointer',
     textAlign: 'left' as const,
     fontSize: theme.fontSize.md,
     fontWeight: 600,
-    lineHeight: 1.4,
+    lineHeight: 1.35,
     boxSizing: 'border-box' as const,
-    // Inline background is set to the solid accent so the row renders as flat
-    // even if the global stylesheet hasn't been injected yet (eg. during SSR).
-    // The .sg-story-selected class also sets backgroundColor; both agree.
-    backgroundColor: theme.accent,
+    // Inline background is set to the accent-tinted surface so the tile
+    // renders correctly even if the global stylesheet hasn't been injected
+    // yet (eg. during SSR). The .sg-story-selected class sets the same
+    // background; both agree.
+    backgroundColor: theme.accentSoft,
     color: '#ffffff',
-    // Flat: no shadow. The active rail (::before) supplies the visual emphasis.
-    transition: `background-color ${theme.transition}, color ${theme.transition}`
+    // Flat: no shadow. The accent border + rail supply the visual emphasis.
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}, color ${theme.transition}`
+});
+
+// Second row inside a tile — holds the status badges (chapter count,
+// processing indicator) as a horizontal chip cluster under the title.
+// ALWAYS rendered (even when it carries no badges) so every tile has the
+// same two-row structure and a constant height: row 1 = title (+ the
+// absolutely-pinned "x"), row 2 = details. The fixed 20px height reserves
+// the chip space on badgeless tiles instead of collapsing the row, which
+// would otherwise make tile heights jitter as badges come and go.
+const StoryTileMeta = styled('span', {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    width: '100%',
+    maxWidth: '100%',
+    height: 20,
+    boxSizing: 'border-box' as const
 });
 
 // The "x" delete control: absolutely pinned to the top-right corner of a story
@@ -127,8 +167,8 @@ const StoryItemSelected = styled('button', {
 // `sg-danger` class hook (global.ts) for destructive hover + disabled dimming.
 const StoryDeleteButton = styled('button', {
     position: 'absolute',
-    top: 8,
-    right: 8,
+    top: 9,
+    right: 9,
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -145,37 +185,59 @@ const StoryDeleteButton = styled('button', {
     transition: `background-color ${theme.transition}, color ${theme.transition}, opacity ${theme.transition}`
 });
 
-// Title text — truncated if too long.
+// Title text — first row of the tile. Spans the tile's full (padded) width
+// and truncates with an ellipsis if too long.
 const StoryTitle = styled('span', {
-    flex: '1 1 auto',
+    display: 'block',
+    width: '100%',
+    maxWidth: '100%',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const
 });
 
 // Badge for chapter count or processing status. Modern: pill-shaped surface
-// with hairline border so badges read as status chips on unselected rows.
+// with hairline border so badges read as status chips on the unselected tile.
+// The chip height is pinned to exactly 20px (matching the StoryTileMeta row)
+// via display:inline-flex + fixed height: the ⏳ processing glyph renders in
+// a system emoji font whose intrinsic size is larger than the 10px chip font
+// and would otherwise stretch the chip (and the tile) taller — odd one out.
 const Badge = styled('span', {
     flex: '0 0 auto',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 20,
+    boxSizing: 'border-box' as const,
+    overflow: 'hidden',
     fontSize: theme.fontSize.xs,
+    lineHeight: 1,
     fontWeight: 600,
     color: theme.textMuted,
     background: theme.surface3,
     border: `1px solid ${theme.border}`,
-    padding: '2px 7px',
+    padding: '0 7px',
     borderRadius: 999
 });
 
-// Selected-row badge — accent-tinted surface that pops on the gradient row
-// instead of blending into the dark background like the default Badge.
+// Selected-tile badge — accent-tinted chip that stays legible on the
+// accent-tinted "active card" surface instead of blending into it like the
+// default Badge. Same pinned 20px chip height as Badge (see above).
 const BadgeActive = styled('span', {
     flex: '0 0 auto',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 20,
+    boxSizing: 'border-box' as const,
+    overflow: 'hidden',
     fontSize: theme.fontSize.xs,
+    lineHeight: 1,
     fontWeight: 700,
     color: '#e0e1ff',
     background: 'rgba(129, 140, 248, 0.35)',
     border: '1px solid rgba(199, 205, 252, 0.45)',
-    padding: '2px 7px',
+    padding: '0 7px',
     borderRadius: 999
 });
 
@@ -287,19 +349,27 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     'aria-pressed': isSelected
                 };
 
+                // The details row (StoryTileMeta) is rendered UNCONDITIONALLY
+                // — an empty row keeps every tile at the same two-row height,
+                // so toggling badges (processing start/stop, chapters loading)
+                // never resizes a tile mid-list.
                 return (
                     <StoryEntry key={entry.id}>
                         {isSelected ? (
                             <StoryItemSelected {...itemProps} className="sg-story-selected">
                                 <StoryTitle>{entry.title}</StoryTitle>
-                                {chapterBadge && <BadgeActive>{chapterBadge}</BadgeActive>}
-                                {processingBadge && <BadgeActive>{processingBadge}</BadgeActive>}
+                                <StoryTileMeta>
+                                    {chapterBadge && <BadgeActive>{chapterBadge}</BadgeActive>}
+                                    {processingBadge && <BadgeActive>{processingBadge}</BadgeActive>}
+                                </StoryTileMeta>
                             </StoryItemSelected>
                         ) : (
                             <StoryItem {...itemProps} className="sg-story-item">
                                 <StoryTitle>{entry.title}</StoryTitle>
-                                {chapterBadge && <Badge>{chapterBadge}</Badge>}
-                                {processingBadge && <Badge>{processingBadge}</Badge>}
+                                <StoryTileMeta>
+                                    {chapterBadge && <Badge>{chapterBadge}</Badge>}
+                                    {processingBadge && <Badge>{processingBadge}</Badge>}
+                                </StoryTileMeta>
                             </StoryItem>
                         )}
                         {/* "x" delete — absolutely pinned to the tile's top-right

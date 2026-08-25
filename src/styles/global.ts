@@ -89,29 +89,34 @@ const sheet = `
 /* The header title is interactive only when a story is selected. */
 .sg-title-action { cursor: pointer; }
 
-/* Story pill — unselected rows get a flat solid hover surface. */
-.sg-story-item:hover { background-color: ${theme.surface2}; }
+/* Story tile — unselected tiles get a flat solid hover surface swap plus a
+   crisper border so the card edge "lights up" on pointer. No translate/lift. */
+.sg-story-item:hover { background-color: ${theme.surface3}; border-color: ${theme.borderStrong}; }
 
-/* Selected story item — modern Flat "active" treatment: a flat solid accent
-   surface (no gradient, no glow) with a brighter accent rail via ::before.
-   Hover swaps the surface to a slightly brighter accent solid. */
+/* Selected story tile — modern "active card" treatment: an accent-tinted
+   translucent surface with a crisp accent border (no solid fill, no gradient,
+   no glow), and a brighter accent rail via ::before. Hover deepens the tint
+   and brightens the border without ever becoming a solid block. */
 .sg-story-selected {
     position: relative;
     overflow: hidden;
-    background-color: ${theme.accent};
+    background-color: ${theme.accentSoft};
+    border-color: ${theme.accent};
     color: #ffffff;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
 }
 .sg-story-selected:hover {
-    background-color: ${theme.accentHover};
+    background-color: ${theme.accentSoftHover};
+    border-color: ${theme.accentHover};
 }
-/* Left rail — a solid lighter-accent bar that visually locks the pick in place. */
+/* Left rail — a solid lighter-accent bar that visually locks the pick in
+   place. Drawn inside the tile's left border (overflow: hidden clips it to
+   the card's rounded corners). */
 .sg-story-selected::before {
     content: "";
     position: absolute;
     left: 0; top: 0; bottom: 0;
     width: 3px;
-    background: #c7cdfc;
+    background: ${theme.accentHover};
 }
 
 /* Collapsible header — flat hover surface swap. */

@@ -45,6 +45,9 @@ export const theme = {
     accent: '#818cf8',
     accentHover: '#a5b4fc',
     accentSoft: 'rgba(129, 140, 248, 0.18)',
+    // Stronger accent tint — used for the selected sidebar tile's hover state
+    // so the active card visibly brightens without a solid fill swap.
+    accentSoftHover: 'rgba(129, 140, 248, 0.30)',
     accentRing: 'rgba(129, 140, 248, 0.45)',
 
     // Secondary accent for status badges (e.g. word-count timing chip).
