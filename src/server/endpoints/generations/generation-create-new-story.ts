@@ -25,6 +25,8 @@ import {
 } from './story-utils';
 import { forkStory } from './generation-fork-story';
 import { appendStoryChapters, validateAppendableStory } from './generation-append-story';
+import { resumeStoryPlotlines, validateResumableStory } from './generation-resume-story';
+import { acquireStoryJob, releaseStoryJob } from './generation-job-registry';
 
 // Generate the story in the background
 const generateStory = async (options: {
@@ -447,7 +449,7 @@ const generateStory = async (options: {
         title: Type.String({ description: 'the title of the chapter without the chapter number' }),
         plotpoints: Type.Array(Type.String(), {
             description:
-                'each entry describes the important events and dialogues that happens in the chapter. Must be in simple and concise dot points'
+                'List of plotpoints. Each entry summarises the important events and dialogues that happens in the chapter. Must be in simple and concise dot points'
         })
     });
 
@@ -834,9 +836,19 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
 
         // Start fork in the background (fire-and-forget). The fork re-expands
         // chapters with the same per-request clientId the caller selected.
-        forkStory({ newStoryId: storyId, sourceStoryId, chapterIndex, clientId, root: projectRoot }).catch((err) => {
-            console.error(`Story fork failed for storyId ${storyId}:`, err);
-        });
+        // The job registry guard rejects a second concurrent job on the same
+        // storyId (see generation-job-registry.ts).
+        if (!acquireStoryJob(storyId)) {
+            return {
+                status: 400,
+                response: { error: `Story '${storyId}' already has a generation job in progress` }
+            };
+        }
+        forkStory({ newStoryId: storyId, sourceStoryId, chapterIndex, clientId, root: projectRoot })
+            .catch((err) => {
+                console.error(`Story fork failed for storyId ${storyId}:`, err);
+            })
+            .finally(() => releaseStoryJob(storyId));
 
         return {
             status: 200,
@@ -891,19 +903,92 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         // generation takes seconds to minutes; the dashboard's GET polling
         // picks up the rewritten plotpoint.json when it lands. The per-request
         // clientId (validated above) selects the model for the plotline call.
+        if (!acquireStoryJob(storyId)) {
+            return {
+                status: 400,
+                response: { error: `Story '${storyId}' already has a generation job in progress` }
+            };
+        }
         appendStoryChapters({
             storyId,
             chapterCount,
             notes: notes !== undefined ? notes.trim() : undefined,
             clientId,
             root: projectRoot
-        }).catch((err) => {
-            console.error(`Story append failed for storyId ${storyId}:`, err);
-        });
+        })
+            .catch((err) => {
+                console.error(`Story append failed for storyId ${storyId}:`, err);
+            })
+            .finally(() => releaseStoryJob(storyId));
 
         return {
             status: 200,
             response: { storyId, appended: chapterCount }
+        };
+    }
+
+    // ── Resume request ────────────────────────────────────────────────────
+    // When body.resume is present, CONTINUE the existing story's interrupted
+    // plotline generation in place (the dashboard's resume button — shown
+    // when a story's chapter list no longer grows, e.g. after a server
+    // restart killed the original background job, or after markStoryFailed
+    // exhausted a chapter's retry budget). Unlike append (extends beyond the
+    // current total), resume fills UP TO the chapter target: the complete
+    // prefix of existing chapters is kept, the partial/failed tail is
+    // regenerated, and chapterCount moves only when resume.chapterCount
+    // raises it past meta.chapterCount (interrupted-append case).
+    //
+    // `resume.chapterCount` is optional — absent → the story's own
+    // meta.chapterCount target. Present → the total the client expected
+    // (its chapterRequested while it still remembers an interrupted append).
+    if (body.resume && typeof body.resume === 'object') {
+        const { chapterCount: resumeTarget } = body.resume;
+
+        if (resumeTarget !== undefined && (typeof resumeTarget !== 'number' || resumeTarget < 1)) {
+            return {
+                status: 400,
+                response: { error: 'resume.chapterCount must be a positive number' }
+            };
+        }
+
+        // Synchronous resumability check BEFORE firing the background job so
+        // the client surfaces the exact 400 reason (unknown story, corrupted
+        // plotpoint.json, no storyline, nothing left to resume).
+        let resumable;
+        try {
+            resumable = validateResumableStory(projectRoot, storyId, resumeTarget);
+        } catch (err: any) {
+            return {
+                status: 400,
+                response: { error: err?.message ?? `Story '${storyId}' cannot be resumed` }
+            };
+        }
+
+        // Start the resume in the background (fire-and-forget), guarded by the
+        // job registry so a click during genuine in-flight generation is a
+        // clean 400 instead of two writers corrupting plotpoint.json.
+        if (!acquireStoryJob(storyId)) {
+            return {
+                status: 400,
+                response: { error: `Story '${storyId}' already has a generation job in progress` }
+            };
+        }
+        resumeStoryPlotlines({
+            storyId,
+            chapterCount: resumeTarget,
+            clientId,
+            root: projectRoot
+        })
+            .catch((err) => {
+                console.error(`Story resume failed for storyId ${storyId}:`, err);
+            })
+            .finally(() => releaseStoryJob(storyId));
+
+        // `resumed` = chapters about to be regenerated; `chapterCount` = the
+        // final target so the client can align its chapterRequested.
+        return {
+            status: 200,
+            response: { storyId, resumed: resumable.remaining, chapterCount: resumable.target }
         };
     }
 
@@ -937,6 +1022,17 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
     // chapters afterwards via PATCH expandChapterIndex (generation-update-chapter.ts),
     // which consumes the skeleton chapter payloads written by the plotline
     // pass. Fork requests above keep the full plotline + expansion flow.
+    //
+    // The job registry guard turns a duplicate POST for the same storyId into
+    // a clean 400 instead of a background crash at the reserved-directory mkdir
+    // (generateStory fs.mkdirSync, line 59), and stops create from racing a
+    // resume already running for the same story.
+    if (!acquireStoryJob(storyId)) {
+        return {
+            status: 400,
+            response: { error: `Story '${storyId}' already has a generation job in progress` }
+        };
+    }
     generateStory({
         storyId,
         storyName,
@@ -945,9 +1041,11 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         clientId,
         plotOnly: true,
         root: projectRoot
-    }).catch((err) => {
-        console.error(`Story generation failed for storyId ${storyId}:`, err);
-    });
+    })
+        .catch((err) => {
+            console.error(`Story generation failed for storyId ${storyId}:`, err);
+        })
+        .finally(() => releaseStoryJob(storyId));
 
     // Return the storyId immediately to the requester
     return {

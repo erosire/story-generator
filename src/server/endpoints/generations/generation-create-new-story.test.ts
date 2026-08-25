@@ -1464,4 +1464,421 @@ describe('generationCreateNewStory', () => {
         expect(md).toContain('> 4: New Arc Begins');
         expect(md).toContain('- Plot H');
     }, 30000);
+
+    // ── Resume request (the dashboard's ▶ resume action) ──────────────────
+    // POST { resume: { chapterCount? } } against an EXISTING storyId continues
+    // an interrupted plotline generation: the complete prefix of chapters is
+    // kept, everything from the first incomplete chapter onward (a partially
+    // streamed / failed tail) is regenerated per-chapter up to the target,
+    // and skeleton chapter payloads are written only for chapters missing
+    // one. See generation-resume-story.ts.
+
+    // Seed a storyboard/<storyId>/plotpoint.json in the interrupted state
+    // (partial chapters, status 'generating' or 'failed', createdAt kept).
+    const seedInterruptedStory = (
+        id: string,
+        meta: Record<string, unknown>,
+        chapterPayloads: Record<number, Record<string, unknown>> = {}
+    ) => {
+        createdStoryIds.push(id);
+        const dir = getStoryboardDir(id);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+            path.join(dir, 'plotpoint.json'),
+            JSON.stringify(
+                {
+                    storyline: TEST_STORYLINE,
+                    chapterCount: 3,
+                    createdAt: '2026-08-01T00:00:00Z',
+                    chapters: [],
+                    status: 'generating',
+                    ...meta
+                },
+                null,
+                2
+            ),
+            'utf-8'
+        );
+        const chapterDir = path.join(dir, 'chapter');
+        fs.mkdirSync(chapterDir, { recursive: true });
+        for (const [index, payload] of Object.entries(chapterPayloads)) {
+            const padded = String(Number(index) + 1).padStart(3, '0');
+            fs.writeFileSync(path.join(chapterDir, `chapter-${padded}.json`), JSON.stringify(payload, null, 2), 'utf-8');
+        }
+        return { dir, plotpointJsonPath: path.join(dir, 'plotpoint.json'), chapterDir };
+    };
+
+    // Pin every clone to ONE instance whose format() answers per-chapter
+    // resume requests: the request names the chapter as "(chapter N of M)"
+    // and fixtures map N to deterministic titles/plotpoints (10 each so the
+    // minimum-count validation passes on the first attempt).
+    const pinResumeClient = (overrides: Record<number, { title: string; plotpoints: string[] }> = {}) => {
+        const seenRequests: string[] = [];
+        const assistantMessages: string[] = [];
+        const format = vi.fn().mockImplementation((config: any) => {
+            const request = typeof config?.request === 'string' ? config.request : '';
+            seenRequests.push(request);
+            const chapterIndex = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+            const fixture = overrides[chapterIndex] ?? {
+                title: `Resumed Chapter ${chapterIndex + 1}`,
+                plotpoints: plotpointsFor(`Resumed plot ${chapterIndex + 1}`)
+            };
+            return Promise.resolve({ response: fixture });
+        });
+        const assistant = vi.fn().mockImplementation((message: string) => {
+            assistantMessages.push(String(message));
+        });
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant,
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format,
+            structure: vi.fn().mockResolvedValue({ response: {} })
+        } as any);
+        return { seenRequests, assistantMessages, format };
+    };
+
+    it('should return 400 when resume.chapterCount is not a positive number', async () => {
+        const storyId = `test-resume-bad-count-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { resume: { chapterCount: 0 } }),
+            { root: projectRoot }
+        );
+
+        expect(result.status).toBe(400);
+        expect(result.response.error).toBe('resume.chapterCount must be a positive number');
+        // Validation fails before any background job — no story dir may exist.
+        expect(fs.existsSync(getStoryboardDir(storyId))).toBe(false);
+    });
+
+    it('should return 400 when the story to resume does not exist', async () => {
+        const storyId = `test-resume-unknown-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const result = await generationCreateNewStory(mockContext, createMockParameters(storyId, { resume: {} }), {
+            root: projectRoot
+        });
+
+        expect(result.status).toBe(400);
+        expect(result.response.error).toBe(`Story '${storyId}' not found`);
+    });
+
+    it('should return 400 with the exact reason when the story violates resume preconditions', async () => {
+        // Case 1: story without a storyline to resume from.
+        const noLine = `test-resume-noline-${Date.now()}`;
+        createdStoryIds.push(noLine);
+        fs.mkdirSync(getStoryboardDir(noLine), { recursive: true });
+        fs.writeFileSync(
+            path.join(getStoryboardDir(noLine), 'plotpoint.json'),
+            JSON.stringify({ storyline: '', chapterCount: 3, chapters: [], createdAt: '2026-08-01T00:00:00Z' }, null, 2),
+            'utf-8'
+        );
+        const r1 = await generationCreateNewStory(mockContext, createMockParameters(noLine, { resume: {} }), {
+            root: projectRoot
+        });
+        expect(r1.status).toBe(400);
+        expect(r1.response.error).toBe(`Story '${noLine}' has no storyline to resume from`);
+
+        // Case 2: plotline already complete — nothing to resume.
+        const complete = `test-resume-complete-${Date.now()}`;
+        createdStoryIds.push(complete);
+        fs.mkdirSync(getStoryboardDir(complete), { recursive: true });
+        fs.writeFileSync(
+            path.join(getStoryboardDir(complete), 'plotpoint.json'),
+            JSON.stringify(
+                {
+                    storyline: 'Seed',
+                    chapterCount: 1,
+                    createdAt: '2026-08-01T00:00:00Z',
+                    chapters: [{ number: '1', title: 'Done', plotpoints: plotpointsFor('Done plot') }],
+                    status: 'completed'
+                },
+                null,
+                2
+            ),
+            'utf-8'
+        );
+        const r2 = await generationCreateNewStory(mockContext, createMockParameters(complete, { resume: {} }), {
+            root: projectRoot
+        });
+        expect(r2.status).toBe(400);
+        expect(r2.response.error).toBe(`Story '${complete}' plotline generation is already complete (1/1 chapters)`);
+
+        // Both 400s mean NO background resume ran — plotpoint.json bytes must
+        // be exactly what was seeded in each story.
+        const seededNoLine = JSON.parse(fs.readFileSync(path.join(getStoryboardDir(noLine), 'plotpoint.json'), 'utf-8'));
+        expect(seededNoLine.chapters).toEqual([]);
+        const seededComplete = JSON.parse(fs.readFileSync(path.join(getStoryboardDir(complete), 'plotpoint.json'), 'utf-8'));
+        expect(seededComplete.status).toBe('completed');
+    });
+
+    it('should resume an interrupted story: keep the complete prefix, regenerate the tail per-chapter, write skeletons', async () => {
+        const storyId = `test-resume-success-${Date.now()}`;
+        // Interrupted create: chapter 1 complete (10 plotpoints), chapter 2
+        // partially streamed (4 plotpoints — below the mocked minimum of 10),
+        // chapter 3 never reached. status 'generating' is frozen by the dead
+        // background job. NO chapter payloads exist (plotOnly writes them only
+        // at full completion).
+        const originalChapter1 = { number: '1', title: 'Original Opening', plotpoints: plotpointsFor('Original A') };
+        const partialChapter2 = { number: '2', title: 'Half-Streamed', plotpoints: plotpointsFor('Partial B', 4) };
+        const { plotpointJsonPath, chapterDir } = seedInterruptedStory(storyId, {
+            storyId,
+            storyName: 'Resumed Tale',
+            chapterCount: 3,
+            status: 'generating',
+            chapters: [originalChapter1, partialChapter2]
+        });
+
+        const { seenRequests, format } = pinResumeClient();
+
+        const result = await generationCreateNewStory(mockContext, createMockParameters(storyId, { resume: {} }), {
+            root: projectRoot
+        });
+        // Chapter 1 is complete; chapters 2+3 are regenerated → 2 remaining.
+        expect(result.status).toBe(200);
+        expect(result.response).toEqual({ storyId, resumed: 2, chapterCount: 3 });
+
+        // Wait for the background resume to reach its terminal write.
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Exactly two per-chapter calls: chapter 2 and chapter 3 — chapter 1
+        // was complete and must NOT be regenerated.
+        expect(format).toHaveBeenCalledTimes(2);
+        expect(seenRequests).toEqual([basePlotRequest(2, 3), basePlotRequest(3, 3)]);
+
+        // Final outline: the original chapter 1 verbatim + regenerated 2/3.
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.storyId).toBe(storyId);
+        expect(finalMeta.storyName).toBe('Resumed Tale');
+        expect(finalMeta.storyline).toBe(TEST_STORYLINE);
+        expect(finalMeta.createdAt).toBe('2026-08-01T00:00:00Z');
+        expect(finalMeta.chapterCount).toBe(3);
+        expect(finalMeta.status).toBe('completed');
+        expect(finalMeta.validation).toEqual({ valid: true, reason: 'plotline complete (resumed)', attempt: 0 });
+        expect(finalMeta.chapters).toEqual([
+            originalChapter1,
+            { number: '2', title: 'Resumed Chapter 2', plotpoints: plotpointsFor('Resumed plot 2') },
+            { number: '3', title: 'Resumed Chapter 3', plotpoints: plotpointsFor('Resumed plot 3') }
+        ]);
+
+        // Skeleton payloads for ALL three chapters (the interrupted create had
+        // none) — each expandable via PATCH expandChapterIndex afterwards.
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json')).sort()).toEqual([
+            'chapter-001.json',
+            'chapter-002.json',
+            'chapter-003.json'
+        ]);
+        const skeleton = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+        expect(skeleton).toEqual({
+            storyId,
+            storyline: TEST_STORYLINE,
+            chapterCount: 3,
+            chapterNumber: '1',
+            chapterIndex: 0,
+            // writeChapterPayload writes the generic placeholder title (the LLM
+            // title lives only in the expand request — same contract as create).
+            title: 'Chapter 1',
+            plotpoints: originalChapter1.plotpoints,
+            context: {
+                appending: [
+                    '> 1: Original Opening' + SUMMARY_SEP + bulletList(plotpointsFor('Original A')),
+                    '> 2: Resumed Chapter 2' + SUMMARY_SEP + bulletList(plotpointsFor('Resumed plot 2')),
+                    '> 3: Resumed Chapter 3' + SUMMARY_SEP + bulletList(plotpointsFor('Resumed plot 3'))
+                ],
+                request: buildExpandRequest('1', 'Original Opening')
+            },
+            config: {
+                systemInstructions: 'test instructions',
+                openingMessage: 'test opening'
+            },
+            revisions: []
+        });
+    }, 30000);
+
+    it('should resume a failed story: the refusal-marked tail chapter fails completeness and is regenerated', async () => {
+        const storyId = `test-resume-failed-${Date.now()}`;
+        // markStoryFailed state: chapter 1 accepted; chapter 2 broke its retry
+        // budget with a REFUSAL — 10 plotpoints passes the count check alone,
+        // so only the refusal screen keeps it incomplete (create-parity).
+        const refusalChapter = {
+            number: '2',
+            title: 'Refused Chapter',
+            plotpoints: [...plotpointsFor('Refusal B', 9), 'I cannot fulfill this request']
+        };
+        const { plotpointJsonPath } = seedInterruptedStory(storyId, {
+            storyId,
+            chapterCount: 2,
+            status: 'failed',
+            validation: { valid: false, reason: 'chapter 2 contains refusal phrase', attempt: 3 },
+            chapters: [{ number: '1', title: 'Kept Opening', plotpoints: plotpointsFor('Kept A') }, refusalChapter]
+        });
+
+        const { seenRequests } = pinResumeClient();
+
+        const result = await generationCreateNewStory(mockContext, createMockParameters(storyId, { resume: {} }), {
+            root: projectRoot
+        });
+        // Only the refused tail chapter is regenerated.
+        expect(result.status).toBe(200);
+        expect(result.response).toEqual({ storyId, resumed: 1, chapterCount: 2 });
+
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // One per-chapter call (chapter 2 only), and the failure state is gone.
+        expect(seenRequests).toEqual([basePlotRequest(2, 2)]);
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.status).toBe('completed');
+        expect(finalMeta.validation).toEqual({ valid: true, reason: 'plotline complete (resumed)', attempt: 0 });
+        expect(finalMeta.chapters).toEqual([
+            { number: '1', title: 'Kept Opening', plotpoints: plotpointsFor('Kept A') },
+            { number: '2', title: 'Resumed Chapter 2', plotpoints: plotpointsFor('Resumed plot 2') }
+        ]);
+    }, 30000);
+
+    it('should honor a raised resume.chapterCount (interrupted-append case) and never overwrite existing chapter payloads', async () => {
+        const storyId = `test-resume-extend-${Date.now()}`;
+        // A COMPLETED 2-chapter story (status 'completed') — normally nothing
+        // to resume. The client still remembers an interrupted append target
+        // of 4, so it POSTs resume.chapterCount = 4. Chapter 1 already has an
+        // EXPANDED payload whose revisions must survive the resume.
+        const expandedPayload = {
+            storyId,
+            storyline: TEST_STORYLINE,
+            chapterCount: 2,
+            chapterNumber: '1',
+            chapterIndex: 0,
+            title: 'Chapter 1',
+            plotpoints: plotpointsFor('Kept A'),
+            context: { appending: ['> 1: Kept Opening'], request: buildExpandRequest('1', 'Kept Opening') },
+            config: { systemInstructions: 'x', openingMessage: 'y' },
+            revisions: [{ content: 'Expanded prose body', wordCount: 4000, generationTimeMs: 5000 }]
+        };
+        const { plotpointJsonPath, chapterDir } = seedInterruptedStory(
+            storyId,
+            {
+                storyId,
+                chapterCount: 2,
+                status: 'completed',
+                chapterCompleted: 1,
+                chapters: [
+                    { number: '1', title: 'Kept Opening', plotpoints: plotpointsFor('Kept A') },
+                    { number: '2', title: 'Kept Middle', plotpoints: plotpointsFor('Kept B') }
+                ]
+            },
+            { 0: expandedPayload }
+        );
+
+        const { seenRequests, assistantMessages } = pinResumeClient();
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { resume: { chapterCount: 4 } }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+        expect(result.response).toEqual({ storyId, resumed: 2, chapterCount: 4 });
+
+        await vi.waitFor(
+            () => {
+                const meta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+                expect(meta.chapterCount).toBe(4);
+                expect(meta.status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Chapters 3+4 generated as "(chapter 3 of 4)" / "(chapter 4 of 4)".
+        expect(seenRequests).toEqual([basePlotRequest(3, 4), basePlotRequest(4, 4)]);
+
+        // The priming pass saw chapter 1's EXPANDED PROSE (its latest revision
+        // replaces the plotpoint summary in the committed assistant context).
+        expect(assistantMessages.some((m) => m.includes('Expanded prose body'))).toBe(true);
+
+        // Final state: 4 chapters, count raised, chapterCompleted preserved.
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.chapterCount).toBe(4);
+        expect(finalMeta.chapterCompleted).toBe(1);
+        expect(finalMeta.chapters).toEqual([
+            { number: '1', title: 'Kept Opening', plotpoints: plotpointsFor('Kept A') },
+            { number: '2', title: 'Kept Middle', plotpoints: plotpointsFor('Kept B') },
+            { number: '3', title: 'Resumed Chapter 3', plotpoints: plotpointsFor('Resumed plot 3') },
+            { number: '4', title: 'Resumed Chapter 4', plotpoints: plotpointsFor('Resumed plot 4') }
+        ]);
+
+        // Chapter 1's expanded payload is byte-identical — skeleton writes are
+        // create-if-missing so expanded revisions[] survive a resume.
+        const preserved = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+        expect(preserved).toEqual(expandedPayload);
+
+        // Chapters 2-4 gained skeleton payloads (2-4 had none).
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json')).sort()).toEqual([
+            'chapter-001.json',
+            'chapter-002.json',
+            'chapter-003.json',
+            'chapter-004.json'
+        ]);
+    }, 30000);
+
+    it('should reject resume with 400 while another generation job is in flight for the same story', async () => {
+        const storyId = `test-resume-locked-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        // A create whose LLM call never resolves — the job stays in flight
+        // (the registry slot stays taken) for the whole test.
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation(() => new Promise(() => {})),
+            structure: vi.fn().mockImplementation(() => new Promise(() => {}))
+        } as any);
+
+        const createResult = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 2 }),
+            { root: projectRoot }
+        );
+        expect(createResult.status).toBe(200);
+
+        // The dir + placeholder exist synchronously (generateStory runs to its
+        // first await), so resume validation passes — the 400 must come from
+        // the job registry, not from story validation.
+        const resumeResult = await generationCreateNewStory(mockContext, createMockParameters(storyId, { resume: {} }), {
+            root: projectRoot
+        });
+        expect(resumeResult.status).toBe(400);
+        expect(resumeResult.response.error).toBe(`Story '${storyId}' already has a generation job in progress`);
+
+        // A duplicate create for the same in-flight storyId is rejected the
+        // same way (previously it crashed in the background at mkdir).
+        const duplicateResult = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 2 }),
+            { root: projectRoot }
+        );
+        expect(duplicateResult.status).toBe(400);
+        expect(duplicateResult.response.error).toBe(`Story '${storyId}' already has a generation job in progress`);
+
+        // The in-flight placeholder was never disturbed by the rejected calls.
+        const placeholder = JSON.parse(fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.json'), 'utf-8'));
+        expect(placeholder.status).toBe('generating');
+        expect(placeholder.chapters).toEqual([]);
+    }, 30000);
 });

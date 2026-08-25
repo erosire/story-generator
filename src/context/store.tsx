@@ -336,9 +336,12 @@ export type Chapter = {
 // Shape of the story data returned by the GET endpoint.
 // chapters is the unified array of all chapters (expanded or not).
 // meta contains story metadata from story.json (or null if absent).
+// meta.status is the raw plotpoint.json status when present ('generating' |
+// 'completed' | 'failed') — SectionStoryContent uses it (with the chapter
+// count) to offer the resume action for interrupted plotline generation.
 export type StoryData = {
     chapters: Chapter[];
-    meta: { storyName?: string; storyline: string; chapterCount: number; createdAt: string } | null;
+    meta: { storyName?: string; storyline: string; chapterCount: number; createdAt: string; status?: string } | null;
 };
 
 // A single story session in the dashboard.

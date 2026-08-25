@@ -34,7 +34,7 @@
 import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
-import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, deleteChapter } from '../../api';
+import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 import { getExpandedChapters, setExpandedChapters } from '../../context/store';
@@ -432,6 +432,23 @@ const CollapseAllIcon: React.FC = () => (
         <path d="M4 6l4-3 4 3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
         {/* Bottom chevron pointing down */}
         <path d="M4 10l4 3 4-3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+);
+
+// Inline SVG resume icon — play triangle, used for the resume-generation
+// action button that continues an interrupted plotline generation (server
+// restarted mid-generation, retry budget exhausted, etc.).
+const ResumeIcon: React.FC = () => (
+    <svg
+        width={14}
+        height={14}
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: 'block' }}
+    >
+        {/* Play triangle pointing right */}
+        <path d="M5 3l8 5-8 5V3z" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" fill="currentColor" />
     </svg>
 );
 
@@ -1379,10 +1396,87 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         setExpandedChaptersState(new Set());
     }, [selected?.storyId]);
 
+    // ── Resume generation (the ▶ action) ─────────────────────────────────
+    // Continues an INTERRUPTED plotline generation for the selected story:
+    // the server's background job died (restart/crash) leaving plotpoint.json
+    // frozen with fewer chapters than requested, or a chapter exhausted its
+    // retry budget (markStoryFailed). POSTs { resume: { chapterCount } } to
+    // the same storyId (generation-create-new-story.ts resume branch →
+    // generation-resume-story.ts); the server keeps the complete chapter
+    // prefix and regenerates the tail, so nothing already accepted is lost.
+    const [resumeState, setResumeState] = React.useState<{ isSubmitting: boolean }>({ isSubmitting: false });
+
+    const handleResume = React.useCallback(async () => {
+        if (!selected?.storyId) return;
+        setResumeState({ isSubmitting: true });
+        try {
+            // Total chapter target: the larger of what the client asked for
+            // (chapterRequested may still remember an interrupted append's
+            // bumped total) and what the server recorded (interrupted create).
+            const resumeTarget = Math.max(selected.chapterRequested, data?.meta?.chapterCount ?? 0);
+            // clientId from the top-right header dropdown selects the LLM
+            // client for the resumed calls (per-request only, never stored).
+            const result = await resumeStoryPlotpoints(
+                store.config.baseUrl,
+                selected.storyId,
+                { chapterCount: resumeTarget > 0 ? resumeTarget : undefined },
+                store.config.clientId
+            );
+
+            // Align the entry with the server's target and switch the
+            // processing indicators back on. The already-running poll loop
+            // (it re-arms at interval even after hard errors — see the
+            // polling effect's scheduleRefresh) streams the regenerated
+            // chapters in as plotpoint.json is rewritten chapter by chapter.
+            setStore((prev) => ({
+                ...prev,
+                records: prev.records.map((e) =>
+                    e.id === selected.id
+                        ? { ...e, chapterRequested: result.chapterCount, isProcessing: true, status: 'generating' as const, error: '' }
+                        : e
+                ),
+                selected:
+                    prev.selected?.id === selected.id
+                        ? { ...prev.selected, chapterRequested: result.chapterCount, isProcessing: true, status: 'generating' as const, error: '' }
+                        : prev.selected
+            }));
+        } catch (err: any) {
+            // Surface the server's exact reason in the content-error banner
+            // (unknown story, nothing left to resume, or a generation job
+            // already in flight on the server).
+            setStore((prev) => ({
+                ...prev,
+                records: prev.records.map((e) =>
+                    e.id === selected.id ? { ...e, error: err?.message || 'Failed to resume generation' } : e
+                ),
+                selected:
+                    prev.selected?.id === selected.id
+                        ? { ...prev.selected, error: err?.message || 'Failed to resume generation' }
+                        : prev.selected
+            }));
+        } finally {
+            setResumeState({ isSubmitting: false });
+        }
+    }, [selected, store.config.baseUrl, store.config.clientId, data?.meta?.chapterCount, setStore]);
+
     // Whether the action bar should be enabled: append requires at least one
     // existing chapter (the server rejects appends to chapter-less stories),
     // so the bar appears as soon as any chapter is present.
     const hasChapters = (data?.chapters ?? []).length > 0;
+
+    // Whether the plotline looks stopped before reaching its target — the
+    // resume button's visibility gate. The comparison target is the LARGER of
+    // the server's meta.chapterCount (interrupted create: chapters frozen
+    // below it) and the entry's chapterRequested (interrupted append: merged
+    // list data eventually rolls the bump back, but until then the client
+    // remembers the larger intent). meta.status 'failed' covers the edge
+    // where every chapter slot exists but the tail failed validation — the
+    // server's resume completeness check regenerates it.
+    // Requires meta (a real server story); a never-submitted local entry has
+    // nothing to resume.
+    const resumeTarget = Math.max(data?.meta?.chapterCount ?? 0, selected?.chapterRequested ?? 0);
+    const canResume =
+        Boolean(data?.meta) && (data.chapters.length < resumeTarget || data?.meta?.status === 'failed');
 
     // Current story size for the append dialog copy: server meta first, then
     // the polled chapter list, then the entry's requested count.
@@ -1560,29 +1654,51 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             )}
 
             {/* Action bar — pinned bottom-right. Collapse-all closes every
-                expanded chapter. The [->] button (same test id / glyph as the
-                former "extend to footer input" action) opens the in-place
-                append-chapters dialog. Appending needs at least one existing
-                chapter (the server rejects chapter-less stories), so the bar
-                appears as soon as any chapter exists. */}
-            {hasChapters && (
+                expanded chapter. The ▶ resume button continues an interrupted
+                plotline generation (server restart, exhausted retries) — it
+                renders whenever the chapter list sits below its target (or the
+                server marked the story failed), even with zero chapters, since
+                a generation that died before its first chapter is exactly the
+                case resume exists for. The [->] button opens the in-place
+                append-chapters dialog; appending needs at least one existing
+                chapter (the server rejects chapter-less stories). */}
+            {(hasChapters || canResume) && (
                 <ActionBar data-testid="content-action-bar">
-                    <ActionButton
-                        onClick={handleCollapseAll}
-                        data-testid="collapse-all-button"
-                        title="Collapse all chapters"
-                        className="sg-hover"
-                    >
-                        <CollapseAllIcon />
-                    </ActionButton>
-                    <ActionButton
-                        onClick={openAppendDialogue}
-                        data-testid="extend-plotpoints-button"
-                        title={`Append ${appendState.chapterCount} new chapters to this story`}
-                        className="sg-hover"
-                    >
-                        <ExtendIcon />
-                    </ActionButton>
+                    {hasChapters && (
+                        <ActionButton
+                            onClick={handleCollapseAll}
+                            data-testid="collapse-all-button"
+                            title="Collapse all chapters"
+                            className="sg-hover"
+                        >
+                            <CollapseAllIcon />
+                        </ActionButton>
+                    )}
+                    {canResume && (
+                        <ActionButton
+                            onClick={handleResume}
+                            disabled={resumeState.isSubmitting}
+                            data-testid="resume-generation-button"
+                            title={
+                                resumeState.isSubmitting
+                                    ? 'Resuming generation…'
+                                    : `Resume plotline generation (${data.chapters.length}/${resumeTarget} chapters)`
+                            }
+                            className="sg-hover"
+                        >
+                            <ResumeIcon />
+                        </ActionButton>
+                    )}
+                    {hasChapters && (
+                        <ActionButton
+                            onClick={openAppendDialogue}
+                            data-testid="extend-plotpoints-button"
+                            title={`Append ${appendState.chapterCount} new chapters to this story`}
+                            className="sg-hover"
+                        >
+                            <ExtendIcon />
+                        </ActionButton>
+                    )}
                 </ActionBar>
             )}
 

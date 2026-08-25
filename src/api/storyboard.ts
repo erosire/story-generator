@@ -204,6 +204,59 @@ export async function appendStoryPlotpoints(
     return (await response.json()) as { storyId: string; appended: number };
 }
 
+// Resume PLOTLINE generation for a story whose generation stopped early —
+// e.g. the server restarted mid-create (the fire-and-forget background job
+// died, plotpoint.json frozen at status 'generating' with partial chapters)
+// or a chapter exhausted its retry budget (status 'failed'). POSTs the SAME
+// storyId with a `resume` envelope: { resume: { chapterCount? }, clientId? }.
+// The server keeps the complete prefix of existing chapters and regenerates
+// the rest UP TO the target — unlike append it never extends past
+// chapterCount unless the caller passes a larger resume.chapterCount (the
+// interrupted-append case, where the client still remembers the intended
+// total). Skeleton chapter payloads are written for chapters missing one so
+// every chapter is expandable afterwards. 400s surface the exact validation
+// message (unknown story, already complete, another job in progress).
+//
+// `body.chapterCount` (optional) is the TOTAL chapter target; pass
+// max(selected.chapterRequested, meta.chapterCount) — the server defaults to
+// meta.chapterCount when omitted.
+//
+// Returns { storyId, resumed, chapterCount } — `resumed` is how many chapters
+// will be regenerated, `chapterCount` the final target (align the entry's
+// chapterRequested to it). Throws on network failure or non-200 response.
+export async function resumeStoryPlotpoints(
+    baseUrl: string,
+    storyId: string,
+    body: { chapterCount?: number },
+    clientId?: string
+): Promise<{ storyId: string; resumed: number; chapterCount: number }> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    // clientId / chapterCount are only serialized when provided (same
+    // convention as createNewStory/appendStoryPlotpoints above).
+    const clientField = clientId !== undefined && clientId.length > 0 ? { clientId } : {};
+    const countField = typeof body.chapterCount === 'number' && body.chapterCount > 0 ? { chapterCount: body.chapterCount } : {};
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resume: { ...countField }, ...clientField })
+    });
+
+    if (!response.ok) {
+        // Server returns 400 with { error } for invalid bodies (same handler —
+        // generation-create-new-story.ts resume branch). Surface the message.
+        let message = `Failed to resume story (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore JSON parse error — keep the default message
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as { storyId: string; resumed: number; chapterCount: number };
+}
+
 // Fetch the current story data once via GET. Maps HTTP status to PollResult.
 // 404 → 'not-found' (transient; story dir not created yet). 200 → 'data'.
 // Anything else → 'error' with the server's error message if present.

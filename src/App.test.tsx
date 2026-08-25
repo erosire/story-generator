@@ -9,6 +9,9 @@
 //   - the [->] action opens the in-place append-chapters dialog (notes +
 //     chapter count + Append) and POSTs the append envelope to the same
 //     storyId; server 400s keep the dialog open with the error inline
+//   - the ▶ resume action appears when a story's plotline sits below its
+//     target (interrupted generation) and POSTs the resume envelope; server
+//     400s surface inline via the content-error banner
 //   - the per-chapter delete (trash) button opens a confirmation dialog; only
 //     the confirm PATCHes { deleteChapterIndex, deleteChapterRevisionIndex }
 //     for the dropdown-selected revision — deleting the last revision returns
@@ -898,6 +901,194 @@ describe('StoryGeneratorApp', () => {
         expect(screen.queryByTestId('extend-plotpoints-button')).toBeNull();
         expect(screen.queryByTestId('content-action-bar')).toBeNull();
     });
+
+    // ── Resume-generation action (the ▶ button) ───────────────────────────
+    // Appears in the bottom action bar when the story's plotline sits below
+    // its chapter target — the signature of an interrupted generation (server
+    // restart, exhausted retries). Clicking POSTs { resume: { chapterCount } }
+    // to the same storyId; the server keeps the complete chapter prefix and
+    // regenerates the tail (generation-resume-story.ts).
+    const seedResumeStory = (fetchMock: any, options?: {
+        chapters?: any[];
+        meta?: any;
+        chapterRequested?: number;
+        resumeFetchImpl?: (url: string, init: any) => any;
+    }) => {
+        // Default: an interrupted story — 2 of 5 chapters generated, frozen
+        // at status 'generating' (the server's background job died).
+        const chapters = options?.chapters ?? [
+            { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['plot1'], expanded: false, canReExpand: false },
+            { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['plot2'], expanded: false, canReExpand: false }
+        ];
+        const meta = options?.meta ?? {
+            storyline: 'Interrupted story',
+            chapterCount: 5,
+            createdAt: '2026-08-01T12:00:00Z',
+            status: 'generating'
+        };
+        const chapterRequested = options?.chapterRequested ?? 5;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'POST' && options?.resumeFetchImpl) {
+                return options.resumeFetchImpl(url, init);
+            }
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                return Promise.resolve(mockResponse(200, { chapters, meta }));
+            }
+            // Default POST: resume accepted — 3 chapters to regenerate.
+            return Promise.resolve(mockResponse(200, { storyId: String(url.split('/').pop() ?? ''), resumed: 3, chapterCount: 5 }));
+        });
+        return {
+            id: 1,
+            storyId: 'resume-story-1',
+            storyline: 'Interrupted story',
+            title: 'Interrupted story',
+            chapterRequested,
+            chapterCompleted: 0,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'generating' as const,
+            data: { chapters, meta },
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+    };
+
+    it('shows the resume action for an interrupted story and POSTs the resume envelope on click', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedResumeStory(fetchMock);
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // 2 of 5 chapters present → resume generation is offered.
+        await waitFor(() => {
+            expect(screen.getByTestId('resume-generation-button')).toBeDefined();
+        });
+        expect(screen.getByTestId('resume-generation-button').getAttribute('title')).toBe(
+            'Resume plotline generation (2/5 chapters)'
+        );
+        // Collapse-all + append stay available alongside it (chapters exist).
+        expect(screen.getByTestId('collapse-all-button')).toBeDefined();
+        expect(screen.getByTestId('extend-plotpoints-button')).toBeDefined();
+
+        fireEvent.click(screen.getByTestId('resume-generation-button'));
+
+        // POST hits the SAME storyId with the resume envelope: the target is
+        // the larger of chapterRequested (5) and meta.chapterCount (5), plus
+        // the top-right dropdown's clientId (default 'Qwen27B' in tests).
+        await waitFor(() => {
+            const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
+            expect(postCall).toBeDefined();
+            expect(postCall[0]).toBe(`${BASE_URL}/resume-story-1`);
+            expect(JSON.parse(postCall![1].body)).toEqual({
+                resume: { chapterCount: 5 },
+                clientId: 'Qwen27B'
+            });
+        });
+
+        // Success: the processing banner comes back on with the server's target.
+        await waitFor(() => {
+            expect(screen.getByText('Generating 2/5 chapters…')).toBeDefined();
+        });
+    });
+
+    it('hides the resume action when the plotline already reached its target', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedResumeStory(fetchMock, {
+            chapters: [
+                { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['plot1'], expanded: false, canReExpand: true },
+                { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['plot2'], expanded: false, canReExpand: true }
+            ],
+            meta: { storyline: 'Done story', chapterCount: 2, createdAt: '2026-08-01T12:00:00Z', status: 'completed' },
+            chapterRequested: 2
+        });
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // The bar still shows (collapse-all + append), but nothing needs resuming.
+        await waitFor(() => {
+            expect(screen.getByTestId('collapse-all-button')).toBeDefined();
+        });
+        expect(screen.getByTestId('extend-plotpoints-button')).toBeDefined();
+        expect(screen.queryByTestId('resume-generation-button')).toBeNull();
+    });
+
+    it('shows ONLY the resume action when generation died before its first chapter', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedResumeStory(fetchMock, {
+            chapters: [],
+            meta: { storyline: 'Zero progress', chapterCount: 3, createdAt: '2026-08-01T12:00:00Z', status: 'generating' },
+            chapterRequested: 3
+        });
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // Zero chapters: collapse-all + append are chapter-gated (hidden), but
+        // resume MUST be reachable — this is the total-restart case. meta
+        // arrives with the first poll, so the button appears on data.
+        await waitFor(() => {
+            expect(screen.getByTestId('resume-generation-button')).toBeDefined();
+        });
+        expect(screen.getByTestId('content-action-bar')).toBeDefined();
+        expect(screen.queryByTestId('collapse-all-button')).toBeNull();
+        expect(screen.queryByTestId('extend-plotpoints-button')).toBeNull();
+    });
+
+    it('shows the resume action for a failed story and surfaces server 400s in the error banner', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedResumeStory(fetchMock, {
+            chapters: [
+                { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['plot1'], expanded: false, canReExpand: false },
+                { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['plot2'], expanded: false, canReExpand: false }
+            ],
+            meta: { storyline: 'Failed story', chapterCount: 2, createdAt: '2026-08-01T12:00:00Z', status: 'failed' },
+            chapterRequested: 2,
+            resumeFetchImpl: () =>
+                Promise.resolve(mockResponse(400, { error: "Story 'resume-story-1' plotline generation is already complete (2/2 chapters)" }))
+        });
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // meta.status 'failed' offers resume even though 2/2 chapter slots
+        // exist (the failed tail fails the server's completeness check).
+        await waitFor(() => {
+            expect(screen.getByTestId('resume-generation-button')).toBeDefined();
+        });
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('resume-generation-button'));
+        });
+
+        // The 400's exact server message lands in the content-error banner.
+        await waitFor(() => {
+            expect(screen.getByTestId('content-error').textContent).toBe(
+                "Error: Story 'resume-story-1' plotline generation is already complete (2/2 chapters)"
+            );
+        });
+    });
+
 
     // Per-revision delete flow. The trash button sits next to the rewrite [+]
     // in the chapter sticky bar and only renders for expanded chapters. It

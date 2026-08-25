@@ -29,7 +29,12 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters, vari
     // Read plotpoint.json — single source of truth for story metadata + chapter data.
     // Before generation, it holds { chapters: [], status: 'generating' } plus story metadata.
     const plotpointJsonPath = path.join(databaseDir, 'plotpoint.json');
-    let meta: { storyName?: string; storyline: string; chapterCount: number; createdAt: string } | null = null;
+    // meta.status is the RAW plotpoint.json status ('generating' | 'completed' |
+    // 'failed') — included so the dashboard can tell an interrupted/failed
+    // plotline (resume button, SectionStoryContent) from a finished one; the
+    // list endpoint's deriveStatus (generation-list-stories.ts) stays the
+    // authoritative computed status.
+    let meta: { storyName?: string; storyline: string; chapterCount: number; createdAt: string; status?: string } | null = null;
     let plotpointChapters: { number: string; title: string; plotpoints: string[] }[] = [];
     if (fs.existsSync(plotpointJsonPath)) {
         try {
@@ -40,7 +45,8 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters, vari
                     ...(plotpointData.storyName ? { storyName: plotpointData.storyName } : {}),
                     storyline: plotpointData.storyline ?? '',
                     chapterCount: plotpointData.chapterCount ?? 0,
-                    createdAt: plotpointData.createdAt ?? ''
+                    createdAt: plotpointData.createdAt ?? '',
+                    ...(typeof plotpointData.status === 'string' ? { status: plotpointData.status } : {})
                 };
             }
             if (Array.isArray(plotpointData.chapters)) {

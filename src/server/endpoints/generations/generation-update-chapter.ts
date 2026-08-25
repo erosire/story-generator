@@ -750,7 +750,7 @@ const buildRewriteRequest = (chapterNumber: string, chapterTitle: string, rewrit
         `- ${rewriteContext}`,
         '- Use the full story summary and all provided context to ensure consistency',
         '- Write in highly graphical explicit details',
-        `- Minimum of ${TARGET_WORD_COUNT_PROMPT} words`,
+        `- Must be a minimum of ${TARGET_WORD_COUNT_PROMPT} words at least!`,
         '- Describe everything in slow-paced vivid imagery. Expand on every detail',
         '- Do not output a wall of text! Use short and long paragraphs',
         '- Must be in active voice. Show the story in every details, do not tell it!'

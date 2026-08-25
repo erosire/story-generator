@@ -27,7 +27,8 @@ import {
     updateChapter,
     rewriteChapter,
     deleteChapter,
-    appendStoryPlotpoints
+    appendStoryPlotpoints,
+    resumeStoryPlotpoints
 } from './storyboard';
 import type { StoryMeta } from './storyboard';
 
@@ -498,6 +499,75 @@ describe('appendStoryPlotpoints (POST append envelope)', () => {
 
         await expect(appendStoryPlotpoints(BASE_URL, 'story-1', { chapterCount: 1 })).rejects.toThrow(
             'Failed to append chapters (HTTP 500)'
+        );
+    });
+});
+
+describe('resumeStoryPlotpoints (POST resume envelope)', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('posts the resume envelope with an empty object when no target/clientId is given', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(200, { storyId: 'story-1', resumed: 2, chapterCount: 3 }));
+
+        const result = await resumeStoryPlotpoints(BASE_URL, 'story-1', {});
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-1`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resume: {} })
+        });
+        expect(result).toEqual({ storyId: 'story-1', resumed: 2, chapterCount: 3 });
+    });
+
+    it('includes the chapter target and clientId when provided (interrupted-append case)', async () => {
+        // chapterRequested (6) > meta.chapterCount (3): the client still
+        // remembers an append the server never finished, so the raised target
+        // travels with the resume envelope.
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(200, { storyId: 'story-1', resumed: 3, chapterCount: 6 }));
+
+        const result = await resumeStoryPlotpoints(BASE_URL, 'story-1', { chapterCount: 6 }, 'Nvidia');
+
+        expect((fetch as any).mock.calls[0][1].body).toBe(
+            JSON.stringify({ resume: { chapterCount: 6 }, clientId: 'Nvidia' })
+        );
+        expect(result).toEqual({ storyId: 'story-1', resumed: 3, chapterCount: 6 });
+    });
+
+    it('URL-encodes the storyId for resume', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(mockResponse(200, { storyId: 'a/b c', resumed: 1, chapterCount: 2 }));
+
+        await resumeStoryPlotpoints(BASE_URL, 'a/b c', { chapterCount: 2 });
+
+        expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/a%2Fb%20c`);
+    });
+
+    it('throws with the server validation message on 400 (e.g. already complete)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(400, { error: "Story 'done' plotline generation is already complete (3/3 chapters)" })
+        );
+
+        await expect(resumeStoryPlotpoints(BASE_URL, 'done', {})).rejects.toThrow(
+            "Story 'done' plotline generation is already complete (3/3 chapters)"
+        );
+    });
+
+    it('falls back to a status-based message when the body is not JSON', async () => {
+        const badResponse = {
+            ok: false,
+            status: 500,
+            json: async () => {
+                throw new SyntaxError('not json');
+            }
+        } as any;
+        (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
+
+        await expect(resumeStoryPlotpoints(BASE_URL, 'story-1', {})).rejects.toThrow(
+            'Failed to resume story (HTTP 500)'
         );
     });
 });
