@@ -10,7 +10,14 @@ import path from 'node:path';
 import { KIMIK2_INSTRUCTIONS, KIMIK2_OPENING } from '@runtime/data/prompts';
 import { type TSchema, Type } from '@sinclair/typebox';
 import { jsonComplete } from '@presource/core';
-import { resolveClient, DATABASE_BASE_DIR, EXPAND_TIMEOUT_MS, OPENING_USER_MESSAGE, useApiMethod } from './generation-config';
+import {
+    DATABASE_BASE_DIR,
+    EXPAND_TIMEOUT_MS,
+    OPENING_USER_MESSAGE,
+    resolveClient,
+    TARGET_WORD_COUNT_PROMPT,
+    useApiMethod
+} from './generation-config';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -386,14 +393,14 @@ export const expandChapter = async (opts: {
  */
 export const buildExpandRequest = (chapterNumber: string, chapterTitle: string): string => {
     return [
-        '> As the world best-selling author, you must do the following:',
+        '> As the world best-selling novel author, you must do the followings:',
         `- Expand the chapter "${chapterNumber}: ${chapterTitle}", using the plotpoints provided for the chapter.`,
         '- You must follow each of the plotpoint beat for beat without deviations.',
         '- Make sure the expanded chapter is in highly graphical explicit details',
         '- Describe everything in slow-paced vivid imagery. Expand on every details.',
-        '- Do not output a wall of text! Must use short and long paragraphs, putting emphasis on dialogues',
+        '- Do not output a wall of text! Must use short and long paragraphs, putting emphasis on dialogues and descriptions',
         '- Must be written in active voice. Dialogue-driven story like Japanese Light Novels. Show the story, do not tell it!',
-        // `> Must be a minimum of ${TARGET_WORD_COUNT_PROMPT} in total.`,
+        `- Must be a minimum of ${TARGET_WORD_COUNT_PROMPT} in total.`,
         '- The chapter must starts from the first plotpoint',
         '- The chapter must not contains plotpoints from different chapters',
         '- Do not include events that had not happened yet in the chapter',

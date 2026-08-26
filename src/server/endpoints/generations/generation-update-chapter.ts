@@ -745,15 +745,15 @@ const reExpandChapter = async (options: {
  */
 const buildRewriteRequest = (chapterNumber: string, chapterTitle: string, rewriteContext: string): string => {
     return [
-        '> As the world best selling writer, you must do the following:',
+        '> As the world best selling novel writer, you must do the followings:',
         `- Review the chapter "${chapterNumber}: ${chapterTitle}", understand the sequence of events completely`,
         `- ${rewriteContext}`,
-        '- Use the full story summary and all provided context to ensure consistency',
+        '- Use the full story summary and all the provided context to ensure consistency',
         '- Write in highly graphical explicit details',
-        `- Must be a minimum of ${TARGET_WORD_COUNT_PROMPT} words at least!`,
-        '- Describe everything in slow-paced vivid imagery. Expand on every detail',
+        `- The chapter must be a minimum of ${TARGET_WORD_COUNT_PROMPT} words at least!`,
+        '- Describe everything in slow-paced vivid imagery. Expand on every details',
         '- Do not output a wall of text! Use short and long paragraphs',
-        '- Must be in active voice. Show the story in every details, do not tell it!'
+        '- The chapter must be in active voice. Show the story in every vivid details, do not tell it!'
     ].join('\n');
 };
 
