@@ -11,7 +11,13 @@ export default defineConfig({
     // Keep local development on the agreed localhost port instead of Vite's
     // default 5173 so frontend and API development use a predictable URL.
     server: {
-        port: 8000
+        port: 8000,
+        // Never watch the service's shared writable data root: chokidar
+        // holding files under temporary/database while the underload service
+        // writes them surfaces as sporadic EPERM failures on Windows.
+        watch: {
+            ignored: ['**/temporary/**']
+        }
     },
     build: {
         outDir: 'dist',
