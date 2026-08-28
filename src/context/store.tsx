@@ -14,6 +14,7 @@
 // pattern (read + mutate triggers re-render).
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_DATABASE_PORT } from '@config/environment';
 import { deleteStory as deleteStoryApi, type StoryMeta } from '../api';
 
 // ── localStorage helpers ──────────────────────────────────────────────
@@ -433,7 +434,7 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // Default to the same base the runtime service tests use
     // (runtime/service/endpoints/storyboard/generations/generation-get-story-data.test.ts:4-5).
     // Override via config in production by wrapping with a different provider value.
-        baseUrl: 'http://192.168.8.128:5000/v1/storyboard/generations',
+        baseUrl: `http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}/v1/storyboard/generations`,
     // Poll every 10s. The generation-create-new-story handler writes plotpoint.md
     // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
     // so 10s gives a smooth progressive reveal without hammering the server.
