@@ -32,9 +32,10 @@
 // design language — see src/styles/theme.ts.
 
 import React from 'react';
+import { objectEach } from '@presource/core';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
-import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter } from '../../api';
+import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 import { getExpandedChapters, setExpandedChapters } from '../../context/store';
@@ -107,6 +108,36 @@ const PlotpointsButton = styled('button', {
 // Plotpoints list — shown/hidden by the toggle button.
 const PlotpointsList = styled('div', {
     marginBottom: 10
+});
+
+// Row hosting the delete-chapter control. Right-aligned to line up with the
+// plotpoints toggle above it; only rendered while the plotpoints list is open
+// (the destructive control lives inside the revealed "details" area so it
+// never clutters the collapsed chapter header).
+const RemoveChapterRow = styled('div', {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    marginTop: 2,
+    marginBottom: 10
+});
+
+// Danger-outline pill for removing the ENTIRE chapter (plotpoints + every
+// revision + the chapter slot itself, later chapters renumbered). Visual
+// sibling of PlotpointsButton (same pill geometry) but in the danger palette
+// so the destructive nature reads at a glance next to the neutral toggle.
+const RemoveChapterButton = styled('button', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '4px 12px',
+    fontSize: theme.fontSize.base,
+    fontWeight: 500,
+    color: theme.danger,
+    background: theme.dangerSoft,
+    border: `1px solid ${theme.dangerBorder}`,
+    borderRadius: 999,
+    cursor: 'pointer',
+    transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
 });
 
 // Info message shown when a chapter has not been expanded yet.
@@ -548,11 +579,19 @@ const ProgressBanner = styled('div', {
 });
 
 // Small component that manages the plotpoints toggle state.
+// When the plotpoints are SHOWN (open), the delete-chapter control is revealed
+// underneath the list (see onDeleteChapter) — the requirement is that the
+// hide/show plotpoints toggle is what reveals the chapter removal function.
 const PlotpointsWrapper: React.FC<{
     plotpoints: string[];
     defaultOpen: boolean;
     testId: string;
-}> = ({ plotpoints, defaultOpen, testId }) => {
+    // Provided only when the chapter can be removed; renders the danger
+    // "Delete Chapter" pill under the plotpoints list while open.
+    onDeleteChapter?: () => void;
+    // Disables the delete pill while a removal request is in flight.
+    deleteDisabled?: boolean;
+}> = ({ plotpoints, defaultOpen, testId, onDeleteChapter, deleteDisabled }) => {
     const [open, setOpen] = React.useState(defaultOpen);
 
     return (
@@ -582,6 +621,23 @@ const PlotpointsWrapper: React.FC<{
                         ))}
                     </ul>
                 </PlotpointsList>
+            )}
+            {/* Delete-chapter control — revealed together with the plotpoints
+                list. Clicking opens the confirmation dialog (SectionStoryContent's
+                removeState); the PATCH fires only on explicit confirm. */}
+            {open && onDeleteChapter && (
+                <RemoveChapterRow>
+                    <RemoveChapterButton
+                        onClick={onDeleteChapter}
+                        disabled={deleteDisabled}
+                        data-testid={`${testId}-delete-chapter`}
+                        title="Remove this chapter, its plotpoints, and all its revisions (later chapters renumber)"
+                        className="sg-danger"
+                    >
+                        <TrashIcon />
+                        Delete Chapter
+                    </RemoveChapterButton>
+                </RemoveChapterRow>
             )}
         </div>
     );
@@ -1140,6 +1196,112 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         }
     }, [selected, store.config.baseUrl, deleteState.chapterIndex, deleteState.revisionIndex, setStore]);
 
+    // ── Remove entire chapter state ──────────────────────────────────────
+    // The "Delete Chapter" pill lives INSIDE the plotpoints area (revealed by
+    // the Hide/Show Plot Points toggle — see PlotpointsWrapper) and removes
+    // the chapter OUTRIGHT: plotpoints, every revision, and the chapter slot
+    // itself. The server renumbers the chapters after it, so all chapter
+    // indices above the removed one shift down by one — this handler repairs
+    // every index-keyed local state (expandedChapters, activeRevisions) and
+    // decrements chapterRequested so the resume button / poll target don't
+    // start chasing a chapter that no longer exists.
+    // Guarded by a confirmation dialog because the action is destructive and
+    // irreversible (unlike delete-revision, there is no expandable chapter
+    // left behind).
+    const [removeState, setRemoveState] = React.useState<{
+        isOpen: boolean;
+        chapterIndex: number;
+        title: string;
+        isRemoving: boolean;
+        error: string;
+    }>({ isOpen: false, chapterIndex: -1, title: '', isRemoving: false, error: '' });
+
+    // Open the confirmation dialog for a specific chapter.
+    const openRemoveDialogue = React.useCallback((chapterIndex: number, title: string) => {
+        setRemoveState({ isOpen: true, chapterIndex, title, isRemoving: false, error: '' });
+    }, []);
+
+    // Close the confirmation dialog without removing (button or overlay click).
+    const closeRemoveDialogue = React.useCallback(() => {
+        // Ignore closes mid-flight so the dialog cannot vanish while its PATCH
+        // is still outstanding (mirrors closeDeleteDialogue).
+        setRemoveState((prev) => (prev.isOpen && !prev.isRemoving ? { ...prev, isOpen: false } : prev));
+    }, []);
+
+    // Confirm: PATCH the removal, then refresh the story data once and merge
+    // it into the store (same merge shape as the revision delete above), plus
+    // the index-shift repairs for the locally keyed chapter states.
+    const handleRemoveChapter = React.useCallback(async () => {
+        if (!selected?.storyId) return;
+        const { chapterIndex } = removeState;
+        setRemoveState((prev) => ({ ...prev, isRemoving: true, error: '' }));
+        try {
+            await removeChapter(store.config.baseUrl, selected.storyId, chapterIndex);
+            const result = await fetchStoryData(store.config.baseUrl, selected.storyId);
+            if (result.status === 'data') {
+                setStore((prev) => ({
+                    ...prev,
+                    records: prev.records.map((e) =>
+                        e.id === selected.id
+                            ? {
+                                  ...e,
+                                  data: result.data,
+                                  error: '',
+                                  // The story shrank by one chapter — pull the
+                                  // poll target down with it, otherwise the
+                                  // resume button (chapters < target) and the
+                                  // "Generating X/Y" banner would chase a
+                                  // phantom chapter. Floor at 0 for stories
+                                  // that were never counted.
+                                  chapterRequested: Math.max(0, (e.chapterRequested ?? 0) - 1)
+                              }
+                            : e
+                    ),
+                    selected:
+                        prev.selected?.id === selected.id
+                            ? {
+                                  ...prev.selected,
+                                  data: result.data,
+                                  error: '',
+                                  chapterRequested: Math.max(0, (prev.selected.chapterRequested ?? 0) - 1)
+                              }
+                            : prev.selected
+                }));
+            }
+            // Repair index-keyed state: the removed chapter's index vanishes
+            // and every index above it shifts down by one (mirrors the
+            // server-side renumbering). expandedChapters persists via the
+            // existing persistence effect; activeRevisions keys are display
+            // indices and follow the same shift.
+            setExpandedChaptersState((prev) => {
+                const next = new Set<number>();
+                prev.forEach((idx) => {
+                    if (idx === chapterIndex) return;
+                    next.add(idx > chapterIndex ? idx - 1 : idx);
+                });
+                return next;
+            });
+            setActiveRevisions((prev) => {
+                const next: Record<number, number> = {};
+                objectEach(prev, ({ key, value }) => {
+                    const idx = Number(key);
+                    if (idx === chapterIndex) return;
+                    next[idx > chapterIndex ? idx - 1 : idx] = value as number;
+                });
+                return next;
+            });
+            setRemoveState({ isOpen: false, chapterIndex: -1, title: '', isRemoving: false, error: '' });
+        } catch (err: any) {
+            // Server validation/lookup failure — keep the dialog open with the
+            // exact server message (mirrors the revision-delete error flow).
+            setRemoveState((prev) => ({
+                ...prev,
+                isRemoving: false,
+                error: err?.message || 'Failed to remove chapter'
+            }));
+        }
+    }, [selected, store.config.baseUrl, removeState.chapterIndex, setStore]);
+
     // Polling effect — the per-story leg of the cache-first cycle:
     //   load cached data (already on the entry from hydration/merge, rendered
     //   immediately below) → check the server (pollStoryData GETs) → update the
@@ -1536,12 +1698,17 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         headerExtra={<ChapterMeta chapter={ch} />}
                     >
                         <ChapterCard data-testid={`chapter-${i}-content`}>
-                            {/* Plotpoints toggle button — right-aligned, collapsible */}
+                            {/* Plotpoints toggle button — right-aligned, collapsible.
+                                The revealed plotpoints area carries the delete-chapter
+                                control (deleteDisabled only while this chapter's own
+                                removal PATCH is in flight). */}
                             {ch.plotpoints && ch.plotpoints.length > 0 && (
                                 <PlotpointsWrapper
                                     plotpoints={ch.plotpoints}
                                     defaultOpen={!ch.expanded}
                                     testId={`chapter-${i}-plotpoints`}
+                                    onDeleteChapter={() => openRemoveDialogue(ch.chapterIndex, ch.title)}
+                                    deleteDisabled={removeState.isRemoving && removeState.chapterIndex === ch.chapterIndex}
                                 />
                             )}
 
@@ -1902,6 +2069,60 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         </RewriteDialogActions>
                         {deleteState.error && (
                             <AppendError data-testid="delete-error">{deleteState.error}</AppendError>
+                        )}
+                    </DeleteDialog>
+                </RewriteOverlay>
+            )}
+            {/* Remove-entire-chapter confirmation dialog — opened by the
+                "Delete Chapter" pill inside the plotpoints area. Unlike the
+                delete-revision dialog above (which keeps the chapter), this
+                removes the chapter outright: plotpoints, every revision, and
+                the slot itself; later chapters renumber. Overlay click /
+                Cancel abort (no request sent). */}
+            {removeState.isOpen && (
+                <RewriteOverlay onClick={closeRemoveDialogue}>
+                    <DeleteDialog
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="remove-chapter-dialog-title"
+                        data-testid="remove-chapter-dialog"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <RewriteDialogTitle id="remove-chapter-dialog-title" data-testid="remove-chapter-dialog-title">
+                            Remove Chapter {removeState.chapterIndex + 1}
+                            {removeState.title ? `: ${removeState.title}` : ''}
+                        </RewriteDialogTitle>
+                        <p
+                            style={{
+                                margin: '0 0 12px 0',
+                                fontSize: theme.fontSize.sm,
+                                color: theme.textMuted,
+                                lineHeight: 1.5
+                            }}
+                        >
+                            This permanently removes the chapter — its plotpoints and every revision of its expanded
+                            content. Chapters after it are renumbered to fill the gap. This cannot be undone.
+                        </p>
+                        <RewriteDialogActions>
+                            <ActionButton
+                                onClick={closeRemoveDialogue}
+                                disabled={removeState.isRemoving}
+                                data-testid="remove-chapter-cancel"
+                                style={{ pointerEvents: 'auto' }}
+                            >
+                                Cancel
+                            </ActionButton>
+                            <DeleteConfirmButton
+                                onClick={handleRemoveChapter}
+                                disabled={removeState.isRemoving}
+                                data-testid="remove-chapter-confirm"
+                                style={{ pointerEvents: 'auto', opacity: removeState.isRemoving ? 0.6 : 1 }}
+                            >
+                                {removeState.isRemoving ? 'Removing…' : 'Remove Chapter'}
+                            </DeleteConfirmButton>
+                        </RewriteDialogActions>
+                        {removeState.error && (
+                            <AppendError data-testid="remove-chapter-error">{removeState.error}</AppendError>
                         )}
                     </DeleteDialog>
                 </RewriteOverlay>

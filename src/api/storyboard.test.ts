@@ -9,6 +9,8 @@
 //     and error branches.
 //   - updateChapter / rewriteChapter / deleteChapter: PATCH payloads (incl.
 //     clientId where applicable) and error branches.
+//   - removeChapter: the remove-entire-chapter PATCH (removeChapterIndex)
+//     payload, URL encoding, and error branches.
 //   - appendStoryPlotpoints: the "[->]" append dialog's POST — append
 //     envelope shape (notes omitted when blank, clientId optional) and
 //     the 400/500 error branches.
@@ -27,6 +29,7 @@ import {
     updateChapter,
     rewriteChapter,
     deleteChapter,
+    removeChapter,
     appendStoryPlotpoints,
     resumeStoryPlotpoints
 } from './storyboard';
@@ -377,6 +380,81 @@ describe('deleteChapter (PATCH)', () => {
         (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
 
         await expect(deleteChapter(BASE_URL, 'story-1', 0)).rejects.toThrow('Failed to delete chapter (HTTP 500)');
+    });
+});
+
+describe('removeChapter (PATCH)', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn());
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('patches removeChapterIndex and returns the removal summary (no clientId — removal is local, no LLM work)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'story-1',
+                removeChapterIndex: 1,
+                title: 'The Middle',
+                chaptersRemaining: 2,
+                message: 'Chapter 1 removed — 2 chapter(s) remain'
+            })
+        );
+
+        const result = await removeChapter(BASE_URL, 'story-1', 1);
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-1`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ removeChapterIndex: 1 })
+        });
+        expect(result).toEqual({
+            storyId: 'story-1',
+            removeChapterIndex: 1,
+            title: 'The Middle',
+            chaptersRemaining: 2,
+            message: 'Chapter 1 removed — 2 chapter(s) remain'
+        });
+    });
+
+    it('URL-encodes the storyId', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'a/b c',
+                removeChapterIndex: 0,
+                title: 'Ch1',
+                chaptersRemaining: 0,
+                message: 'Chapter 0 removed — 0 chapter(s) remain'
+            })
+        );
+
+        await removeChapter(BASE_URL, 'a/b c', 0);
+
+        expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/a%2Fb%20c`);
+    });
+
+    it('throws with the server message on 404 (unknown chapter)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(404, { error: "Chapter 5 not found for story 'story-1'" })
+        );
+
+        await expect(removeChapter(BASE_URL, 'story-1', 5)).rejects.toThrow(
+            "Chapter 5 not found for story 'story-1'"
+        );
+    });
+
+    it('falls back to a status-based message when the server body is not JSON', async () => {
+        const badResponse = {
+            ok: false,
+            status: 500,
+            json: async () => {
+                throw new SyntaxError('not json');
+            }
+        } as any;
+        (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
+
+        await expect(removeChapter(BASE_URL, 'story-1', 0)).rejects.toThrow('Failed to remove chapter (HTTP 500)');
     });
 });
 

@@ -16,6 +16,9 @@
 //     the confirm PATCHes { deleteChapterIndex, deleteChapterRevisionIndex }
 //     for the dropdown-selected revision — deleting the last revision returns
 //     the chapter to plotlines-only (expandable again); cancel sends nothing
+//   - the "Delete Chapter" pill is revealed by SHOWING a chapter's plotpoints
+//     (hidden while collapsed); confirming PATCHes { removeChapterIndex } and
+//     the story shrinks to the renumbered chapter list; cancel sends nothing
 //
 // fetch is mocked globally. Poll interval is overridden via configOverrides to a
 // tiny value so the loop advances quickly under real timers.
@@ -1304,6 +1307,144 @@ describe('StoryGeneratorApp', () => {
         // chapter was expanded (defaultOpen=false at mount), so it still
         // reads "Show" — useState only seeds the initial value.
         expect(screen.getByTestId('chapter-1-plotpoints-toggle').textContent).toBe('Show Plot Points(1)');
+    });
+
+    // ── Remove-entire-chapter flow ─────────────────────────────────────────
+    // The "Delete Chapter" pill lives INSIDE the plotpoints area and is only
+    // revealed while the plotpoints are SHOWN (the Hide/Show toggle is the
+    // reveal mechanism). Confirming PATCHes { removeChapterIndex } — the
+    // whole chapter (plotpoints + every revision) disappears and the story
+    // shrinks; cancel sends nothing.
+    const seedRemoveStory = (fetchMock: any) => {
+        let removed = false;
+        const chapter1 = {
+            chapterNumber: '1',
+            chapterIndex: 0,
+            title: 'Ch1',
+            plotpoints: ['plot1'],
+            expanded: true,
+            canReExpand: true,
+            revisions: [{ content: '## Ch1\n\nbody', wordCount: 5, generationTimeMs: 1000 }]
+        };
+        const chapter2 = {
+            chapterNumber: '2',
+            chapterIndex: 1,
+            title: 'Ch2',
+            plotpoints: ['plot2'],
+            expanded: true,
+            canReExpand: true,
+            revisions: [{ content: '## Ch2\n\nbody', wordCount: 5, generationTimeMs: 900 }]
+        };
+        const meta = { storyline: 'Seed story', chapterCount: 2, createdAt: '2026-08-01T12:00:00Z' };
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'PATCH') {
+                removed = true;
+                return Promise.resolve(
+                    mockResponse(200, {
+                        storyId: 'remove-story-1',
+                        removeChapterIndex: 1,
+                        title: 'Ch2',
+                        chaptersRemaining: 1,
+                        message: 'Chapter 1 removed — 1 chapter(s) remain'
+                    })
+                );
+            }
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: removed ? [chapter1] : [chapter1, chapter2],
+                        meta: removed ? { ...meta, chapterCount: 1 } : meta
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        return {
+            id: 1,
+            storyId: 'remove-story-1',
+            storyline: 'Seed story',
+            title: 'Seed story',
+            chapterRequested: 2,
+            chapterCompleted: 2,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'completed' as const,
+            data: { chapters: [chapter1, chapter2], meta },
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+    };
+
+    it('reveals the delete-chapter control with shown plotpoints and removes the chapter after confirmation', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedRemoveStory(fetchMock);
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // Chapter 2 auto-expands (latest chapter), so its plotpoints start
+        // collapsed — the delete-chapter control must be HIDDEN while the
+        // plotpoints are hidden.
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-1-plotpoints-toggle')).toBeDefined();
+        });
+        expect(screen.queryByTestId('chapter-1-plotpoints-delete-chapter')).toBeNull();
+
+        // Showing the plotpoints reveals the delete-chapter control.
+        fireEvent.click(screen.getByTestId('chapter-1-plotpoints-toggle'));
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-1-plotpoints-delete-chapter')).toBeDefined();
+        });
+
+        // Clicking it only opens the confirmation dialog — no PATCH yet
+        // (accidental click protection, same as the delete-revision flow).
+        fireEvent.click(screen.getByTestId('chapter-1-plotpoints-delete-chapter'));
+        await waitFor(() => {
+            expect(screen.getByTestId('remove-chapter-dialog')).toBeDefined();
+        });
+        expect(screen.getByTestId('remove-chapter-dialog-title').textContent).toBe('Remove Chapter 2: Ch2');
+        expect(screen.getByTestId('remove-chapter-dialog').textContent).toContain(
+            'This permanently removes the chapter — its plotpoints and every revision of its expanded content.'
+        );
+        expect(fetchMock.mock.calls.some(([, init]: any[]) => init?.method === 'PATCH')).toBe(false);
+
+        // Cancel aborts without a request.
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('remove-chapter-cancel'));
+        });
+        expect(screen.queryByTestId('remove-chapter-dialog')).toBeNull();
+        expect(fetchMock.mock.calls.some(([, init]: any[]) => init?.method === 'PATCH')).toBe(false);
+
+        // Reopen and confirm — the single PATCH removes the whole chapter.
+        fireEvent.click(screen.getByTestId('chapter-1-plotpoints-delete-chapter'));
+        await waitFor(() => {
+            expect(screen.getByTestId('remove-chapter-dialog')).toBeDefined();
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('remove-chapter-confirm'));
+        });
+        const patchCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'PATCH');
+        expect(patchCall).toBeDefined();
+        expect(patchCall![0]).toBe(`${BASE_URL}/remove-story-1`);
+        expect(JSON.parse(patchCall![1].body)).toEqual({ removeChapterIndex: 1 });
+
+        // The refreshed GET collapses the list to the single surviving
+        // chapter (renumbered to Chapter 1); no resume button appears — the
+        // entry's chapterRequested was pulled down with the story size.
+        await waitFor(() => {
+            expect(screen.queryByTestId('chapter-1')).toBeNull();
+        });
+        expect(screen.getByTestId('chapter-0').textContent).toContain('Chapter 1: Ch1');
+        expect(screen.queryByTestId('resume-generation-button')).toBeNull();
+        expect(screen.queryByTestId('remove-chapter-dialog')).toBeNull();
     });
 
     // ── Local cache (localStorage) behavior ────────────────────────────────

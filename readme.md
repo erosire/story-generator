@@ -150,7 +150,7 @@ Returns the story's chapters with plotpoints and expansion status.
 
 ### `PATCH /v1/storyboard/generations/:storyId`
 
-Update story metadata, re-expand a chapter, or rewrite a chapter.
+Update story metadata, re-expand a chapter, rewrite a chapter, delete a revision, or remove a chapter entirely.
 
 **Rename:**
 ```json
@@ -170,7 +170,17 @@ Update story metadata, re-expand a chapter, or rewrite a chapter.
 }
 ```
 
-`expandChapterIndex` and `rewriteChapter` are mutually exclusive.
+**Delete one revision** from the chapter at index 2 (synchronous; the chapter returns to plotlines-only when its last revision is deleted):
+```json
+{ "deleteChapterIndex": 2, "deleteChapterRevisionIndex": 0 }
+```
+
+**Remove chapter 1 entirely** (synchronous; deletes its plotpoints, every revision, and its files — later chapters renumber to fill the gap):
+```json
+{ "removeChapterIndex": 0 }
+```
+
+`expandChapterIndex`, `rewriteChapter`, `deleteChapterIndex`, and `removeChapterIndex` are mutually exclusive.
 
 ### `DELETE /v1/storyboard/generations/:storyId`
 

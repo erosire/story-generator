@@ -36,10 +36,11 @@
 //       body: { storyName?: string, expandChapterIndex?: number,
 //               rewriteChapter?: number, rewriteContext?: string,
 //               deleteChapterIndex?: number, deleteChapterRevisionIndex?: number,
-//               clientId?: string }
+//               removeChapterIndex?: number, clientId?: string }
 //       returns: { storyId, storyName?, expandChapterIndex?, rewriteChapter?,
 //                  deleteChapterIndex?, deleteChapterRevisionIndex?,
-//                  chapterNumber?, title?, revisionsRemaining?, message }
+//                  removeChapterIndex?, chapterNumber?, title?,
+//                  revisionsRemaining?, chaptersRemaining?, message }
 //       behavior: Updates story metadata (e.g. storyName), triggers
 //       fire-and-forget re-expansion of a single chapter (expandChapterIndex),
 //       or rewrites a chapter with user-provided context (rewriteChapter +
@@ -48,9 +49,12 @@
 //       deleteChapterIndex synchronously removes ONE revision from the chapter
 //       (the one at deleteChapterRevisionIndex, else the latest); the chapter
 //       returns to plotlines-only only when its last revision is deleted.
-//       expandChapterIndex / rewriteChapter / deleteChapterIndex are mutually
-//       exclusive. clientId selects the LLM client for the triggered work
-//       (never stored); deletion does no LLM work.
+//       removeChapterIndex synchronously removes the ENTIRE chapter — its
+//       plotpoint entry, every revision, and its files — and renumbers the
+//       chapters after it (see removeChapter below).
+//       expandChapterIndex / rewriteChapter / deleteChapterIndex /
+//       removeChapterIndex are mutually exclusive. clientId selects the LLM
+//       client for the triggered work (never stored); deletions do no LLM work.
 //       See generation-update-chapter.ts.
 //
 //   - DELETE /v1/storyboard/generations/:storyId
@@ -624,6 +628,50 @@ export async function deleteChapter(
     }
 
     return (await response.json()) as DeleteChapterResponse;
+}
+
+// Remove an ENTIRE chapter via PATCH — the destructive counterpart of
+// deleteChapter above. Where deleteChapter strips ONE revision and keeps the
+// chapter (plotpoints + LLM context) expandable, removeChapter deletes the
+// chapter outright: its plotpoint.json entry, every revision, and its
+// chapter-XXX.json/.md files. The server renumbers every later chapter to
+// fill the gap (files renamed, payload identity + context.appending updated),
+// so the story shrinks by one with no gap in the numbering. Synchronous
+// server-side (no LLM work, so no clientId). Throws on network failure or
+// non-200 response (400 validation / 404 unknown chapter surface the
+// server's exact message).
+export type RemoveChapterResponse = {
+    storyId: string;
+    removeChapterIndex: number;
+    title: string;
+    chaptersRemaining: number;
+    message: string;
+};
+
+export async function removeChapter(
+    baseUrl: string,
+    storyId: string,
+    chapterIndex: number
+): Promise<RemoveChapterResponse> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ removeChapterIndex: chapterIndex })
+    });
+
+    if (!response.ok) {
+        let message = `Failed to remove chapter (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as RemoveChapterResponse;
 }
 
 // Update story metadata via PATCH. Accepts any writable field (storyName, etc.)

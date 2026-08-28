@@ -1136,7 +1136,7 @@ describe('generationUpdateChapter', () => {
             );
             expect(expandCombo.status).toBe(400);
             expect(expandCombo.response.error).toBe(
-                'Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be provided per request.'
+                'Only one of expandChapterIndex, rewriteChapter, deleteChapterIndex, or removeChapterIndex may be provided per request.'
             );
 
             const rewriteCombo = await generationUpdateChapter(
@@ -1146,7 +1146,7 @@ describe('generationUpdateChapter', () => {
             );
             expect(rewriteCombo.status).toBe(400);
             expect(rewriteCombo.response.error).toBe(
-                'Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be provided per request.'
+                'Only one of expandChapterIndex, rewriteChapter, deleteChapterIndex, or removeChapterIndex may be provided per request.'
             );
         });
 
@@ -1327,6 +1327,319 @@ describe('generationUpdateChapter', () => {
                 fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.json'), 'utf-8')
             );
             expect(plotpoint.chapterCompleted).toBe(0);
+        });
+    });
+
+    // ── removeChapterIndex ────────────────────────────────────────────────
+    // Synchronous removal of an ENTIRE chapter: its plotpoint.json entry, its
+    // chapter-XXX.json/.md files (every revision dies with them), and the
+    // renumbering of every later chapter to fill the gap. This is the
+    // destructive counterpart of deleteChapterIndex (which only strips one
+    // revision and keeps the chapter expandable). No LLM work happens, so no
+    // background wait is needed.
+    describe('removeChapterIndex', () => {
+        // Seeds a 3-chapter story: chapter 1 (index 0) pending, chapter 2
+        // (index 1) expanded with two revisions + md mirror, chapter 3
+        // (index 2) pending. chapterCompleted starts at 1 (chapter 2 only).
+        const seedThreeChapterStory = (storyId: string) => {
+            createdStoryIds.push(storyId);
+            const storyboardDir = getStoryboardDir(storyId);
+            const chapterDir = path.join(storyboardDir, 'chapter');
+            fs.mkdirSync(chapterDir, { recursive: true });
+
+            fs.writeFileSync(
+                path.join(storyboardDir, 'plotpoint.json'),
+                JSON.stringify({
+                    storyId,
+                    storyline: 'A sci-fi adventure.',
+                    chapterCount: 3,
+                    chapterCompleted: 1,
+                    chapters: [
+                        { number: '1', title: 'The Beginning', plotpoints: ['Opening scene'] },
+                        { number: '2', title: 'The Middle', plotpoints: ['Conflict rises'] },
+                        { number: '3', title: 'The End', plotpoints: ['Resolution'] }
+                    ],
+                    createdAt: '2026-07-01T10:00:00.000Z'
+                }),
+                'utf-8'
+            );
+
+            const appending = [
+                '> 1: The Beginning\n\n- Opening scene',
+                '> 2: The Middle\n\n- Conflict rises',
+                '> 3: The End\n\n- Resolution'
+            ];
+
+            // Chapter 1 (index 0) — pending skeleton
+            fs.writeFileSync(
+                path.join(chapterDir, 'chapter-001.json'),
+                JSON.stringify({
+                    storyId,
+                    storyline: 'A sci-fi adventure.',
+                    chapterCount: 3,
+                    chapterNumber: '1',
+                    chapterIndex: 0,
+                    title: 'The Beginning',
+                    plotpoints: ['Opening scene'],
+                    context: {
+                        appending: [...appending],
+                        request: '> Expand the chapter "1: The Beginning"'
+                    },
+                    config: { systemInstructions: 'test', openingMessage: 'test' },
+                    revisions: []
+                }),
+                'utf-8'
+            );
+
+            // Chapter 2 (index 1) — expanded, 2 revisions + md mirror of the latest
+            fs.writeFileSync(
+                path.join(chapterDir, 'chapter-002.json'),
+                JSON.stringify({
+                    storyId,
+                    storyline: 'A sci-fi adventure.',
+                    chapterCount: 3,
+                    chapterNumber: '2',
+                    chapterIndex: 1,
+                    title: 'The Middle',
+                    plotpoints: ['Conflict rises'],
+                    context: {
+                        appending: [...appending],
+                        request: '> Expand the chapter "2: The Middle"'
+                    },
+                    config: { systemInstructions: 'test', openingMessage: 'test' },
+                    revisions: [
+                        { content: 'Middle pass one', wordCount: 3, generationTimeMs: 1200 },
+                        { content: 'Middle pass two', wordCount: 3, generationTimeMs: 900 }
+                    ]
+                }),
+                'utf-8'
+            );
+            fs.writeFileSync(path.join(chapterDir, 'chapter-002.md'), '## The Middle\n\nMiddle pass two', 'utf-8');
+
+            // Chapter 3 (index 2) — pending skeleton + md placeholder
+            fs.writeFileSync(
+                path.join(chapterDir, 'chapter-003.json'),
+                JSON.stringify({
+                    storyId,
+                    storyline: 'A sci-fi adventure.',
+                    chapterCount: 3,
+                    chapterNumber: '3',
+                    chapterIndex: 2,
+                    title: 'The End',
+                    plotpoints: ['Resolution'],
+                    context: {
+                        appending: [...appending],
+                        request: '> Expand the chapter "3: The End"'
+                    },
+                    config: { systemInstructions: 'test', openingMessage: 'test' },
+                    revisions: []
+                }),
+                'utf-8'
+            );
+            fs.writeFileSync(path.join(chapterDir, 'chapter-003.md'), '## The End', 'utf-8');
+        };
+
+        it('should return 400 when removeChapterIndex is negative', async () => {
+            const storyId = `test-remove-negative-${Date.now()}`;
+            seedThreeChapterStory(storyId);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { removeChapterIndex: -1 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(400);
+            expect(result.response.error).toBe('removeChapterIndex must be a non-negative integer');
+        });
+
+        it('should return 404 when removeChapterIndex is out of range', async () => {
+            const storyId = `test-remove-range-${Date.now()}`;
+            seedThreeChapterStory(storyId);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { removeChapterIndex: 3 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(404);
+            expect(result.response.error).toBe("Chapter 3 not found for story '" + storyId + "'");
+        });
+
+        it('should return 400 when removeChapterIndex is combined with another chapter operation', async () => {
+            const storyId = `test-remove-exclusive-${Date.now()}`;
+            seedThreeChapterStory(storyId);
+
+            const expandCombo = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { removeChapterIndex: 0, expandChapterIndex: 0 }),
+                { root: projectRoot }
+            );
+            expect(expandCombo.status).toBe(400);
+            expect(expandCombo.response.error).toBe(
+                'Only one of expandChapterIndex, rewriteChapter, deleteChapterIndex, or removeChapterIndex may be provided per request.'
+            );
+
+            const deleteCombo = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { removeChapterIndex: 0, deleteChapterIndex: 0 }),
+                { root: projectRoot }
+            );
+            expect(deleteCombo.status).toBe(400);
+            expect(deleteCombo.response.error).toBe(
+                'Only one of expandChapterIndex, rewriteChapter, deleteChapterIndex, or removeChapterIndex may be provided per request.'
+            );
+        });
+
+        it('should remove a middle chapter, renumber later chapters, and shift their files + appending context', async () => {
+            const storyId = `test-remove-middle-${Date.now()}`;
+            seedThreeChapterStory(storyId);
+            const storyboardDir = getStoryboardDir(storyId);
+            const chapterDir = path.join(storyboardDir, 'chapter');
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { removeChapterIndex: 1 }),
+                { root: projectRoot }
+            );
+
+            // Response contract: index echoed, removed title, remaining count.
+            expect(result.status).toBe(200);
+            expect(result.response).toEqual({
+                storyId,
+                removeChapterIndex: 1,
+                title: 'The Middle',
+                chaptersRemaining: 2,
+                message: 'Chapter 1 removed — 2 chapter(s) remain'
+            });
+
+            // plotpoint.json: entry spliced, tail renumbered, chapterCount
+            // decremented, chapterCompleted decremented (the removed chapter
+            // was the story's only completed one).
+            const plotpoint = JSON.parse(fs.readFileSync(path.join(storyboardDir, 'plotpoint.json'), 'utf-8'));
+            expect(plotpoint.chapters).toEqual([
+                { number: '1', title: 'The Beginning', plotpoints: ['Opening scene'] },
+                { number: '2', title: 'The End', plotpoints: ['Resolution'] }
+            ]);
+            expect(plotpoint.chapterCount).toBe(2);
+            expect(plotpoint.chapterCompleted).toBe(0);
+
+            // Slot 2 (chapter-002.*) no longer holds the removed chapter — its
+            // files were deleted and then refilled by the shift: old
+            // chapter-003.* renamed down. chapter-003.* must be gone entirely.
+            expect(fs.existsSync(path.join(chapterDir, 'chapter-003.json'))).toBe(false);
+            expect(fs.existsSync(path.join(chapterDir, 'chapter-003.md'))).toBe(false);
+
+            const shifted = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-002.json'), 'utf-8'));
+            expect(shifted.chapterIndex).toBe(1);
+            expect(shifted.chapterNumber).toBe('2');
+            expect(shifted.chapterCount).toBe(2);
+            expect(shifted.title).toBe('The End');
+            // The removed chapter's summary entry (position 1) is spliced out;
+            // the surrounding summaries keep their relative order.
+            expect(shifted.context.appending).toEqual([
+                '> 1: The Beginning\n\n- Opening scene',
+                '> 3: The End\n\n- Resolution'
+            ]);
+            expect(shifted.context.request).toBe('> Expand the chapter "3: The End"');
+
+            // The markdown mirror travelled with the rename (content untouched).
+            expect(fs.readFileSync(path.join(chapterDir, 'chapter-002.md'), 'utf-8')).toBe('## The End');
+
+            // Untouched chapter 1 stays in place with its own files intact.
+            const untouched = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+            expect(untouched.chapterIndex).toBe(0);
+            expect(untouched.chapterNumber).toBe('1');
+            expect(untouched.context.appending).toEqual([
+                '> 1: The Beginning\n\n- Opening scene',
+                '> 2: The Middle\n\n- Conflict rises',
+                '> 3: The End\n\n- Resolution'
+            ]);
+            expect(fs.existsSync(path.join(chapterDir, 'chapter-001.md'))).toBe(false);
+        });
+
+        it('should remove the last chapter without renaming anything', async () => {
+            const storyId = `test-remove-last-${Date.now()}`;
+            seedThreeChapterStory(storyId);
+            const storyboardDir = getStoryboardDir(storyId);
+            const chapterDir = path.join(storyboardDir, 'chapter');
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { removeChapterIndex: 2 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.response).toEqual({
+                storyId,
+                removeChapterIndex: 2,
+                title: 'The End',
+                chaptersRemaining: 2,
+                message: 'Chapter 2 removed — 2 chapter(s) remain'
+            });
+
+            // Tail files deleted; the two preceding chapters keep their slots.
+            expect(fs.existsSync(path.join(chapterDir, 'chapter-003.json'))).toBe(false);
+            expect(fs.existsSync(path.join(chapterDir, 'chapter-003.md'))).toBe(false);
+
+            const plotpoint = JSON.parse(fs.readFileSync(path.join(storyboardDir, 'plotpoint.json'), 'utf-8'));
+            expect(plotpoint.chapters.map((c: any) => c.number)).toEqual(['1', '2']);
+            expect(plotpoint.chapterCount).toBe(2);
+
+            // Chapter 2's payload was untouched (it precedes the removed one).
+            const middle = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-002.json'), 'utf-8'));
+            expect(middle.chapterIndex).toBe(1);
+            expect(middle.chapterNumber).toBe('2');
+            expect(middle.context.appending).toHaveLength(3);
+
+            // chapterCompleted unchanged: the removed chapter was pending.
+            expect(plotpoint.chapterCompleted).toBe(1);
+        });
+
+        it('should not decrement chapterCompleted when the removed chapter was pending', async () => {
+            const storyId = `test-remove-pending-${Date.now()}`;
+            seedThreeChapterStory(storyId);
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { removeChapterIndex: 0 }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.response.title).toBe('The Beginning');
+            expect(result.response.chaptersRemaining).toBe(2);
+
+            const plotpoint = JSON.parse(
+                fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.json'), 'utf-8')
+            );
+            // The pending chapter contributed nothing to the counter — it stands.
+            expect(plotpoint.chapterCompleted).toBe(1);
+            expect(plotpoint.chapters.map((c: any) => c.number)).toEqual(['1', '2']);
+            expect(plotpoint.chapters.map((c: any) => c.title)).toEqual(['The Middle', 'The End']);
+
+            // The expanded chapter 2 shifted down into slot 1 with its revisions intact.
+            const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+            const shifted = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+            expect(shifted.title).toBe('The Middle');
+            expect(shifted.chapterIndex).toBe(0);
+            expect(shifted.chapterNumber).toBe('1');
+            expect(shifted.revisions).toEqual([
+                { content: 'Middle pass one', wordCount: 3, generationTimeMs: 1200 },
+                { content: 'Middle pass two', wordCount: 3, generationTimeMs: 900 }
+            ]);
+            // Its appending lost the removed chapter's entry (position 0).
+            expect(shifted.context.appending).toEqual([
+                '> 2: The Middle\n\n- Conflict rises',
+                '> 3: The End\n\n- Resolution'
+            ]);
+            // The .md mirror shifted too: old chapter-003.md ('## The End')
+            // lands in chapter-002.md, old chapter-002.md in chapter-001.md.
+            expect(fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8')).toBe('## The Middle\n\nMiddle pass two');
+            expect(fs.readFileSync(path.join(chapterDir, 'chapter-002.md'), 'utf-8')).toBe('## The End');
+            expect(fs.existsSync(path.join(chapterDir, 'chapter-003.md'))).toBe(false);
         });
     });
 });

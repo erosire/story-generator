@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // PATCH handler — updates story metadata, re-expands a chapter, rewrites
-// a chapter with user-provided context, or deletes a chapter's expanded
-// content.
+// a chapter with user-provided context, deletes a chapter's expanded
+// content, or removes a chapter entirely.
 //
 // The handler accepts:
 //   - storyName (string): update story metadata in plotpoint.json
@@ -14,9 +14,12 @@
 //     When the deleted revision was the chapter's last, the chapter returns
 //     to plotlines-only (markdown removed, context preserved) so it can be
 //     expanded again.
+//   - removeChapterIndex (number): remove the chapter ENTIRELY — its
+//     plotpoint.json entry, its chapter-XXX.json/.md files (including every
+//     revision), and renumbers the chapters after it to fill the gap.
 //
-// Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be
-// provided per request.
+// Only one of expandChapterIndex, rewriteChapter, deleteChapterIndex, or
+// removeChapterIndex may be provided per request.
 // When both expandChapterIndex and storyName are provided, metadata is updated
 // first, then re-expansion starts in the background.
 // ---------------------------------------------------------------------------
@@ -117,19 +120,22 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     const deleteChapterIndex = typeof body.deleteChapterIndex === 'number' ? body.deleteChapterIndex : undefined;
     const deleteChapterRevisionIndex =
         typeof body.deleteChapterRevisionIndex === 'number' ? body.deleteChapterRevisionIndex : undefined;
+    const removeChapterIndex = typeof body.removeChapterIndex === 'number' ? body.removeChapterIndex : undefined;
 
-    // Mutually exclusive: expandChapterIndex / rewriteChapter / deleteChapterIndex
-    // each drive a distinct chapter operation — only one may run per request.
+    // Mutually exclusive: expandChapterIndex / rewriteChapter / deleteChapterIndex /
+    // removeChapterIndex each drive a distinct chapter operation — only one may
+    // run per request.
     const exclusiveOpCount = [
         expandChapterIndex !== undefined,
         rewriteChapterIndex !== undefined,
-        deleteChapterIndex !== undefined
+        deleteChapterIndex !== undefined,
+        removeChapterIndex !== undefined
     ].filter(Boolean).length;
     if (exclusiveOpCount > 1) {
         return {
             status: 400,
             response: {
-                error: 'Only one of expandChapterIndex, rewriteChapter, or deleteChapterIndex may be provided per request.'
+                error: 'Only one of expandChapterIndex, rewriteChapter, deleteChapterIndex, or removeChapterIndex may be provided per request.'
             }
         };
     }
@@ -154,18 +160,24 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         expandChapterIndex === undefined &&
         rewriteChapterIndex === undefined &&
         deleteChapterIndex === undefined &&
+        removeChapterIndex === undefined &&
         Object.keys(updatedMeta).length === 0
     ) {
         return {
             status: 400,
             response: {
-                error: 'No valid update fields provided. Supported: storyName (string), expandChapterIndex (number), rewriteChapter (number) + rewriteContext (string), deleteChapterIndex (number)'
+                error: 'No valid update fields provided. Supported: storyName (string), expandChapterIndex (number), rewriteChapter (number) + rewriteContext (string), deleteChapterIndex (number), removeChapterIndex (number)'
             }
         };
     }
 
     // If only metadata was updated, return success immediately
-    if (expandChapterIndex === undefined && rewriteChapterIndex === undefined && deleteChapterIndex === undefined) {
+    if (
+        expandChapterIndex === undefined &&
+        rewriteChapterIndex === undefined &&
+        deleteChapterIndex === undefined &&
+        removeChapterIndex === undefined
+    ) {
         return {
             status: 200,
             response: {
@@ -312,6 +324,161 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
                     existingRevisions.length === 0
                         ? `Chapter ${deleteChapterIndex} revision ${targetRevisionIndex} deleted — the chapter is plotlines only and can be expanded again`
                         : `Chapter ${deleteChapterIndex} revision ${targetRevisionIndex} deleted`
+            }
+        };
+    }
+
+    // ── Handle full chapter removal ──────────────────────────────────────
+    // Synchronous (no LLM work). Removes the chapter ENTIRELY — the opposite
+    // of deleteChapterIndex, which only strips one revision and keeps the
+    // chapter (and its plotpoints/context) for re-expansion:
+    //   1. plotpoint.json — the chapter entry is spliced out of chapters[],
+    //      every later entry is renumbered (number = position + 1),
+    //      chapterCount drops by one, and chapterCompleted drops when the
+    //      removed chapter carried finalized revisions.
+    //   2. chapter/ files — the removed chapter's chapter-XXX.json/.md are
+    //      deleted, and every later chapter's files are renamed down one slot
+    //      (chapter-003 → chapter-002, ...) with their payload metadata
+    //      updated to match (chapterIndex, chapterNumber, chapterCount).
+    //      Renames run in ASCENDING order: each destination slot was vacated
+    //      either by the deletion (first step) or by the previous rename.
+    //   3. context.appending — each shifted payload's appending[] has the
+    //      removed chapter's summary entry spliced out so positions stay
+    //      aligned with the new chapter indices (appending[i] ↔ chapter i,
+    //      see buildAppendingFromChapters in story-utils.ts).
+    //
+    // Re-expansion of any surviving chapter keeps working: its payload
+    // (context.appending + context.request) travels with the renamed file.
+    //
+    // Edge case: removing while a background expansion is in flight is not
+    // blocked — same accepted trade-off as the delete/rewrite paths, which
+    // the UI also fires blind. A chain expansion (reExpandChapter) stops on
+    // its next assertStoryExists/missing-payload check.
+    if (removeChapterIndex !== undefined) {
+        if (removeChapterIndex < 0) {
+            return {
+                status: 400,
+                response: { error: 'removeChapterIndex must be a non-negative integer' }
+            };
+        }
+
+        const chapters = Array.isArray(plotpointData.chapters) ? plotpointData.chapters : [];
+
+        if (removeChapterIndex >= chapters.length) {
+            return {
+                status: 404,
+                response: { error: `Chapter ${removeChapterIndex} not found for story '${storyId}'` }
+            };
+        }
+
+        // Capture the removed chapter's identity for the response BEFORE the splice.
+        const removedChapter = chapters[removeChapterIndex];
+        const removedTitle =
+            typeof removedChapter?.title === 'string' && removedChapter.title.length > 0
+                ? removedChapter.title
+                : `Chapter ${removeChapterIndex + 1}`;
+
+        // Whether the removed chapter was "complete" (had finalized revisions)
+        // — gates the chapterCompleted decrement, mirroring the wasComplete
+        // rule of the deleteChapterIndex branch (generationTimeMs > 0 marks a
+        // finalized revision; streaming entries carry 0).
+        const removedPayload = readChapterPayload(chapterDir, removeChapterIndex);
+        const removedRevisions: Array<{ generationTimeMs?: number }> = Array.isArray(
+            (removedPayload as any)?.revisions
+        )
+            ? (removedPayload as any).revisions
+            : [];
+        const wasComplete = removedRevisions.some(
+            (r) => typeof r?.generationTimeMs === 'number' && r.generationTimeMs > 0
+        );
+
+        const previousChapterCount = chapters.length;
+        const newChapterCount = previousChapterCount - 1;
+
+        // 1. Splice the chapter out of plotpoint.json and renumber the tail.
+        chapters.splice(removeChapterIndex, 1);
+        chapters.forEach((ch: any, i: number) => {
+            ch.number = String(i + 1);
+        });
+        plotpointData.chapters = chapters;
+        plotpointData.chapterCount = newChapterCount;
+        if (wasComplete) {
+            plotpointData.chapterCompleted = Math.max(0, (plotpointData.chapterCompleted ?? 1) - 1);
+        }
+        fs.writeFileSync(plotpointJsonPath, JSON.stringify(plotpointData, null, 2), 'utf-8');
+
+        // 2. Shift the chapter files down one slot.
+        if (fs.existsSync(chapterDir)) {
+            // Delete the removed chapter's payload + markdown mirror (every
+            // revision dies with them — that is the point of this operation).
+            const paddedRemoved = String(removeChapterIndex + 1).padStart(3, '0');
+            for (const ext of ['json', 'md']) {
+                const removedPath = path.join(chapterDir, `chapter-${paddedRemoved}.${ext}`);
+                if (fs.existsSync(removedPath)) {
+                    fs.rmSync(removedPath);
+                }
+            }
+
+            // Rename every later chapter's files into the vacated slot.
+            // Ascending order keeps each destination free: slot removeChapterIndex
+            // was just deleted, and slot i-1 was vacated by the previous iteration.
+            for (let oldIdx = removeChapterIndex + 1; oldIdx < previousChapterCount; oldIdx++) {
+                const newIdx = oldIdx - 1;
+                const paddedOld = String(oldIdx + 1).padStart(3, '0');
+                const paddedNew = String(newIdx + 1).padStart(3, '0');
+
+                const oldJsonPath = path.join(chapterDir, `chapter-${paddedOld}.json`);
+                const newJsonPath = path.join(chapterDir, `chapter-${paddedNew}.json`);
+                if (fs.existsSync(oldJsonPath)) {
+                    fs.renameSync(oldJsonPath, newJsonPath);
+
+                    // Update the payload's identity + context so re-expansion
+                    // and the GET handler (which indexes by chapterIndex) stay
+                    // consistent. A corrupted payload keeps its renamed file —
+                    // the GET handler skips corrupted JSON anyway.
+                    try {
+                        const payload = JSON.parse(fs.readFileSync(newJsonPath, 'utf-8'));
+                        payload.chapterIndex = newIdx;
+                        payload.chapterNumber = String(newIdx + 1);
+                        payload.chapterCount = newChapterCount;
+                        if (
+                            payload.context &&
+                            Array.isArray(payload.context.appending) &&
+                            payload.context.appending.length > removeChapterIndex
+                        ) {
+                            // Drop the removed chapter's summary entry so
+                            // appending[i] stays aligned with chapter i.
+                            payload.context.appending.splice(removeChapterIndex, 1);
+                        }
+                        fs.writeFileSync(newJsonPath, JSON.stringify(payload, null, 2), 'utf-8');
+                    } catch {
+                        console.warn(
+                            `[PATCH] Could not rewrite shifted payload chapter-${paddedNew}.json for story '${storyId}' (corrupted?) — file renamed without metadata update`
+                        );
+                    }
+                }
+
+                const oldMdPath = path.join(chapterDir, `chapter-${paddedOld}.md`);
+                const newMdPath = path.join(chapterDir, `chapter-${paddedNew}.md`);
+                if (fs.existsSync(oldMdPath)) {
+                    fs.renameSync(oldMdPath, newMdPath);
+                }
+            }
+        }
+
+        console.log(
+            `[PATCH] Removed chapter ${removeChapterIndex} ('${removedTitle}') for story '${storyId}' — ${newChapterCount} chapter(s) remain, later chapters renumbered`
+        );
+
+        return {
+            status: 200,
+            response: {
+                storyId,
+                ...updatedMeta,
+                removeChapterIndex,
+                title: removedTitle,
+                chaptersRemaining: newChapterCount,
+                message: `Chapter ${removeChapterIndex} removed — ${newChapterCount} chapter(s) remain`
             }
         };
     }
