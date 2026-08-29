@@ -3,7 +3,10 @@ info:
   title: Storyboard Generations API
   description: >-
     API for creating and reading AI-generated storyboard stories. GET the
-    collections endpoint to list all stories. POST to create a new story
+    collections endpoint to list all stories — the response also carries the
+    server's in-memory background-job registry (per-story `processing` flags
+    and the `jobs` snapshot) so any session can see which stories have a
+    background thread running. POST to create a new story
     (runs in background), GET with a specific storyId to retrieve a unified
     list of chapters. Each chapter includes its plotpoints and expansion
     status — expanded chapters include the full content, while pending
@@ -15,10 +18,10 @@ info:
     client performs the generation — the id is never stored and must be sent
     with each request. GET /v1/storyboard/clients lists the available client
     ids.
-  version: 1.10.0
+  version: 1.11.0
 servers:
-  - url: http://127.0.0.1:5000
-    description: Local development server
+  - url: http://127.0.0.1:5252
+    description: Local development server (dedicated storyboard service port — LOCAL_AREA_NETWORK_STORYBOARD_PORT)
 paths:
   /v1/storyboard/generations:
     get:
@@ -28,13 +31,19 @@ paths:
         Returns all stories in the storyboard database directory. Each entry
         includes metadata (storyId, storyName, chapterRequested,
         chapterCompleted, createdDate, status) derived from each story's
-        plotpoint.json. Stories are sorted by createdDate descending (newest
+        plotpoint.json, plus the `processing` live background-thread flag
+        from the server's in-memory job registry. The response also carries
+        the `jobs` snapshot — every background thread (create, fork, append,
+        resume, expand, rewrite) currently running in the server process.
+        The registry is process-local: a server restart clears it (blank
+        slate), so a story whose job died with the restart is NOT reported
+        as processing. Stories are sorted by createdDate descending (newest
         first). Storyline is intentionally omitted from the list response.
       tags:
         - Storyboard
       responses:
         '200':
-          description: List of all stories
+          description: List of all stories with the live background-job snapshot
           content:
             application/json:
               schema:
@@ -46,12 +55,19 @@ paths:
                     chapterCompleted: 5
                     createdDate: '2026-07-01T10:00:00.000Z'
                     status: completed
+                    processing: false
                   - storyId: b2c3d4e5-f6a7-8901-bcde-f12345678901
                     storyName: My Sci-Fi Story
                     chapterRequested: 10
                     chapterCompleted: 3
                     createdDate: '2026-07-02T14:30:00.000Z'
                     status: generating
+                    processing: true
+                jobs:
+                  - jobId: job-7
+                    storyId: b2c3d4e5-f6a7-8901-bcde-f12345678901
+                    kind: create
+                    startedAt: '2026-07-02T14:30:01.000Z'
   /v1/storyboard/generations/{storyId}:
     post:
       operationId: createNewStory
@@ -523,7 +539,8 @@ components:
             Array of story metadata objects. Each entry includes story
             identifiers and summary information (chapterRequested,
             chapterCompleted, createdDate, status) without detailed chapter
-            data. Use GET with a specific storyId to retrieve chapter data.
+            data, plus the `processing` live background-thread flag. Use GET
+            with a specific storyId to retrieve chapter data.
           items:
             $ref: '#/components/schemas/StoryListEntry'
           example:
@@ -532,12 +549,62 @@ components:
               chapterCompleted: 5
               createdDate: '2026-07-01T10:00:00.000Z'
               status: completed
+              processing: false
             - storyId: b2c3d4e5-f6a7-8901-bcde-f12345678901
               storyName: My Sci-Fi Story
               chapterRequested: 10
               chapterCompleted: 3
               createdDate: '2026-07-02T14:30:00.000Z'
               status: generating
+              processing: true
+        jobs:
+          type: array
+          description: >-
+            Snapshot of the server's in-memory background-job registry —
+            every background thread currently running, oldest first. In-memory
+            only: a server restart clears the registry, so this list is empty
+            right after a boot regardless of what the interrupted jobs left on
+            disk.
+          items:
+            $ref: '#/components/schemas/StoryJobEntry'
+          example:
+            - jobId: job-7
+              storyId: b2c3d4e5-f6a7-8901-bcde-f12345678901
+              kind: create
+              startedAt: '2026-07-02T14:30:01.000Z'
+    StoryJobEntry:
+      type: object
+      description: >-
+        One active background job in the server's process-local registry.
+        `kind` tells which background flow is running; jobs for chapter-level
+        flows (expand/rewrite) are tracked non-exclusively and never block
+        other work, while create/fork/append/resume hold the story's
+        exclusive write slot (a second exclusive job for the same story is
+        rejected with 400 'already in progress').
+      properties:
+        jobId:
+          type: string
+          description: Registry-assigned id, unique within the process lifetime
+          example: job-7
+        storyId:
+          type: string
+          description: The story the job writes to
+          example: b2c3d4e5-f6a7-8901-bcde-f12345678901
+        kind:
+          type: string
+          description: Which background flow is running
+          enum:
+            - create
+            - fork
+            - append
+            - resume
+            - expand
+            - rewrite
+          example: create
+        startedAt:
+          type: string
+          description: ISO 8601 timestamp of when the job was registered
+          example: '2026-07-02T14:30:01.000Z'
     StoryListEntry:
       type: object
       description: >-
@@ -546,7 +613,8 @@ components:
         chapterRequested. chapterCompleted is derived by counting expanded
         chapter files. status is derived from plotpoint.json status + chapter
         completion (all expanded → 'completed', otherwise 'generating' or
-        'failed').
+        'failed'). processing is the live background-thread flag from the
+        server's in-memory job registry (blank after a restart).
       properties:
         storyId:
           type: string
@@ -579,6 +647,15 @@ components:
             - completed
             - failed
           example: completed
+        processing:
+          type: boolean
+          description: >-
+            True while ANY background job (create, fork, append, resume,
+            expand, rewrite) for this storyId is running in the server
+            process. Process-local: false after a server restart even when
+            plotpoint.json still says 'generating'. The dashboard sidebar
+            animates the story tile from this flag.
+          example: false
     ErrorResponse:
       type: object
       properties:

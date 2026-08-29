@@ -38,6 +38,7 @@ import {
     writeChapterFiles,
     writeChapterPayload
 } from './story-utils';
+import { releaseStoryJob, trackStoryJob } from './generation-job-registry';
 
 export const generationUpdateChapter = asHandlerMethod(async (_, parameters, variables) => {
     const { path: pathParams, body } = parameters;
@@ -569,6 +570,11 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
 
         // Fire-and-forget: rewrite the single chapter (no chain expansion).
         // clientId selects the LLM client for this rewrite (absent → default).
+        // The rewrite registers a NON-exclusive job in the registry (tracked
+        // only — it never blocked other work and must keep that behavior) so
+        // the collection endpoint reports the story as `processing` while the
+        // background thread runs, and the sidebar tile animates.
+        const rewriteJobId = trackStoryJob(storyId, 'rewrite');
         rewriteChapterBg({
             storyId,
             storyline: storyMeta.storyline,
@@ -584,9 +590,11 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
             databaseDir,
             chapterDir,
             clientId
-        }).catch((err) => {
-            console.error(`Chapter rewrite failed for storyId ${storyId} chapter ${rewriteChapterIndex}:`, err);
-        });
+        })
+            .catch((err) => {
+                console.error(`Chapter rewrite failed for storyId ${storyId} chapter ${rewriteChapterIndex}:`, err);
+            })
+            .finally(() => releaseStoryJob(rewriteJobId));
 
         return {
             status: 200,
@@ -658,6 +666,10 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     // Start chapter re-expansion in the background (fire-and-forget)
     // This mirrors the pattern in generation-create-new-story.ts.
     // clientId selects the LLM client for the chain (absent → default).
+    // The re-expansion registers a NON-exclusive tracked job (visibility only
+    // — same reasoning as the rewrite branch above) so the sidebar tile
+    // animates while the background thread runs.
+    const expandJobId = trackStoryJob(storyId, 'expand');
     reExpandChapter({
         storyId,
         storyline: storyMeta.storyline,
@@ -672,9 +684,11 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         databaseDir,
         chapterDir,
         clientId
-    }).catch((err) => {
-        console.error(`Chapter re-expansion failed for storyId ${storyId} chapter ${expandIdx}:`, err);
-    });
+    })
+        .catch((err) => {
+            console.error(`Chapter re-expansion failed for storyId ${storyId} chapter ${expandIdx}:`, err);
+        })
+        .finally(() => releaseStoryJob(expandJobId));
 
     // Return immediately while re-expansion runs in the background
     return {

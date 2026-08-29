@@ -9,6 +9,7 @@ import path from 'node:path';
 import { describe, it, expect, afterAll } from 'vitest';
 import { generationListStories } from './generation-list-stories';
 import { DATABASE_BASE_DIR } from './generation-config';
+import { releaseStoryJob, trackStoryJob } from './generation-job-registry';
 
 // Use an isolated temp directory as the project root so tests never pollute the
 // source tree. The service normally passes temporary/database via variables.root.
@@ -502,5 +503,88 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         expect(found.status).toBe('generating');
 
         console.log('Legacy plotpoint.json without chapterCompleted:', found);
+    });
+
+    // ── live background-job tracking (job registry integration) ────────
+
+    it('should report processing=true and include the job in jobs while a background job runs', async () => {
+        const storyId = `test-list-processing-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const dir = getStoryboardDir(storyId);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+            path.join(dir, 'plotpoint.json'),
+            JSON.stringify({
+                storyId,
+                storyName: 'Busy Story',
+                storyline: 'A story with a live background job.',
+                chapterCount: 2,
+                chapterCompleted: 0,
+                chapters: [],
+                createdAt: '2026-08-10T00:00:00.000Z'
+            }),
+            'utf-8'
+        );
+
+        // Register a tracked (non-exclusive) job the way
+        // generation-update-chapter.ts does for a chapter expansion.
+        const jobId = trackStoryJob(storyId, 'expand');
+
+        const parameters = createMockParameters();
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
+
+        // The story's entry is flagged processing.
+        const found = result.response.stories.find((s: any) => s.storyId === storyId);
+        expect(found).toBeDefined();
+        expect(found.processing).toBe(true);
+
+        // The jobs snapshot carries the full job record.
+        const jobEntry = result.response.jobs.find((j: any) => j.storyId === storyId);
+        expect(jobEntry).toEqual({
+            jobId: expect.any(String),
+            storyId,
+            kind: 'expand',
+            startedAt: expect.any(String)
+        });
+
+        // Release — the story immediately drops out of processing and the
+        // jobs snapshot (blank-slate semantics while the process lives).
+        releaseStoryJob(jobId);
+
+        const afterRelease = await generationListStories(mockContext, createMockParameters(), { root: projectRoot });
+        const foundAfter = afterRelease.response.stories.find((s: any) => s.storyId === storyId);
+        expect(foundAfter).toBeDefined();
+        expect(foundAfter.processing).toBe(false);
+        expect(afterRelease.response.jobs.find((j: any) => j.storyId === storyId)).toBeUndefined();
+    });
+
+    it('should report processing=false for stories without active jobs', async () => {
+        const storyId = `test-list-idle-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const dir = getStoryboardDir(storyId);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+            path.join(dir, 'plotpoint.json'),
+            JSON.stringify({
+                storyId,
+                storyName: 'Idle Story',
+                storyline: 'No background job runs for this story.',
+                chapterCount: 1,
+                chapterCompleted: 1,
+                chapters: [{ number: '1', title: 'Ch 1', plotpoints: ['a'] }],
+                createdAt: '2026-08-11T00:00:00.000Z'
+            }),
+            'utf-8'
+        );
+
+        const parameters = createMockParameters();
+        const result = await generationListStories(mockContext, parameters, { root: projectRoot });
+
+        const found = result.response.stories.find((s: any) => s.storyId === storyId);
+        expect(found).toBeDefined();
+        expect(found.processing).toBe(false);
+        expect(result.response.jobs.find((j: any) => j.storyId === storyId)).toBeUndefined();
     });
 });

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
 import { DATABASE_BASE_DIR } from './generation-config';
+import { getActiveStoryJobs, isStoryJobActive, type StoryJob } from './generation-job-registry';
 
 // Story metadata shape returned by the collection endpoint.
 // Field names differ from what is stored in plotpoint.json:
@@ -12,6 +13,12 @@ import { DATABASE_BASE_DIR } from './generation-config';
 //   - `status` is derived from the plotpoint.json `status` field ('generating',
 //     'completed' — plotline-only stories, 'failed') combined with chapter
 //     completion (all chapters expanded → 'completed')
+//   - `processing` is the LIVE background-thread flag from the job registry
+//     (generation-job-registry.ts) — true while any background job (create,
+//     fork, append, resume, expand, rewrite) is running for this storyId in
+//     THIS server process. Unlike `status`, it dies with a server restart
+//     (blank slate), so a stuck 'generating' story without a live job is NOT
+//     reported as processing. This is what the sidebar animates on.
 //
 // Note: storyline is intentionally omitted from the list response — it is
 // free-form user text that can be arbitrarily long and is not needed by the
@@ -23,6 +30,7 @@ type StoryMeta = {
     chapterCompleted: number;
     createdDate: string;
     status: 'generating' | 'completed' | 'failed';
+    processing: boolean;
 };
 
 // Derive the final status from the raw plotpoint.json status + chapter completion.
@@ -49,7 +57,11 @@ const deriveStatus = (
 
 // List all stories in the storyboard directory below the shared database root.
 // Each entry includes the story metadata (chapterRequested, chapterCompleted, createdDate, status)
-// from plotpoint.json if available, otherwise falls back to just the storyId
+// from plotpoint.json if available, otherwise falls back to just the storyId.
+// The response also carries the LIVE background-job registry snapshot: the
+// per-story `processing` flag and the top-level `jobs` array — the in-memory
+// view of every background thread currently running on this server process
+// (blank after a restart, see generation-job-registry.ts).
 export const generationListStories = asHandlerMethod(async (_, parameters, variables) => {
     const projectRoot = variables.root;
 
@@ -60,7 +72,7 @@ export const generationListStories = asHandlerMethod(async (_, parameters, varia
     if (!fs.existsSync(databaseDir)) {
         return {
             status: 200,
-            response: { stories: [] }
+            response: { stories: [], jobs: getActiveStoryJobs() }
         };
     }
 
@@ -71,6 +83,10 @@ export const generationListStories = asHandlerMethod(async (_, parameters, varia
 
     for (const entry of entries) {
         if (!entry.isDirectory()) continue;
+
+        // Live background-thread flag for this storyId — read from the
+        // process-local job registry (blank after a server restart).
+        const processing = isStoryJobActive(entry.name);
 
         const storyDir = path.join(databaseDir, entry.name);
         const plotpointJsonPath = path.join(storyDir, 'plotpoint.json');
@@ -94,7 +110,8 @@ export const generationListStories = asHandlerMethod(async (_, parameters, varia
                     // Rename createdAt → createdDate per the API spec
                     createdDate: data.createdAt ?? '',
                     // Derive status from raw plotpoint.json status + chapter completion
-                    status: deriveStatus(data.status, chapterCompleted, chapterRequested)
+                    status: deriveStatus(data.status, chapterCompleted, chapterRequested),
+                    processing
                 });
             } catch {
                 // If plotpoint.json is corrupted or unreadable, fall back to minimal metadata
@@ -103,7 +120,8 @@ export const generationListStories = asHandlerMethod(async (_, parameters, varia
                     chapterRequested: 0,
                     chapterCompleted: 0,
                     createdDate: '',
-                    status: 'generating'
+                    status: 'generating',
+                    processing
                 });
             }
         } else {
@@ -113,7 +131,8 @@ export const generationListStories = asHandlerMethod(async (_, parameters, varia
                 chapterRequested: 0,
                 chapterCompleted: 0,
                 createdDate: '',
-                status: 'generating'
+                status: 'generating',
+                processing
             });
         }
     }
@@ -121,8 +140,13 @@ export const generationListStories = asHandlerMethod(async (_, parameters, varia
     // Return stories sorted by createdDate descending (newest first)
     stories.sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
 
+    // jobs: the full in-memory registry snapshot — every background thread
+    // (create/fork/append/resume/expand/rewrite) currently running, with its
+    // storyId, kind, and start time. In-memory only: a restart returns [].
+    const jobs: StoryJob[] = getActiveStoryJobs();
+
     return {
         status: 200,
-        response: { stories }
+        response: { stories, jobs }
     };
 });

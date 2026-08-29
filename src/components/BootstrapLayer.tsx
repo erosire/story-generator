@@ -66,19 +66,29 @@ export const BootstrapLayer: React.FC = React.memo(() => {
         // stories (flagged missingFromServer). The resulting records are
         // written back to localStorage by the store's auto-persist effect.
         fetchStoryList(baseUrl)
-            .then(({ stories }) => {
+            .then(({ stories, jobs }) => {
                 setStore((prev) => {
+                    // activeJobs is updated in BOTH branches: the `jobs` array
+                    // is authoritative on its own (an empty registry answer is
+                    // a real answer — the server's in-memory registry blanks on
+                    // restart), unlike an empty story list which is treated as
+                    // "no information" for the records merge.
                     // Empty server list → mergeServerStoryList returns null:
                     // not a sync signal — keep the cached records untouched.
                     const merged = mergeServerStoryList(prev, stories ?? []);
                     if (!merged) {
-                        // Still clear any previous warning — the server answered.
-                        return prev.loadWarning ? { ...prev, loadWarning: undefined } : prev;
+                        return {
+                            ...prev,
+                            activeJobs: jobs ?? [],
+                            // Still clear any previous warning — the server answered.
+                            loadWarning: undefined
+                        };
                     }
                     return {
                         ...prev,
                         records: merged.records,
                         selected: merged.selected,
+                        activeJobs: jobs ?? [],
                         // A successful list sync clears the unreachable-server
                         // warning from a previous failure.
                         loadWarning: undefined

@@ -3,11 +3,15 @@
 // Routes (see src/server/endpoints/story-generator.yml):
 //
 // Route 1 — Collection: GET /v1/storyboard/generations
-//   returns: { stories: StoryMeta[] }
-//   Each entry includes metadata (storyId, chapterRequested, chapterCompleted,
-//   createdDate, status). Storyline is intentionally omitted
-//   because it is free-form user text not needed by the sidebar.
-//   See generation-list-stories.ts.
+//   returns: { stories: StoryMeta[], jobs: ActiveJob[] }
+//   Each story entry includes metadata (storyId, chapterRequested,
+//   chapterCompleted, createdDate, status) plus `processing` — the live
+//   background-thread flag from the server's in-memory job registry
+//   (blank after a server restart). `jobs` is the registry snapshot: every
+//   background thread (create/fork/append/resume/expand/rewrite) currently
+//   running on the server, for cross-session visibility. Storyline is
+//   intentionally omitted because it is free-form user text not needed by
+//   the sidebar. See generation-list-stories.ts.
 //
 // Route 2 — Story-specific: /v1/storyboard/generations/:storyId
 //   - POST /v1/storyboard/generations/:storyId
@@ -93,6 +97,27 @@ export type StoryMeta = {
     chapterCompleted: number;
     createdDate: string;
     status: 'generating' | 'completed' | 'failed';
+    // LIVE background-thread flag from the server's in-memory job registry
+    // (generation-job-registry.ts). True while any background job (create,
+    // fork, append, resume, expand, rewrite) runs for this storyId in the
+    // server process; dies with a server restart (blank slate). The sidebar
+    // animates the tile from this flag — it also covers jobs started by
+    // OTHER sessions/devices. Optional: a server predating the registry
+    // omits the field, which the client treats as false.
+    processing?: boolean;
+};
+
+// One active background job as reported by the collection endpoint's `jobs`
+// array — the server-side, in-memory view of every background thread
+// (story generation, append, resume, chapter expansion, rewrite) currently
+// running. Process-local: a server restart clears the list. The client uses
+// this for observability; the per-story `processing` flag above drives the
+// sidebar animation.
+export type ActiveJob = {
+    jobId: string;
+    storyId: string;
+    kind: 'create' | 'fork' | 'append' | 'resume' | 'expand' | 'rewrite';
+    startedAt: string; // ISO 8601
 };
 
 // Result of a single GET poll attempt. `status` distinguishes terminal 200
@@ -297,17 +322,19 @@ export async function fetchStoryData(
 
 // Fetch the list of all stories via GET /v1/storyboard/generations.
 //
-// The server returns { stories: StoryMeta[] } where each entry contains
-// story metadata (storyId, chapterRequested, chapterCompleted, createdDate,
-// status) from plotpoint.json (see generation-list-stories.ts). Stories are
-// sorted by createdDate descending (newest first) on the server side.
+// The server returns { stories: StoryMeta[], jobs: ActiveJob[] } where each
+// story entry contains story metadata (storyId, chapterRequested,
+// chapterCompleted, createdDate, status, processing) from plotpoint.json
+// (see generation-list-stories.ts). Stories are sorted by createdDate
+// descending (newest first) on the server side. `jobs` is the server's
+// in-memory background-thread registry snapshot (empty after a restart).
 // Storyline is intentionally omitted from the list response.
 //
 // The list never includes chapter content — callers issue a second
 // GET with a specific storyId for that.
 //
 // Throws on network failure or non-200 so the caller can surface a load error.
-export async function fetchStoryList(baseUrl: string): Promise<{ stories: StoryMeta[] }> {
+export async function fetchStoryList(baseUrl: string): Promise<{ stories: StoryMeta[]; jobs: ActiveJob[] }> {
     const url = `${baseUrl}`;
     const response = await fetch(url, { method: 'GET' });
 
@@ -322,10 +349,15 @@ export async function fetchStoryList(baseUrl: string): Promise<{ stories: StoryM
         throw new Error(message);
     }
 
-    // The server always returns { stories: StoryMeta[] } (may be empty when no
-    // story directories exist yet — see generation-list-stories.ts).
-    const data = (await response.json()) as { stories: StoryMeta[] };
-    return { stories: Array.isArray(data.stories) ? data.stories : [] };
+    // The server always returns { stories: StoryMeta[], jobs: ActiveJob[] }
+    // (may both be empty when no story directories exist / no jobs run — see
+    // generation-list-stories.ts). Defensive defaults keep a stale deployment
+    // without the jobs field working: jobs → [].
+    const data = (await response.json()) as { stories?: StoryMeta[]; jobs?: ActiveJob[] };
+    return {
+        stories: Array.isArray(data.stories) ? data.stories : [],
+        jobs: Array.isArray(data.jobs) ? data.jobs : []
+    };
 }
 
 // Poll the GET endpoint in a loop until a termination condition is met.

@@ -837,8 +837,11 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         // Start fork in the background (fire-and-forget). The fork re-expands
         // chapters with the same per-request clientId the caller selected.
         // The job registry guard rejects a second concurrent job on the same
-        // storyId (see generation-job-registry.ts).
-        if (!acquireStoryJob(storyId)) {
+        // storyId (see generation-job-registry.ts). The returned jobId is
+        // what releases the slot — release-by-id keeps the release tied to
+        // THIS job even if other jobs were registered for the story meanwhile.
+        const jobId = acquireStoryJob(storyId, 'fork');
+        if (!jobId) {
             return {
                 status: 400,
                 response: { error: `Story '${storyId}' already has a generation job in progress` }
@@ -848,7 +851,7 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
             .catch((err) => {
                 console.error(`Story fork failed for storyId ${storyId}:`, err);
             })
-            .finally(() => releaseStoryJob(storyId));
+            .finally(() => releaseStoryJob(jobId));
 
         return {
             status: 200,
@@ -903,7 +906,8 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         // generation takes seconds to minutes; the dashboard's GET polling
         // picks up the rewritten plotpoint.json when it lands. The per-request
         // clientId (validated above) selects the model for the plotline call.
-        if (!acquireStoryJob(storyId)) {
+        const jobId = acquireStoryJob(storyId, 'append');
+        if (!jobId) {
             return {
                 status: 400,
                 response: { error: `Story '${storyId}' already has a generation job in progress` }
@@ -919,7 +923,7 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
             .catch((err) => {
                 console.error(`Story append failed for storyId ${storyId}:`, err);
             })
-            .finally(() => releaseStoryJob(storyId));
+            .finally(() => releaseStoryJob(jobId));
 
         return {
             status: 200,
@@ -967,7 +971,8 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         // Start the resume in the background (fire-and-forget), guarded by the
         // job registry so a click during genuine in-flight generation is a
         // clean 400 instead of two writers corrupting plotpoint.json.
-        if (!acquireStoryJob(storyId)) {
+        const jobId = acquireStoryJob(storyId, 'resume');
+        if (!jobId) {
             return {
                 status: 400,
                 response: { error: `Story '${storyId}' already has a generation job in progress` }
@@ -982,7 +987,7 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
             .catch((err) => {
                 console.error(`Story resume failed for storyId ${storyId}:`, err);
             })
-            .finally(() => releaseStoryJob(storyId));
+            .finally(() => releaseStoryJob(jobId));
 
         // `resumed` = chapters about to be regenerated; `chapterCount` = the
         // final target so the client can align its chapterRequested.
@@ -1026,8 +1031,10 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
     // The job registry guard turns a duplicate POST for the same storyId into
     // a clean 400 instead of a background crash at the reserved-directory mkdir
     // (generateStory fs.mkdirSync, line 59), and stops create from racing a
-    // resume already running for the same story.
-    if (!acquireStoryJob(storyId)) {
+    // resume already running for the same story. The returned jobId releases
+    // the slot when the background promise settles.
+    const jobId = acquireStoryJob(storyId, 'create');
+    if (!jobId) {
         return {
             status: 400,
             response: { error: `Story '${storyId}' already has a generation job in progress` }
@@ -1045,7 +1052,7 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         .catch((err) => {
             console.error(`Story generation failed for storyId ${storyId}:`, err);
         })
-        .finally(() => releaseStoryJob(storyId));
+        .finally(() => releaseStoryJob(jobId));
 
     // Return the storyId immediately to the requester
     return {

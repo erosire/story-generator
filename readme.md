@@ -11,7 +11,7 @@ npm run test       # Run all tests
 npm run build      # Production build to dist/
 ```
 
-The UI connects to the storyboard API at `http://192.168.8.128:5000` by default (configurable via `StoryStoreProvider` `configOverrides`).
+The UI connects to the storyboard API at `http://192.168.8.128:5252` by default (configurable via `StoryStoreProvider` `configOverrides`). All storyboard routes (list stories, story CRUD, clients) live on the same dedicated service port `5252` (`LOCAL_AREA_NETWORK_STORYBOARD_PORT` in `config/environment/src/port.ts`).
 
 ---
 
@@ -357,7 +357,7 @@ Via `StoryStoreProvider` `configOverrides`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `baseUrl` | `http://192.168.8.128:5000/v1/storyboard/generations` | API base URL |
+| `baseUrl` | `http://192.168.8.128:5252/v1/storyboard/generations` | API base URL (dedicated storyboard service port `5252`) |
 | `pollIntervalMs` | 10000 | Poll interval in ms |
 
 ---

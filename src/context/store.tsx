@@ -14,8 +14,8 @@
 // pattern (read + mutate triggers re-render).
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_DATABASE_PORT } from '@config/environment';
-import { deleteStory as deleteStoryApi, type StoryMeta } from '../api';
+import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '@config/environment';
+import { deleteStory as deleteStoryApi, type ActiveJob, type StoryMeta } from '../api';
 
 // ── localStorage helpers ──────────────────────────────────────────────
 const STORAGE_KEY_STORY = 'storyGenerator:lastStoryId';
@@ -107,7 +107,7 @@ export const clearExpandedChapters = (storyId: string) => {
 // to keep the main thread responsive.
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
-// that don't survive across sessions (error, isProcessing).
+// that don't survive across sessions (error, isProcessing, serverProcessing).
 type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterRequested' | 'chapterCompleted' | 'createdDate' | 'status' | 'isRemote' | 'missingFromServer'> & {
     data: StoryData | null;
 };
@@ -151,6 +151,11 @@ export const loadRecordsFromStorage = (): StoryEntry[] => {
             // Cache-only flag persists across reloads so the story still renders
             // (and deletes locally) before the next successful list sync.
             missingFromServer: entry.missingFromServer ?? false,
+            // Transient live-job flag starts false on rehydrate — the server's
+            // in-memory job registry is the only source of truth and is
+            // re-synced by the next list fetch (BootstrapLayer / sidebar
+            // auto-refresh).
+            serverProcessing: false,
             isProcessing: false,
             error: ''
         }));
@@ -197,6 +202,10 @@ export const mergeServerStoryList = (
 
     // Server-known entries: overlay fresh metadata onto the existing entry
     // (or build a new remote entry for stories never seen before).
+    // `serverProcessing` mirrors the server's per-story live background-job
+    // flag (plotpoint.json's derived status is NOT enough — a story can sit
+    // at 'generating' with its job dead after a server restart). The overlay
+    // happens on every list sync so the flag tracks the registry closely.
     const serverEntries: StoryEntry[] = stories.map((meta, index) => {
         const existing = prevByStoryId.get(meta.storyId);
         if (existing) {
@@ -208,6 +217,9 @@ export const mergeServerStoryList = (
                 chapterCompleted: meta.chapterCompleted,
                 createdDate: meta.createdDate || existing.createdDate,
                 status: meta.status,
+                // Server-confirmed live background thread. A server predating
+                // the registry omits the field → treated as not processing.
+                serverProcessing: meta.processing ?? false,
                 missingFromServer: false
             };
         }
@@ -227,6 +239,7 @@ export const mergeServerStoryList = (
             status: meta.status,
             data: null,
             isProcessing: false,
+            serverProcessing: meta.processing ?? false,
             error: '',
             isRemote: true,
             missingFromServer: false
@@ -237,9 +250,11 @@ export const mergeServerStoryList = (
     // visible (requirement: "stories may exist in cache but missing in
     // server — display on the sidebar regardless") and flag them so the
     // delete path knows to purge the cache instead of calling DELETE.
+    // serverProcessing resets to false: with no server entry there is no
+    // live-job confirmation, and the next list sync re-establishes it.
     const cacheOnlyEntries: StoryEntry[] = prev.records
         .filter((r) => !serverIds.has(r.storyId))
-        .map((r) => ({ ...r, missingFromServer: true }));
+        .map((r) => ({ ...r, missingFromServer: true, serverProcessing: false }));
 
     const records = [...serverEntries, ...cacheOnlyEntries];
 
@@ -365,6 +380,14 @@ export type StoryEntry = {
     // fetched/pending first poll" and a StoryData object once fetched.
     data: StoryData | null;
     isProcessing: boolean; // true while polling for new chapters
+    // Server-confirmed live background thread (mirrors StoryMeta.processing
+    // from the server's in-memory job registry). Covers jobs started by ANY
+    // session/device — including this one's chapter expansions and rewrites
+    // that never set isProcessing. Transient: never persisted (the server
+    // registry is process-local, so a server restart blanks it) and reset to
+    // false on localStorage rehydrate until the next list sync re-establishes
+    // it. The sidebar animates the tile when this OR isProcessing is true.
+    serverProcessing?: boolean;
     error: string; // populated if create or fetch failed
     // True for entries that came from the server's GET /v1/storyboard/generations endpoint (BootstrapLayer
     // or Refresh). The collection endpoint returns metadata (storyId, chapterRequested,
@@ -389,7 +412,7 @@ export type StoryStore = {
     records: StoryEntry[];
     selected: StoryEntry | null;
     config: {
-        baseUrl: string; // e.g. 'http://192.168.8.128:5000/v1/storyboard/generations'
+        baseUrl: string; // e.g. 'http://192.168.8.128:5252/v1/storyboard/generations'
         pollIntervalMs: number; // how often to re-poll while isProcessing
         // The LLM client id selected in the top-right header dropdown. Sent as
         // `clientId` in every generation payload (create/fork POST,
@@ -408,6 +431,16 @@ export type StoryStore = {
     // this and shows a small inline warning. Optional because legacy tests /
     // consumers that don't trigger the bootstrap won't set it.
     loadWarning?: string;
+    // Live snapshot of the server's in-memory background-thread job registry —
+    // the `jobs` array from the last successful GET /v1/storyboard/generations
+    // (generation-job-registry.ts; one entry per running thread: create/fork/
+    // append/resume/expand/rewrite). activeJobs.length IS the number of
+    // background threads currently running on the server — the sidebar's
+    // "Stories" header renders this as the running-jobs count. Transient, like
+    // the per-entry isProcessing/serverProcessing flags: never persisted (the
+    // registry is process-local and blanks on server restart) and reset to []
+    // on localStorage rehydrate until the next list sync re-establishes it.
+    activeJobs: ActiveJob[];
 };
 
 type StoryStoreContextValue = {
@@ -431,10 +464,14 @@ type StoryStoreContextValue = {
 export const DEFAULT_CLIENT_ID = 'Qwen27B';
 
 const DEFAULT_CONFIG: StoryStore['config'] = {
-    // Default to the same base the runtime service tests use
-    // (runtime/service/endpoints/storyboard/generations/generation-get-story-data.test.ts:4-5).
+    // Every storyboard endpoint (list stories, story CRUD, clients) lives on
+    // the SAME dedicated service port — LOCAL_AREA_NETWORK_STORYBOARD_PORT
+    // (5252, config/environment/src/port.ts), matching the `port` each
+    // service-route*.ts in src/server/endpoints/generations declares. Dial it
+    // directly instead of the underload gateway (DATABASE_PORT 5000): the
+    // gateway would only 307-redirect /v1/storyboard/* to 5252 anyway.
     // Override via config in production by wrapping with a different provider value.
-        baseUrl: `http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_DATABASE_PORT}/v1/storyboard/generations`,
+        baseUrl: `http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,
     // Poll every 10s. The generation-create-new-story handler writes plotpoint.md
     // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
     // so 10s gives a smooth progressive reveal without hammering the server.
@@ -457,6 +494,9 @@ export const StoryStoreProvider: React.FC<{
         records: initialStore?.records ?? [],
         selected: initialStore?.selected ?? null,
         clientOptions: initialStore?.clientOptions ?? [],
+        // Registry snapshot starts empty — it is server-process state, re-synced
+        // by the first list fetch (BootstrapLayer) like the transient flags.
+        activeJobs: initialStore?.activeJobs ?? [],
         config: {
             ...DEFAULT_CONFIG,
             ...configOverrides,

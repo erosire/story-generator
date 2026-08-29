@@ -5,7 +5,8 @@
 //     { error }) matching the server's validation responses. Also the per-request
 //     clientId field in both the plain-body and forkFrom branches.
 //   - fetchStoryData: 200 data, 404 not-found, and other-error branches.
-//   - fetchStoryList: 200 with StoryMeta[] (new shape), 200 with empty array,
+//   - fetchStoryList: 200 with StoryMeta[] + ActiveJob[] (new shape), jobs
+//     defaulting to [] when the server omits the field, 200 with empty array,
 //     and error branches.
 //   - updateChapter / rewriteChapter / deleteChapter: PATCH payloads (incl.
 //     clientId where applicable) and error branches.
@@ -717,7 +718,7 @@ describe('fetchStoryList', () => {
         ...overrides
     });
 
-    it('returns { stories: StoryMeta[] } on 200 with story metadata', async () => {
+    it('returns { stories: StoryMeta[], jobs: [] } on 200 with story metadata and no jobs field', async () => {
         const metas: StoryMeta[] = [
             makeStoryMeta({ storyId: 'story-1', chapterRequested: 3, createdDate: '2026-07-03T12:00:00Z' }),
             makeStoryMeta({ storyId: 'story-2', chapterRequested: 7, createdDate: '2026-07-02T10:00:00Z' })
@@ -728,29 +729,48 @@ describe('fetchStoryList', () => {
 
         const result = await fetchStoryList(BASE_URL);
 
-        expect(result).toEqual({ stories: metas });
+        // jobs defaults to [] — a server predating the background-job
+        // registry simply omits the field.
+        expect(result).toEqual({ stories: metas, jobs: [] });
         expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}`);
         expect((fetch as any).mock.calls[0][1]).toEqual({ method: 'GET' });
     });
 
-    it('returns { stories: [] } when server returns an empty list', async () => {
+    it('returns { stories: StoryMeta[], jobs: ActiveJob[] } when the server reports live background jobs', async () => {
+        const metas: StoryMeta[] = [
+            makeStoryMeta({ storyId: 'story-1', chapterRequested: 3, processing: true })
+        ];
+        const jobs = [
+            { jobId: 'job-1', storyId: 'story-1', kind: 'create', startedAt: '2026-07-03T12:00:01Z' },
+            { jobId: 'job-2', storyId: 'story-1', kind: 'expand', startedAt: '2026-07-03T12:00:02Z' }
+        ];
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { stories: metas, jobs })
+        );
+
+        const result = await fetchStoryList(BASE_URL);
+
+        expect(result).toEqual({ stories: metas, jobs });
+    });
+
+    it('returns { stories: [], jobs: [] } when server returns an empty list', async () => {
         (globalThis.fetch as any).mockResolvedValueOnce(
             mockResponse(200, { stories: [] })
         );
 
         const result = await fetchStoryList(BASE_URL);
 
-        expect(result).toEqual({ stories: [] });
+        expect(result).toEqual({ stories: [], jobs: [] });
     });
 
-    it('returns { stories: [] } when stories field is missing from response', async () => {
+    it('returns { stories: [], jobs: [] } when stories and jobs fields are missing from response', async () => {
         (globalThis.fetch as any).mockResolvedValueOnce(
             mockResponse(200, {})
         );
 
         const result = await fetchStoryList(BASE_URL);
 
-        expect(result).toEqual({ stories: [] });
+        expect(result).toEqual({ stories: [], jobs: [] });
     });
 
     it('throws an Error containing the server message on 500', async () => {

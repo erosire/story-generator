@@ -21,22 +21,24 @@ const mocks = vi.hoisted(() => {
     };
 
     return {
-        GLM52_CLIENT: createClient(),
+        GLM53FLASH_CLIENT: createClient(),
         MAKORA_CLIENT: createClient(),
         KIMI3_CLIENT: createClient(),
         NVIDIA_CLIENT: createClient(),
-        OPENROUTER_CLIENT: createClient(),
         QWEN3_8_CLIENT: createClient(),
         TELNYX_CLIENT: createClient()
     };
 });
 
+// Mock surface mirrors the CURRENT named imports of generation-config.ts
+// (GLM53FLASH_CLIENT / KIMI3_CLIENT / NVIDIA_CLIENT / QWEN3_8_CLIENT) — a
+// missing name (e.g. the retired GLM52_CLIENT id this file used to mock)
+// surfaces as "No ... export is defined on the mock" at import time.
 vi.mock('@runtime/secret/private/makora', () => ({ MAKORA_CLIENT: mocks.MAKORA_CLIENT }));
 vi.mock('@runtime/secret/private', () => ({
-    GLM52_CLIENT: mocks.GLM52_CLIENT,
+    GLM53FLASH_CLIENT: mocks.GLM53FLASH_CLIENT,
     KIMI3_CLIENT: mocks.KIMI3_CLIENT,
     NVIDIA_CLIENT: mocks.NVIDIA_CLIENT,
-    OPENROUTER_CLIENT: mocks.OPENROUTER_CLIENT,
     QWEN3_8_CLIENT: mocks.QWEN3_8_CLIENT
 }));
 vi.mock('@runtime/secret/private/telnyx', () => ({ TELNYX_CLIENT: mocks.TELNYX_CLIENT }));
@@ -54,6 +56,7 @@ describe('generationListClients', () => {
         expect(result.response.clients).toEqual([
             'Nvidia',
             'KIMIK3',
+            'GLMFLASH',
             'Qwen27B',
             'Makora',
             'DeepSeek',
@@ -78,8 +81,8 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 6 selectable ids: Nvidia, KIMIK3, Qwen27B, Makora, DeepSeek, Telnyx
-        // (Modal/Router commented out of the CLIENTS map).
-        expect(result.response.clients.length).toBe(6);
+        // 7 selectable ids: Nvidia, KIMIK3, GLMFLASH, Qwen27B, Makora, DeepSeek,
+        // Telnyx (Modal/Router commented out of the CLIENTS map).
+        expect(result.response.clients.length).toBe(7);
     });
 });

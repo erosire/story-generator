@@ -6,18 +6,34 @@
 // (store.selected = entry) so the content area displays that story; clicking
 // the "x" permanently deletes that story (identified DELETE).
 //
+// The "Stories" header carries a live job-count chip (data-testid
+// "sidebar-job-count", text "<n> running") showing how many background
+// threads are currently in flight on the server — see inProgressCount below
+// for how the server registry snapshot (store.activeJobs) combines with this
+// session's local processing flags.
+//
 // No manual refresh button — the sidebar auto-refreshes periodically by polling
 // GET /v1/storyboard/generations to pick up stories created by other
-// sessions/devices.
+// sessions/devices and the server's live background-job flags.
 //
 // Auto-refresh behavior:
 //   - On mount, fetches the collection once (via BootstrapLayer) to seed the store.
-//   - A useEffect runs every REFRESH_INTERVAL_MS (30s) to re-fetch the collection
-//     and merge new entries while preserving the current selection, any
-//     locally-cached chapter data, and any cache-only stories that are missing
-//     from the server response (they stay visible — deleting them purges the
-//     local cache without a server call). See mergeServerStoryList.
+//   - A useEffect runs every REFRESH_INTERVAL_MS (30s) — or ACTIVE_REFRESH_INTERVAL_MS
+//     (5s) while any story is processing — to re-fetch the collection and merge
+//     new entries while preserving the current selection, any locally-cached
+//     chapter data, and any cache-only stories that are missing from the server
+//     response (they stay visible — deleting them purges the local cache without
+//     a server call). See mergeServerStoryList.
 //   - Errors surface as a non-blocking loadWarning (same as BootstrapLayer).
+//
+// Background-processing animation:
+//   A tile animates while its story has a background thread in flight. Two
+//   sources feed it: entry.isProcessing (this session's poll loops) and
+//   entry.serverProcessing (the server job registry's per-story flag from the
+//   list response — covers jobs started by OTHER sessions/devices, including
+//   chapter expansions/rewrites which never set isProcessing). The animation
+//   itself is two flat-design pieces: an .sg-spinner ring inside the ⏳ badge
+//   chip, and a .sg-story-processing surface pulse on the tile (styles/global.ts).
 //
 // Visual: elevated translucent sidebar with modern story TILES. Each tile is
 // a card-like button (elevated solid surface, hairline border, radius-lg
@@ -36,8 +52,17 @@ import { useStoryStore } from '../../context';
 import { fetchStoryList } from '../../api';
 import { mergeServerStoryList } from '../../context/store';
 
-// How often to auto-refresh the story list from the server (30 seconds).
+// How often to auto-refresh the story list from the server when the dashboard
+// looks idle (30 seconds).
 const REFRESH_INTERVAL_MS = 30_000;
+
+// How often to auto-refresh while any story is being processed in the
+// background. The list response carries the server's live job-registry flags
+// (StoryMeta.processing), so this faster cadence is what makes the sidebar's
+// processing animation appear/disappear near-live — including for background
+// jobs started by OTHER sessions/devices. 5s keeps the animation responsive
+// without hammering the server.
+const ACTIVE_REFRESH_INTERVAL_MS = 5_000;
 
 // Sidebar container — fills its parent's height, scrollable if stories overflow.
 const SidebarContainer = styled('div', {
@@ -50,14 +75,45 @@ const SidebarContainer = styled('div', {
     boxSizing: 'border-box'
 });
 
-// Section label at the top of the sidebar.
+// Section label at the top of the sidebar. Flex row so the live job-count
+// chip (JobCountBadge) sits inline after the "Stories" text.
 const SectionLabel = styled('div', {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
     padding: '6px 16px 8px',
     fontSize: theme.fontSize.sm,
     fontWeight: 700,
     color: theme.textDim,
     textTransform: 'uppercase' as const,
     letterSpacing: 1.2
+});
+
+// Live background-thread count chip inside the "Stories" header — rendered
+// only while jobs are in flight. Same pill treatment as the tile status
+// badges (Badge/BadgeActive family: pill radius, hairline border, accent
+// tint) so the header chip and tile chips read as one visual family. Resets
+// the label's uppercase/letter-spacing so the count text stays legible.
+const JobCountBadge = styled('span', {
+    flex: '0 0 auto',
+    display: 'inline-flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    height: 18,
+    boxSizing: 'border-box' as const,
+    overflow: 'hidden',
+    marginLeft: 8,
+    padding: '0 7px',
+    borderRadius: 999,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 1,
+    fontWeight: 600,
+    color: '#e0e1ff',
+    background: 'rgba(129, 140, 248, 0.35)',
+    border: '1px solid rgba(199, 205, 252, 0.45)',
+    textTransform: 'none' as const,
+    letterSpacing: 0
 });
 
 // Positioning context for each story tile. Holds the select button (fills the
@@ -209,6 +265,9 @@ const Badge = styled('span', {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
+    // gap spaces the animated spinner ring from the ⏳ glyph inside the
+    // processing chip (single-child chips are unaffected).
+    gap: 4,
     height: 20,
     boxSizing: 'border-box' as const,
     overflow: 'hidden',
@@ -230,6 +289,9 @@ const BadgeActive = styled('span', {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
+    // gap spaces the animated spinner ring from the ⏳ glyph inside the
+    // processing chip (single-child chips are unaffected).
+    gap: 4,
     height: 20,
     boxSizing: 'border-box' as const,
     overflow: 'hidden',
@@ -276,26 +338,63 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
         [deleting, deleteStory]
     );
 
-    // Auto-refresh: periodically fetch collection to pick up new stories.
-    // Uses the same cache↔server merge as the initial bootstrap (see
-    // mergeServerStoryList in src/context/store.tsx): server metadata refreshes
-    // cached entries, new server stories are added, and cache-only stories
-    // stay visible (flagged missingFromServer). The merged records are written
-    // back to localStorage by the store's auto-persist effect — this is the
-    // "repeat at interval" leg of the cache-first cycle.
+    // True when ANY story has background work in flight — either a job this
+    // session started (isProcessing, set by the poll loops) or a job the
+    // server's registry reports (serverProcessing, from StoryMeta.processing,
+    // which also covers jobs started by other sessions/devices). Drives the
+    // adaptive refresh cadence below.
+    const anyProcessing = records.some((r) => r.isProcessing || r.serverProcessing === true);
+
+    // Background-thread count for the "Stories" header badge. Two sources,
+    // combined with max() so the count is BOTH exact and instant:
+    //   - store.activeJobs — the server registry snapshot from the last list
+    //     sync. This is the exact thread count (a single story can run several
+    //     jobs concurrently, e.g. a create plus chapter expansions) but it is
+    //     only as fresh as the last fetch.
+    //   - locally-flagged processing stories — every entry with isProcessing
+    //     (this session's flows set it the moment Generate/expand fires, BEFORE
+    //     any list sync lands) or serverProcessing (arrived in the SAME response
+    //     as the snapshot) holds at least one live thread. One per story, so
+    //     this is a lower bound that covers the sync gap right after this
+    //     session starts a job while the cadence is still the slow 30s one.
+    // max() also degrades gracefully: if isProcessing lingers after a server
+    // restart killed the job, the badge keeps showing that minimum until the
+    // poll loop terminates — the same contract the tile animation follows.
+    const serverJobCount = store.activeJobs.length;
+    const localProcessingCount = records.filter((r) => r.isProcessing || r.serverProcessing === true).length;
+    const inProgressCount = Math.max(serverJobCount, localProcessingCount);
+
+    // Auto-refresh: periodically fetch collection to pick up new stories AND
+    // the server's live background-job flags. Uses the same cache↔server
+    // merge as the initial bootstrap (see mergeServerStoryList in
+    // src/context/store.tsx): server metadata refreshes cached entries
+    // (including serverProcessing), new server stories are added, and
+    // cache-only stories stay visible (flagged missingFromServer). The merged
+    // records are written back to localStorage by the store's auto-persist
+    // effect — this is the "repeat at interval" leg of the cache-first cycle.
+    //
+    // Adaptive cadence: 30s while idle, 5s while anyProcessing so the
+    // processing animation on the tiles tracks the server's job registry
+    // closely instead of lagging a full idle interval behind the job's
+    // start/finish. Re-subscribing the interval when anyProcessing flips is
+    // safe — the refresh closure itself is unchanged.
     React.useEffect(() => {
         const baseUrl = store.config.baseUrl;
 
         const refresh = async () => {
             try {
-                const { stories } = await fetchStoryList(baseUrl);
+                const { stories, jobs } = await fetchStoryList(baseUrl);
                 setStore((prev) => {
+                    // activeJobs updates in BOTH branches — the `jobs` array is
+                    // authoritative on its own (an empty registry is a real
+                    // answer: the in-memory registry blanks on restart), unlike
+                    // an empty story list which is "no information" for records.
                     // Empty server list → null: keep the cached records as-is
                     // (the cache may hold stories the server lost; only a
                     // non-empty response is a trustworthy sync signal).
                     const merged = mergeServerStoryList(prev, stories ?? []);
-                    if (!merged) return prev;
-                    return { ...prev, records: merged.records, selected: merged.selected, loadWarning: undefined };
+                    if (!merged) return { ...prev, activeJobs: jobs ?? [] };
+                    return { ...prev, records: merged.records, selected: merged.selected, activeJobs: jobs ?? [], loadWarning: undefined };
                 });
             } catch {
                 // Silently ignore refresh errors — cached records remain the
@@ -303,14 +402,29 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
             }
         };
 
-        const intervalId = setInterval(refresh, REFRESH_INTERVAL_MS);
+        const intervalId = setInterval(refresh, anyProcessing ? ACTIVE_REFRESH_INTERVAL_MS : REFRESH_INTERVAL_MS);
         return () => clearInterval(intervalId);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [store.config.baseUrl, setStore]);
+    }, [store.config.baseUrl, setStore, anyProcessing]);
 
     return (
         <SidebarContainer data-testid="sidebar" className="sg-scroll">
-            <SectionLabel>Stories</SectionLabel>
+            {/* Header label + live background-thread count. The chip renders only
+                while inProgressCount > 0 — an idle server shows the bare label.
+                data-testid="sidebar-job-count" is the test contract; textContent
+                is exactly "<n> running" (the spinner ring contributes no text). */}
+            <SectionLabel>
+                Stories
+                {inProgressCount > 0 && (
+                    <JobCountBadge
+                        data-testid="sidebar-job-count"
+                        title={`${inProgressCount} background job${inProgressCount === 1 ? '' : 's'} in progress`}
+                    >
+                        <span className="sg-spinner" aria-hidden="true" />
+                        {inProgressCount} running
+                    </JobCountBadge>
+                )}
+            </SectionLabel>
             {records.length === 0 && (
                 <EmptyMessage data-testid="sidebar-empty">
                     No stories yet. Create one below.
@@ -324,15 +438,29 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 const chapterBadge = entry.data?.chapters && entry.data.chapters.length > 0
                     ? `${entry.data.chapters.length}ch`
                     : '';
+                // Processing state combines BOTH sources of live background
+                // work: isProcessing (this session's poll loops) and
+                // serverProcessing (the server's job-registry flag, which
+                // also covers jobs started by other sessions/devices).
+                const isProcessing = entry.isProcessing || entry.serverProcessing === true;
                 // Processing badge content is the literal ⏳ — kept so the test
                 // asserting `not.toContain('⏳')` after polling completes passes.
-                const processingBadge = entry.isProcessing ? '⏳' : '';
+                // The animated sg-spinner ring sits inside the same chip and
+                // contributes no text content.
+                const processingBadge = isProcessing ? '⏳' : '';
 
                 const itemProps = {
                     onClick: () => setStore((prev) => ({ ...prev, selected: entry })),
                     'data-testid': `story-tab-${entry.storyId}`,
                     'aria-pressed': isSelected
                 };
+
+                // Animated tile treatment while the story has a live
+                // background thread: the .sg-story-processing class hook
+                // (styles/global.ts) pulses the tile's surface so the whole
+                // card reads as "working". Applied on both variants; the
+                // stylesheet scopes the pulse colors per variant.
+                const processingClass = isProcessing ? ' sg-story-processing' : '';
 
                 // The details row (StoryTileMeta) is rendered UNCONDITIONALLY
                 // — an empty row keeps every tile at the same two-row height,
@@ -341,19 +469,29 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 return (
                     <StoryEntry key={entry.id}>
                         {isSelected ? (
-                            <StoryItemSelected {...itemProps} className="sg-story-selected">
+                            <StoryItemSelected {...itemProps} className={`sg-story-selected${processingClass}`}>
                                 <StoryTitle>{entry.title}</StoryTitle>
                                 <StoryTileMeta>
                                     {chapterBadge && <BadgeActive>{chapterBadge}</BadgeActive>}
-                                    {processingBadge && <BadgeActive>{processingBadge}</BadgeActive>}
+                                    {processingBadge && (
+                                        <BadgeActive>
+                                            {isProcessing && <span className="sg-spinner" aria-hidden="true" />}
+                                            {processingBadge}
+                                        </BadgeActive>
+                                    )}
                                 </StoryTileMeta>
                             </StoryItemSelected>
                         ) : (
-                            <StoryItem {...itemProps} className="sg-story-item">
+                            <StoryItem {...itemProps} className={`sg-story-item${processingClass}`}>
                                 <StoryTitle>{entry.title}</StoryTitle>
                                 <StoryTileMeta>
                                     {chapterBadge && <Badge>{chapterBadge}</Badge>}
-                                    {processingBadge && <Badge>{processingBadge}</Badge>}
+                                    {processingBadge && (
+                                        <Badge>
+                                            {isProcessing && <span className="sg-spinner" aria-hidden="true" />}
+                                            {processingBadge}
+                                        </Badge>
+                                    )}
                                 </StoryTileMeta>
                             </StoryItem>
                         )}

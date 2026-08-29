@@ -59,6 +59,12 @@ describe('StoryGeneratorApp', () => {
         );
     });
     afterEach(() => {
+        // Restore real timers defensively: the fake-timer tests
+        // (auto-refresh, background-job animation) call vi.useRealTimers()
+        // at the END of their body — a mid-body assertion failure would
+        // otherwise leak fake timers into every subsequent test in this
+        // file (timers control the sidebar refresh + poll loops).
+        vi.useRealTimers();
         cancelPendingStorageWrites();
         localStorage.clear();
         vi.unstubAllGlobals();
@@ -675,6 +681,222 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('story-tab-second-uuid').getAttribute('aria-pressed')).toBe('false');
 
         vi.useRealTimers();
+    });
+
+    // The sidebar tile animates while the SERVER's in-memory job registry
+    // reports a live background thread for the story (StoryMeta.processing).
+    // This covers jobs started by OTHER sessions/devices: the animating
+    // session never set isProcessing itself — the flag arrives via the list
+    // merge. When the job finishes (processing drops out of the list
+    // response), the animation stops.
+    //
+    // chapterRequested stays 0 so SectionStoryContent's own poll loop runs in
+    // stable-poll mode and terminates immediately (2 identical empty polls) —
+    // isProcessing drops to false on its own, which isolates the animation
+    // source under test to the server-side serverProcessing flag.
+    it('animates the sidebar tile while the server reports a background job and stops when it finishes', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        let listResponse = {
+            stories: [
+                {
+                    storyId: 'bg-job-uuid',
+                    chapterRequested: 0,
+                    chapterCompleted: 0,
+                    createdDate: '2026-07-03T12:00:00Z',
+                    status: 'generating',
+                    // Server job registry says: a background thread is live.
+                    processing: true
+                }
+            ],
+            jobs: [{ jobId: 'job-1', storyId: 'bg-job-uuid', kind: 'create', startedAt: '2026-07-03T12:00:01Z' }]
+        };
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, listResponse));
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Wait for the entry's own poll loop to settle first (isProcessing
+        // flips false after two stable polls) so the animation below comes
+        // purely from the server's registry flag.
+        await waitFor(() => {
+            const tab = screen.getByTestId('story-tab-bg-job-uuid');
+            expect(tab.textContent).toContain('⏳');
+            expect(tab.querySelector('.sg-spinner')).not.toBeNull();
+            expect(tab.className).toContain('sg-story-processing');
+        });
+
+        // The background job finished on the server — the registry is now
+        // blank for this story (in-memory, blank slate semantics).
+        listResponse = {
+            stories: [
+                {
+                    storyId: 'bg-job-uuid',
+                    chapterRequested: 0,
+                    chapterCompleted: 0,
+                    createdDate: '2026-07-03T12:00:00Z',
+                    status: 'generating',
+                    processing: false
+                }
+            ],
+            jobs: []
+        };
+
+        // Trigger the sidebar auto-refresh. While processing the refresh runs
+        // at the faster ACTIVE_REFRESH_INTERVAL_MS (5s), so 31s covers it
+        // regardless of which cadence is active.
+        await act(async () => {
+            vi.advanceTimersByTime(31_000);
+        });
+
+        // After the sync the tile's animation stops: badge, spinner ring, and
+        // pulse class are all gone (the ⏳ absence keeps the App.test.tsx:631
+        // contract).
+        await waitFor(() => {
+            const tab = screen.getByTestId('story-tab-bg-job-uuid');
+            expect(tab.textContent).not.toContain('⏳');
+            expect(tab.querySelector('.sg-spinner')).toBeNull();
+            expect(tab.className).not.toContain('sg-story-processing');
+        });
+
+        vi.useRealTimers();
+    });
+
+    // The "Stories" header shows a live count of background threads: the
+    // server registry snapshot (list response `jobs` array — one entry per
+    // running thread, across ALL stories) drives the exact count.
+    it('shows the server job count in the Stories header and clears it when the jobs finish', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        // Two stories, one job each → the header chip must read exactly
+        // "2 running" (2 threads in flight on the server).
+        let listResponse = {
+            stories: [
+                {
+                    storyId: 'job-count-a',
+                    chapterRequested: 0,
+                    chapterCompleted: 0,
+                    createdDate: '2026-07-03T12:00:00Z',
+                    status: 'generating',
+                    processing: true
+                },
+                {
+                    storyId: 'job-count-b',
+                    chapterRequested: 0,
+                    chapterCompleted: 0,
+                    createdDate: '2026-07-03T11:00:00Z',
+                    status: 'generating',
+                    processing: true
+                }
+            ],
+            jobs: [
+                { jobId: 'job-1', storyId: 'job-count-a', kind: 'create', startedAt: '2026-07-03T12:00:01Z' },
+                { jobId: 'job-2', storyId: 'job-count-b', kind: 'create', startedAt: '2026-07-03T11:00:01Z' }
+            ]
+        };
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, listResponse));
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('sidebar-job-count').textContent).toBe('2 running');
+        });
+
+        // Both jobs finish on the server — the registry snapshot empties and
+        // the per-story flags drop. After the next sync the chip disappears
+        // entirely (idle server shows the bare "Stories" label).
+        listResponse = {
+            stories: [
+                {
+                    storyId: 'job-count-a',
+                    chapterRequested: 0,
+                    chapterCompleted: 0,
+                    createdDate: '2026-07-03T12:00:00Z',
+                    status: 'generating',
+                    processing: false
+                },
+                {
+                    storyId: 'job-count-b',
+                    chapterRequested: 0,
+                    chapterCompleted: 0,
+                    createdDate: '2026-07-03T11:00:00Z',
+                    status: 'generating',
+                    processing: false
+                }
+            ],
+            jobs: []
+        };
+
+        await act(async () => {
+            vi.advanceTimersByTime(31_000);
+        });
+
+        await waitFor(() => {
+            expect(screen.queryByTestId('sidebar-job-count')).toBeNull();
+        });
+
+        vi.useRealTimers();
+    });
+
+    // The count must be INSTANT for jobs this session just started: Generate
+    // sets isProcessing synchronously (SectionStoryInput), which must count
+    // toward the header chip BEFORE any list sync reports the job — the idle
+    // refresh cadence is 30s, so a snapshot-only count would lag badly here.
+    it('counts a just-started local job in the Stories header before any list sync reports it', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'POST') {
+                const storyId = String(url.split('/').pop() ?? '');
+                return Promise.resolve(mockResponse(200, { storyId }));
+            }
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    // List syncs report NO jobs — the count below can only come
+                    // from this session's local isProcessing flag.
+                    return Promise.resolve(mockResponse(200, { stories: [], jobs: [] }));
+                }
+                // Story-data GET: chapterRequested=2 is never satisfied
+                // (chapters stays empty), so the poll loop — and isProcessing —
+                // stays alive for the assertion window.
+                return Promise.resolve(
+                    mockResponse(200, { chapters: [], meta: { storyline: '', chapterCount: 2, createdAt: '2026-07-03T12:00:00Z' } })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        fireEvent.focus(screen.getByTestId('storyline-input'));
+        await waitFor(() => {
+            expect(screen.getByTestId('generate-button')).toBeDefined();
+        });
+        fireEvent.change(screen.getByTestId('storyline-input'), {
+            target: { value: 'Local job count story' }
+        });
+        fireEvent.change(screen.getByTestId('chapter-count-input'), {
+            target: { value: '2' }
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('generate-button'));
+        });
+
+        await waitFor(() => {
+            expect(screen.getByTestId('sidebar-job-count').textContent).toBe('1 running');
+        });
     });
 
     // BootstrapLayer failure (server down) sets a non-blocking loadWarning.

@@ -119,6 +119,39 @@ const sheet = `
     background: ${theme.accentHover};
 }
 
+/* Background-processing animation for story tiles. While the server's job
+   registry reports a live background thread for the story (or this session's
+   poll loop is waiting), SectionStoryTabs attaches .sg-story-processing and
+   the tile's SURFACE breathes between its normal and its hovered brightness.
+   Background-color only — no translate, no glow — so the pulse stays within
+   the flat design language. Scoped per tile variant because the two variants
+   breathe between different surfaces (unselected: surface2→surface3;
+   selected: accentSoft→accentSoftHover). The animation overrides the static
+   hover background while running (CSS animations win the cascade); the hover
+   border swap still applies, so the tile keeps its tactile hover feedback. */
+@keyframes sg-processing-pulse {
+    0%, 100% { background-color: ${theme.surface2}; }
+    50%      { background-color: ${theme.surface3}; }
+}
+.sg-story-item.sg-story-processing {
+    animation: sg-processing-pulse 1.8s ease-in-out infinite;
+}
+@keyframes sg-processing-pulse-selected {
+    0%, 100% { background-color: ${theme.accentSoft}; }
+    50%      { background-color: ${theme.accentSoftHover}; }
+}
+.sg-story-selected.sg-story-processing {
+    animation: sg-processing-pulse-selected 1.8s ease-in-out infinite;
+}
+/* Reduced-motion users get the spinner badge only — the surface pulse is
+   decorative and stops without changing what the tile communicates. */
+@media (prefers-reduced-motion: reduce) {
+    .sg-story-item.sg-story-processing,
+    .sg-story-selected.sg-story-processing {
+        animation: none;
+    }
+}
+
 /* Collapsible header — flat hover surface swap. */
 .sg-collapse-header:hover { background-color: ${theme.surface2}; }
 
