@@ -748,22 +748,30 @@ describe('StoryGeneratorApp', () => {
             jobs: []
         };
 
-        // Trigger the sidebar auto-refresh. While processing the refresh runs
-        // at the faster ACTIVE_REFRESH_INTERVAL_MS (5s), so 31s covers it
-        // regardless of which cadence is active.
-        await act(async () => {
-            vi.advanceTimersByTime(31_000);
-        });
-
-        // After the sync the tile's animation stops: badge, spinner ring, and
-        // pulse class are all gone (the ⏳ absence keeps the App.test.tsx:631
-        // contract).
-        await waitFor(() => {
+        // Trigger the sidebar auto-refresh in bounded 5s stages (the ACTIVE
+        // refresh cadence while the server reports the job). A single 31s
+        // advance can flake under parallel-suite CPU load — the fake-timer
+        // interval callback's async fetch chain must flush before the DOM
+        // updates, and a one-shot advance leaves only waitFor's default 1s
+        // real-time budget for that flush. Staged advances re-check the tile
+        // after each round so the loop exits as soon as the cleared sync
+        // lands (40 stages = 200s of virtual time, far beyond any realistic
+        // flush latency).
+        let animationStopped = false;
+        for (let i = 0; i < 40 && !animationStopped; i++) {
+            await act(async () => {
+                vi.advanceTimersByTime(5_000);
+            });
+            // After the sync the tile's animation stops: badge, spinner
+            // ring, and pulse class are all gone (the ⏳ absence keeps the
+            // App.test.tsx:631 contract).
             const tab = screen.getByTestId('story-tab-bg-job-uuid');
-            expect(tab.textContent).not.toContain('⏳');
-            expect(tab.querySelector('.sg-spinner')).toBeNull();
-            expect(tab.className).not.toContain('sg-story-processing');
-        });
+            animationStopped =
+                !tab.textContent!.includes('⏳') &&
+                tab.querySelector('.sg-spinner') === null &&
+                !tab.className.includes('sg-story-processing');
+        }
+        expect(animationStopped).toBe(true);
 
         vi.useRealTimers();
     });
@@ -840,13 +848,26 @@ describe('StoryGeneratorApp', () => {
             jobs: []
         };
 
-        await act(async () => {
-            vi.advanceTimersByTime(31_000);
-        });
-
-        await waitFor(() => {
-            expect(screen.queryByTestId('sidebar-job-count')).toBeNull();
-        });
+        // Trigger the sidebar auto-refresh in bounded stages. A single 31s
+        // advance relies on the fake-timer interval callback's async fetch
+        // chain flushing within the following waitFor window — under
+        // parallel-suite CPU load that flush can slip past waitFor's default
+        // 1s budget and the test flakes. Advancing 5s at a time (the ACTIVE
+        // refresh cadence while jobs are live) and re-checking the DOM after
+        // each stage makes the wait deterministic: the loop exits the moment
+        // the cleared registry sync lands, and the 40-stage bound (200s of
+        // virtual time) far exceeds any realistic flush latency.
+        let chipCleared = false;
+        for (let i = 0; i < 40 && !chipCleared; i++) {
+            await act(async () => {
+                vi.advanceTimersByTime(5_000);
+            });
+            // After the sync the chip disappears entirely (idle server shows
+            // the bare "Stories" label) — the registry snapshot reports zero
+            // live threads and both per-story flags are retired by the merge.
+            chipCleared = screen.queryByTestId('sidebar-job-count') === null;
+        }
+        expect(chipCleared).toBe(true);
 
         vi.useRealTimers();
     });
