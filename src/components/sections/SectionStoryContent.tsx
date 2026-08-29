@@ -789,23 +789,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     // Ref that holds the *currently polled* entry.id so the effect's cleanup
     // can flip shouldStop(). Using a ref avoids stale-closure problems across
     // re-renders. Nulled ONLY by the effect cleanup (deselect/unmount) — after
-    // a poll loop resolves, the ref stays set so the "repeat at interval"
-    // refresh timer can verify it's still serving the selected story.
+    // a poll loop resolves, the ref stays set so the terminal handler can
+    // verify it's still serving the selected story.
     const activePollIdRef = React.useRef<number | null>(null);
-
-    // Entries that already had their FIRST visible poll pass. Subsequent
-    // poll runs for the same entry (effect restarts from onData growth,
-    // refresh cycles, re-selection) are quiet: they must not re-flip
-    // isProcessing on, otherwise the tab chip/banner would flicker on every
-    // background cache↔server sync. Component-scoped (lives for the whole
-    // dashboard session), keyed by the stable client-side entry id.
-    const polledStoriesRef = React.useRef<Set<number>>(new Set());
-
-    // Refresh-cycle ticker. When a poll loop terminates (data / error) a
-    // timer bumps this counter after pollIntervalMs, re-running the polling
-    // effect — the opened story keeps syncing server→cache at interval even
-    // after its first load completes.
-    const [pollCycle, setPollCycle] = React.useState(0);
 
     // ── Expanded chapter state ─────────────────────────────────────────
     // Tracks which chapter indices are currently expanded. Persisted to
@@ -948,7 +934,11 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         const entryId = selected.id;
         const targetIndex = reExpandState.chapterIndex;
         const prevCount = reExpandState.previousRevisionCount;
-        const intervalMs = store.config.pollIntervalMs;
+        // Fast cadence: this poller only runs while a background chapter job
+        // (re-expand / rewrite / the server-side chain it may trigger) is in
+        // flight, so it polls at activePollIntervalMs — the idle
+        // pollIntervalMs is reserved for non-job cadences.
+        const intervalMs = store.config.activePollIntervalMs;
 
         let cancelled = false;
 
@@ -997,7 +987,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [reExpandState, selected?.storyId, store.config.baseUrl, store.config.pollIntervalMs]);
+    }, [reExpandState, selected?.storyId, store.config.baseUrl, store.config.activePollIntervalMs]);
 
     // ── Fork story ──────────────────────────────────────────────────────────
     // Fork creates a new story by copying the source story's plotlines and
@@ -1302,17 +1292,90 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         }
     }, [selected, store.config.baseUrl, removeState.chapterIndex, setStore]);
 
-    // Polling effect — the per-story leg of the cache-first cycle:
+    // Selection catch-up — the ONE-SHOT leg of the cache-first cycle:
     //   load cached data (already on the entry from hydration/merge, rendered
-    //   immediately below) → check the server (pollStoryData GETs) → update the
-    //   store on every response (auto-persisted to the cache) → repeat at
-    //   interval (a resolved loop re-arms itself via pollCycle).
+    //   immediately below) → check the server ONCE → update the store
+    //   (auto-persisted to the cache) → STOP.
     //
-    // Cache-only stories (missingFromServer) are polled QUIETLY: the server
-    // answers 404, pollStoryData keeps looping (its built-in interval), and
-    // the moment the story reappears on the server its data streams in — but
-    // the cached content on screen is the truth until then, so the processing
-    // badge/banner stays off.
+    // Fires only when the selected story has no data yet (fresh remote entry,
+    // never-polled cache entry) or its cache-only state just resolved (the
+    // story reappeared on the server). An idle story is NEVER polled in a
+    // loop — its files only change while a background job writes them, and
+    // job activity is handled by the job-gated loop below. Errors and 404s
+    // are silent here: the cached copy stays the displayed truth (mirrors the
+    // old quiet cache-only policy) and the sidebar's loadWarning covers
+    // server unreachability.
+    React.useEffect(() => {
+        if (!selected?.storyId) return;
+        // Content already available — nothing to catch up on.
+        if (selected.data) return;
+
+        const entryId = selected.id;
+        const { storyId } = selected;
+        const baseUrl = store.config.baseUrl;
+
+        let cancelled = false;
+
+        fetchStoryData(baseUrl, storyId)
+            .then((result) => {
+                if (cancelled || result.status !== 'data') return;
+                setStore((prev) => {
+                    const records = prev.records.map((e) =>
+                        e.id === entryId
+                            ? {
+                                  ...e,
+                                  data: { chapters: result.data.chapters, meta: result.data.meta },
+                                  storyline: result.data.meta?.storyline ?? e.storyline,
+                                  missingFromServer: false,
+                                  ...(result.data.meta?.storyName
+                                      ? { storyName: result.data.meta.storyName, title: result.data.meta.storyName }
+                                      : {})
+                              }
+                            : e
+                    );
+                    const selected =
+                        prev.selected?.id === entryId
+                            ? records.find((e) => e.id === entryId) ?? prev.selected
+                            : prev.selected;
+                    return { ...prev, records, selected };
+                });
+            })
+            .catch(() => {
+                // Silent — the cached/empty view stands until a job (or the
+                // next selection) triggers a fresh check.
+            });
+
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        selected?.id,
+        selected?.storyId,
+        selected?.data === null,
+        selected?.missingFromServer,
+        store.config.baseUrl
+    ]);
+
+    // Job-gated polling effect — the background-work leg of the cache-first
+    // cycle. The loop EXISTS only while a background thread is running for
+    // the selected story:
+    //
+    //   - isProcessing: a flow THIS session started (Generate, append,
+    //     resume, re-expand, rewrite) set the flag synchronously.
+    //   - serverProcessing: the server's job registry reports a thread for
+    //     this storyId (arrives via the sidebar's list sync — covers jobs
+    //     started by OTHER sessions/devices, including the server-side
+    //     expansion chain that follows a re-expand).
+    //
+    // With NEITHER flag set the story's data cannot change (only jobs write
+    // its files), so polling stops entirely — the old behavior re-armed this
+    // loop forever (pollCycle timer), hammering GET even for untouched,
+    // fully-generated stories. When a job runs, the loop polls at the FAST
+    // activePollIntervalMs cadence so chapters stream in near-live; the
+    // merge (mergeServerStoryList) retires both flags from the registry's
+    // verdict the moment the job list no longer reports the story, which
+    // cancels the loop — no timer-driven re-arm exists anymore.
     React.useEffect(() => {
         if (!selected || !selected.storyId) {
             return;
@@ -1323,29 +1386,33 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             return;
         }
 
+        // Background-work signal for THIS story. No flag → no polling.
+        const storyHasJob = selected.isProcessing || selected.serverProcessing === true;
+        if (!storyHasJob) {
+            return;
+        }
+
         const entryId = selected.id;
         const { storyId, chapterRequested, isRemote } = selected;
         const baseUrl = store.config.baseUrl;
-        const pollIntervalMs = store.config.pollIntervalMs;
+        // FAST cadence: the loop only exists while a job runs, so it always
+        // polls at the active interval (the idle pollIntervalMs now only
+        // drives the per-chapter completion pollers).
+        const pollIntervalMs = store.config.activePollIntervalMs;
         const cacheOnly = Boolean(selected.missingFromServer);
-        const firstPoll = !polledStoriesRef.current.has(entryId);
-        polledStoriesRef.current.add(entryId);
 
-        // Processing-flag policy at poll start:
-        //   - cache-only story         → force OFF (the cached copy is the
-        //                                truth; the server check is silent).
-        //   - first poll of an entry   → ON (fresh generate / first open — the
-        //                                badge communicates real generation).
-        //   - later runs (data-driven restarts, refresh cycles) → untouched
-        //                                (append/re-expand own their own flag).
-        // selected is re-synced from the patched records so the banner reflects
-        // the flag immediately instead of waiting for the next onData tick.
+        // Processing-flag policy at loop start:
+        //   - cache-only story → force OFF (the cached copy is the truth; the
+        //     server check is silent).
+        //   - otherwise ensure ON without churning the record when the flag
+        //     is already set (local flows set it synchronously; the flip only
+        //     happens for registry-driven jobs from other sessions).
         setStore((prev) => {
             const records = prev.records.map((e) => {
                 if (e.id !== entryId) return e;
-                if (cacheOnly) return { ...e, isProcessing: false, error: '' };
-                if (firstPoll) return { ...e, isProcessing: true, error: '' };
-                return { ...e, error: '' };
+                if (cacheOnly) return e.isProcessing || e.error ? { ...e, isProcessing: false, error: '' } : e;
+                if (!e.isProcessing || e.error) return { ...e, isProcessing: true, error: '' };
+                return e;
             });
             const selected =
                 prev.selected?.id === entryId
@@ -1357,18 +1424,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         activePollIdRef.current = entryId;
 
         const shouldStop = () => activePollIdRef.current !== entryId;
-
-        // Re-arm timer for the next cache↔server sync cycle (see pollCycle).
-        let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-        const scheduleRefresh = () => {
-            refreshTimer = setTimeout(() => {
-                // Only re-arm while this effect still owns the entry — the
-                // cleanup clears both the timer and the ref on deselect/unmount.
-                if (activePollIdRef.current === entryId) {
-                    setPollCycle((c) => c + 1);
-                }
-            }, pollIntervalMs);
-        };
 
         // onData fires on every successful GET; updates the store entry in place.
         // Also propagates meta.storyline into entry.storyline and meta.storyName
@@ -1427,8 +1482,12 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         return { ...prev, records, selected };
                     });
                 }
-                // Repeat at interval: check the server again after pollIntervalMs.
-                scheduleRefresh();
+                // NO re-arm timer. Whether polling continues is decided by the
+                // job flags alone: this resolution flipped isProcessing off,
+                // which re-runs this effect — if the registry still reports a
+                // thread (serverProcessing, e.g. the server-side expansion
+                // chain), the re-run starts the next loop; if not, polling
+                // stays stopped until new work actually exists.
             })
             .catch((err: Error) => {
                 if (activePollIdRef.current === entryId) {
@@ -1441,13 +1500,13 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         )
                     }));
                 }
-                // Even a hard failure deserves a later retry — the server may
-                // just be briefly down.
-                scheduleRefresh();
+                // NO blind retry timer either — a hard fetch failure stops the
+                // loop. The next sidebar list sync re-flags the story while a
+                // job genuinely runs, and the flag-driven re-run restarts
+                // polling from there.
             });
 
         return () => {
-            if (refreshTimer !== null) clearTimeout(refreshTimer);
             if (activePollIdRef.current === entryId) {
                 activePollIdRef.current = null;
             }
@@ -1460,9 +1519,10 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         selected?.isRemote,
         selected?.missingFromServer,
         selected?.data?.chapters.length,
-        pollCycle,
+        selected?.isProcessing,
+        selected?.serverProcessing,
         store.config.baseUrl,
-        store.config.pollIntervalMs
+        store.config.activePollIntervalMs
     ]);
 
     const data = selected?.data ?? { chapters: [], meta: null };

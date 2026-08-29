@@ -899,6 +899,190 @@ describe('StoryGeneratorApp', () => {
         });
     });
 
+    // POLLING CONTRACT — an idle story (no isProcessing, no serverProcessing)
+    // must NOT be polled at all: its files only change while a background job
+    // writes them, so a polling loop without a job is pure server load (the
+    // old behavior re-armed the loop forever via the pollCycle timer).
+    it('does not poll the selected story while no background job runs for it', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const fetchMock = globalThis.fetch as any;
+        // Fully generated, fully cached story — nothing in flight anywhere.
+        const story = {
+            id: 1,
+            storyId: 'seed-idle-1',
+            storyline: 'Idle story',
+            title: 'Idle story',
+            chapterRequested: 3,
+            chapterCompleted: 3,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'completed' as const,
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Ch1',
+                        plotpoints: ['plot1'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: '## Ch1\n\nbody', wordCount: 5, generationTimeMs: 1000 }]
+                    }
+                ],
+                meta: { storyline: 'Idle story', chapterCount: 3, createdAt: '2026-08-01T12:00:00Z' }
+            },
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    // Empty list → the seeded record stays (merge returns null).
+                    return Promise.resolve(mockResponse(200, { stories: [], jobs: [] }));
+                }
+                // Any per-story GET would satisfy any target instantly — if a
+                // loop were running, the count below would grow.
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS, activePollIntervalMs: 100 }}
+                initialStore={{ records: [story] as any, selected: story as any }}
+            />
+        );
+
+        // Cached content renders instantly (no fetch needed).
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('body');
+        });
+
+        const countStoryGets = () =>
+            fetchMock.mock.calls.filter(([url]: any[]) => String(url) === `${BASE_URL}/seed-idle-1`).length;
+
+        await act(async () => {
+            vi.advanceTimersByTime(31_000);
+        });
+
+        // EXACT: zero story GETs ever — not even the configured 100ms active
+        // cadence leaks into the idle state.
+        expect(countStoryGets()).toBe(0);
+        // The sidebar list sync DID run (bootstrap + one 30s refresh), proving
+        // the timers advanced while the story stayed unpollted.
+        const listGets = fetchMock.mock.calls.filter(
+            ([url, init]: any[]) => (url === BASE_URL || url === `${BASE_URL}/`) && (!init || init.method === 'GET')
+        ).length;
+        expect(listGets).toBe(2);
+
+        vi.useRealTimers();
+    });
+
+    // POLLING CONTRACT — while the registry reports a live job for the story,
+    // the loop polls at the FAST active cadence and stops polling entirely
+    // once the registry no longer reports the story.
+    it('polls the selected story at the fast active cadence while a job runs, then stops when it ends', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const fetchMock = globalThis.fetch as any;
+        let listResponse = {
+            stories: [
+                {
+                    storyId: 'seed-active-1',
+                    chapterRequested: 5,
+                    chapterCompleted: 0,
+                    createdDate: '2026-08-01T12:00:00.000Z',
+                    status: 'generating',
+                    processing: true
+                }
+            ],
+            jobs: [{ jobId: 'job-1', storyId: 'seed-active-1', kind: 'create', startedAt: '2026-08-01T12:00:01Z' }]
+        };
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, listResponse));
+                }
+                // 1 pending chapter of a 5-chapter target — the loop's target
+                // condition is never met, so it keeps polling while the job
+                // flag lives and any growth in the fetch count comes purely
+                // from the polling cadence.
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['plot1'], expanded: false, canReExpand: true }
+                        ],
+                        meta: { storyline: 'Active story', chapterCount: 5, createdAt: '2026-08-01T12:00:00Z' }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS, activePollIntervalMs: 1000 }}
+            />
+        );
+
+        // Bootstrap seeds the story with processing=true → the job-gated loop
+        // starts and polls at the 1s active cadence (vs the 10ms idle override
+        // — which is irrelevant here since idle stories don't poll at all).
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-seed-active-1')).toBeDefined();
+        });
+        await act(async () => {
+            vi.advanceTimersByTime(3_100);
+        });
+        const storyGetsDuringJob = fetchMock.mock.calls.filter(([url]: any[]) => String(url) === `${BASE_URL}/seed-active-1`).length;
+        // Rounds at t=0 (loop start), t=1s, t=2s, t=3s → at least 4 rounds
+        // within 3.1s proves the FAST cadence (the old 10s default would
+        // yield at most 1).
+        expect(storyGetsDuringJob).toBeGreaterThanOrEqual(4);
+
+        // The job ends on the server — the registry stops reporting it.
+        listResponse = {
+            stories: [
+                {
+                    storyId: 'seed-active-1',
+                    chapterRequested: 5,
+                    chapterCompleted: 0,
+                    createdDate: '2026-08-01T12:00:00.000Z',
+                    status: 'generating',
+                    processing: false
+                }
+            ],
+            jobs: []
+        };
+
+        await act(async () => {
+            vi.advanceTimersByTime(10_000);
+        });
+
+        // The tile animation follows the registry verdict down (both flags
+        // retired by the merge — serverProcessing directly, isProcessing via
+        // the registry-authoritative retirement).
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-seed-active-1').textContent).not.toContain('⏳');
+        });
+
+        // Allow any single in-flight round (started before the flag drop) to
+        // settle, then snapshot.
+        await act(async () => {
+            vi.advanceTimersByTime(2_000);
+        });
+        const storyGetsAfterJob = fetchMock.mock.calls.filter(([url]: any[]) => String(url) === `${BASE_URL}/seed-active-1`).length;
+
+        // Ten more seconds with NO job — the count must be EXACTLY unchanged:
+        // no polling without a background thread.
+        await act(async () => {
+            vi.advanceTimersByTime(10_000);
+        });
+        expect(fetchMock.mock.calls.filter(([url]: any[]) => String(url) === `${BASE_URL}/seed-active-1`).length).toBe(storyGetsAfterJob);
+
+        vi.useRealTimers();
+    });
+
     // BootstrapLayer failure (server down) sets a non-blocking loadWarning.
     it('shows a load warning when the collection endpoint fetch fails, but the dashboard is still usable', async () => {
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {

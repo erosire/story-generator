@@ -257,10 +257,15 @@ On mount, `BootstrapLayer`:
 
 ### Polling
 
-When a story is selected, `SectionStoryContent` starts a `pollStoryData()` loop:
-- **With `chapterRequested`**: terminates when `chapters.length >= chapterRequested` and all are expanded
-- **Without `chapterRequested`** (remote story): uses poll-stability — terminates after 2 consecutive identical responses
-- **404**: treated as "not yet started", keeps polling
+`SectionStoryContent` is **job-gated** — it polls only while a background thread is running for the selected story:
+
+- **Job signals**: `isProcessing` (a flow this session started: create/append/resume/re-expand/rewrite) or `serverProcessing` (the server's job registry, via the sidebar's list sync — covers jobs started by other sessions/devices).
+- **No job → no polling**: an idle story's files cannot change, so the loop does not run at all (a single catch-up GET fires on selection only when the story has no cached data yet).
+- **While a job runs**: the loop polls at the fast `activePollIntervalMs` cadence (default 2s):
+  - **With `chapterRequested`**: terminates when `chapters.length >= chapterRequested` and all are expanded
+  - **Without `chapterRequested`** (remote story): uses poll-stability — terminates after 2 consecutive identical responses
+  - **404**: treated as "not yet started", keeps polling
+- **Job end**: the sidebar's list sync retires both flags from the registry's verdict (`processing: false`), which cancels the loop — there is no timer-driven re-arm.
 - **Cancellation**: unmounting or selecting a different story sets `shouldStop = true`
 
 ### State Management
@@ -358,7 +363,8 @@ Via `StoryStoreProvider` `configOverrides`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `baseUrl` | `http://192.168.8.128:5252/v1/storyboard/generations` | API base URL (dedicated storyboard service port `5252`) |
-| `pollIntervalMs` | 10000 | Poll interval in ms |
+| `pollIntervalMs` | 10000 | Cadence for the per-chapter completion pollers (re-expand / rewrite) |
+| `activePollIntervalMs` | 2000 | Fast cadence for the story poll loop while a background job runs (idle stories are never polled) |
 
 ---
 

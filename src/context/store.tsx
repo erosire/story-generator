@@ -220,6 +220,17 @@ export const mergeServerStoryList = (
                 // Server-confirmed live background thread. A server predating
                 // the registry omits the field → treated as not processing.
                 serverProcessing: meta.processing ?? false,
+                // The registry is the AUTHORITY on "a job is running for this
+                // story": when a successful list sync reports processing=false,
+                // any lingering local isProcessing is stale (e.g. the main poll
+                // loop set it while the job ran and was cancelled by the same
+                // flag drop) and must retire — otherwise the tile would animate
+                // forever and the poll loop would never stop. Preserved while
+                // the registry CONFIRMS work (processing=true), covering the
+                // window where this session's POST/PATCH is still in flight.
+                // Cache-only stories (absent from the response) keep their flag
+                // — see cacheOnlyEntries below.
+                isProcessing: meta.processing ? existing.isProcessing : false,
                 missingFromServer: false
             };
         }
@@ -413,7 +424,17 @@ export type StoryStore = {
     selected: StoryEntry | null;
     config: {
         baseUrl: string; // e.g. 'http://192.168.8.128:5252/v1/storyboard/generations'
-        pollIntervalMs: number; // how often to re-poll while isProcessing
+        // Poll cadence for the per-chapter completion pollers (re-expand /
+        // rewrite). The MAIN story poll loop no longer uses this interval:
+        // it polls at activePollIntervalMs while a background job runs and
+        // does not poll at all otherwise (see SectionStoryContent).
+        pollIntervalMs: number;
+        // FAST poll cadence used while a background job is running for the
+        // selected story (create/append/resume stream chapters one at a time;
+        // the 2s default keeps the progressive reveal near-live without
+        // hammering the server). Idle stories are NEVER polled — there is
+        // nothing to update while no job writes their files.
+        activePollIntervalMs: number;
         // The LLM client id selected in the top-right header dropdown. Sent as
         // `clientId` in every generation payload (create/fork POST,
         // expand/rewrite/metadata PATCH) and persisted to localStorage. Never
@@ -476,6 +497,10 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
     // so 10s gives a smooth progressive reveal without hammering the server.
     pollIntervalMs: 10000,
+    // Fast cadence for ACTIVE background work (see StoryStore['config']).
+    // 2s keeps chapter streaming responsive; only applies while a job is
+    // actually running for the story — idle stories are not polled at all.
+    activePollIntervalMs: 2000,
     // Default LLM client — overridden by localStorage (user's previous choice)
     // or an explicit configOverrides.clientId (tests / deployments).
     clientId: DEFAULT_CLIENT_ID

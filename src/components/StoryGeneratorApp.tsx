@@ -18,7 +18,7 @@
 
 import React from 'react';
 import { styled, theme } from '../styles';
-import { StoryStoreProvider, useStoryStore, setClientId } from '../context';
+import { StoryStoreProvider, useStoryStore, setClientId, type StoryStore } from '../context';
 import { updateStoryMeta, fetchClientOptions } from '../api';
 import { StoryGeneratorDashboard } from './StoryGeneratorDashboard';
 import { BootstrapLayer } from './BootstrapLayer';
@@ -214,9 +214,10 @@ const ClientSelect = styled('select', {
 });
 
 // Composed dashboard. Accepts optional store overrides (used by tests and by
-// future callers that want to point at a different storyboard base URL).
+// future callers that want to point at a different storyboard base URL or
+// tune the poll cadences).
 export type StoryGeneratorAppProps = {
-    configOverrides?: { baseUrl?: string; pollIntervalMs?: number };
+    configOverrides?: Partial<StoryStore['config']>;
     initialStore?: React.ComponentProps<typeof StoryStoreProvider>['initialStore'];
 };
 
