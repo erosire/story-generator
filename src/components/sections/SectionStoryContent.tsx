@@ -858,7 +858,7 @@ const ChapterStickyBar: React.FC<{
 };
 
 export const SectionStoryContent: React.FC = React.memo(() => {
-    const { store, setStore } = useStoryStore();
+    const { store, setStore, touchStory } = useStoryStore();
     const { selected } = store;
 
     // Ref that holds the *currently polled* entry.id so the effect's cleanup
@@ -976,6 +976,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 // clientId from the top-right header dropdown selects the LLM
                 // client for the background re-expansion chain (per-request only).
                 await updateChapter(store.config.baseUrl, selected.storyId, chapterIndex, store.config.clientId);
+                // Re-expand is a user action — bump the ordering timestamp so
+                // the story moves to the top of the sidebar.
+                touchStory(selected.storyId);
                 // Mark as processing so the tab chip shows the badge.
                 setStore((prev) => ({
                     ...prev,
@@ -995,7 +998,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 }));
             }
         },
-        [selected, store.config.baseUrl, store.config.clientId, setStore]
+        [selected, store.config.baseUrl, store.config.clientId, setStore, touchStory]
     );
 
     // Poll for re-expand completion. Runs while reExpandState is set. On each
@@ -1097,6 +1100,10 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                         chapterRequested: selected.chapterRequested,
                         chapterCompleted: 0,
                         createdDate: new Date().toISOString(),
+                        // Fork is a user action — stamp the NEW story so it
+                        // sorts by the last-actioned key (same moment as its
+                        // createdDate; the source story is untouched).
+                        lastActionedAt: new Date().toISOString(),
                         status: 'generating' as const,
                         data: null,
                         isProcessing: true,
@@ -1154,6 +1161,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 // clientId selects the LLM client for the single-chapter rewrite
                 // (top-right header dropdown, per-request only).
                 await rewriteChapter(store.config.baseUrl, selected.storyId, chapterIndex, rewriteContext.trim(), rewriteRevisionIndex, store.config.clientId);
+                // Rewrite is a user action — bump the ordering timestamp.
+                touchStory(selected.storyId);
                 // Mark as processing so the tab chip shows the badge.
                 setStore((prev) => ({
                     ...prev,
@@ -1177,7 +1186,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 setRewriteState((prev) => ({ ...prev, isOpen: false }));
             }
         },
-        [selected, store.config.baseUrl, store.config.clientId, setStore]
+        [selected, store.config.baseUrl, store.config.clientId, setStore, touchStory]
     );
 
     // ── Delete chapter revision state ────────────────────────────────────
@@ -1221,6 +1230,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         setDeleteState((prev) => ({ ...prev, isDeleting: true, error: '' }));
         try {
             await deleteChapter(store.config.baseUrl, selected.storyId, chapterIndex, revisionIndex);
+            // Deleting a revision is a user action — bump the ordering timestamp.
+            touchStory(selected.storyId);
             const result = await fetchStoryData(store.config.baseUrl, selected.storyId);
             if (result.status === 'data') {
                 setStore((prev) => ({
@@ -1259,7 +1270,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 error: err?.message || 'Failed to delete chapter revision'
             }));
         }
-    }, [selected, store.config.baseUrl, deleteState.chapterIndex, deleteState.revisionIndex, setStore]);
+    }, [selected, store.config.baseUrl, deleteState.chapterIndex, deleteState.revisionIndex, setStore, touchStory]);
 
     // ── Remove entire chapter state ──────────────────────────────────────
     // The "Delete Chapter" pill lives INSIDE the plotpoints area (revealed by
@@ -1302,6 +1313,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         setRemoveState((prev) => ({ ...prev, isRemoving: true, error: '' }));
         try {
             await removeChapter(store.config.baseUrl, selected.storyId, chapterIndex);
+            // Removing a chapter is a user action — bump the ordering timestamp.
+            touchStory(selected.storyId);
             const result = await fetchStoryData(store.config.baseUrl, selected.storyId);
             if (result.status === 'data') {
                 setStore((prev) => ({
@@ -1365,7 +1378,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 error: err?.message || 'Failed to remove chapter'
             }));
         }
-    }, [selected, store.config.baseUrl, removeState.chapterIndex, setStore]);
+    }, [selected, store.config.baseUrl, removeState.chapterIndex, setStore, touchStory]);
 
     // Selection catch-up — the ONE-SHOT leg of the cache-first cycle:
     //   load cached data (already on the entry from hydration/merge, rendered
@@ -1658,6 +1671,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             // target) and mark processing so the tab chip/banner reflect that
             // new plotlines are being generated. The new chapters arrive
             // plotpoints-only and stay pending until individually expanded.
+            // Append is a user action — bump the ordering timestamp too.
+            touchStory(selected.storyId);
             setStore((prev) => ({
                 ...prev,
                 records: prev.records.map((e) =>
@@ -1684,7 +1699,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             // user can fix the inputs and retry.
             setAppendState((prev) => ({ ...prev, isSubmitting: false, error: err?.message || 'Failed to append chapters' }));
         }
-    }, [selected, store.config.baseUrl, store.config.clientId, appendState.notes, appendState.chapterCount, setStore]);
+    }, [selected, store.config.baseUrl, store.config.clientId, appendState.notes, appendState.chapterCount, setStore, touchStory]);
 
     const handleCollapseAll = React.useCallback(() => {
         // Mark this story as interacted so auto-expand doesn't re-open the
@@ -1725,6 +1740,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             // (it re-arms at interval even after hard errors — see the
             // polling effect's scheduleRefresh) streams the regenerated
             // chapters in as plotpoint.json is rewritten chapter by chapter.
+            // Resume is a user action — bump the ordering timestamp.
+            touchStory(selected.storyId);
             setStore((prev) => ({
                 ...prev,
                 records: prev.records.map((e) =>
@@ -1754,7 +1771,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         } finally {
             setResumeState({ isSubmitting: false });
         }
-    }, [selected, store.config.baseUrl, store.config.clientId, data?.meta?.chapterCount, setStore]);
+    }, [selected, store.config.baseUrl, store.config.clientId, data?.meta?.chapterCount, setStore, touchStory]);
 
     // ── Terminate job (the ■ action inside the progress banner) ──────────
     // Kills every active background job for the selected story while it is
@@ -1776,6 +1793,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         setTerminateState({ isSubmitting: true });
         try {
             await abortStoryJob(store.config.baseUrl, selected.storyId);
+            // Terminate is a user action — bump the ordering timestamp.
+            touchStory(selected.storyId);
 
             // Cancel THIS session's poll loops immediately — the entry-scoped
             // shouldStop (activePollIdRef !== entryId) makes the job-gated
@@ -1818,7 +1837,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         } finally {
             setTerminateState({ isSubmitting: false });
         }
-    }, [selected, store.config.baseUrl, setStore]);
+    }, [selected, store.config.baseUrl, setStore, touchStory]);
 
     // Whether the action bar should be enabled: append requires at least one
     // existing chapter (the server rejects appends to chapter-less stories),

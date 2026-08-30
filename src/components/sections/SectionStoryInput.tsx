@@ -181,6 +181,9 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                 chapterRequested: chapterCount,
                 chapterCompleted: 0,
                 createdDate: now.toISOString(),
+                // Generate is a user action — stamp it so the new story sorts
+                // by the last-actioned key (same moment as createdDate here).
+                lastActionedAt: now.toISOString(),
                 status: 'generating' as const,
                 data: null,
                 isProcessing: true,

@@ -538,6 +538,15 @@ export function sleep(ms: number): Promise<void> {
 
 // Delete a story via DELETE. Server removes the entire story folder and returns
 // { success: true, storyId }. Throws on network failure or non-200 response.
+//
+// The thrown Error carries the HTTP status in a `status` property so callers
+// can distinguish "story already gone" (404 — the story was deleted on the
+// server by another session or wiped server-side after the client's last list
+// sync) from other failures (network down / 5xx — the server may still hold
+// the story). The store's deleteStory (src/context/store.tsx) uses this to
+// treat a 404 as an idempotent success and still purge the local cache —
+// without it, the cached record survives the failed DELETE and resurrects
+// after a page reload.
 export async function deleteStory(
     baseUrl: string,
     storyId: string
@@ -553,7 +562,10 @@ export async function deleteStory(
         } catch {
             // ignore
         }
-        throw new Error(message);
+        // Attach `status` (404 = already gone) for the caller's error triage.
+        const err = new Error(message) as Error & { status: number };
+        err.status = response.status;
+        throw err;
     }
 
     return (await response.json()) as { success: boolean; storyId: string };

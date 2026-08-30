@@ -50,7 +50,7 @@ import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
 import { fetchStoryList } from '../../api';
-import { mergeServerStoryList } from '../../context/store';
+import { mergeServerStoryList, type StoryEntry } from '../../context/store';
 
 // How often to auto-refresh the story list from the server when the dashboard
 // looks idle (30 seconds).
@@ -315,13 +315,25 @@ const EmptyMessage = styled('div', {
 });
 
 export const SectionStoryTabs: React.FC = React.memo(() => {
-    const { store, setStore, deleteStory } = useStoryStore();
+    const { store, setStore, deleteStory, touchStory } = useStoryStore();
     const { records, selected } = store;
 
     // Single in-flight delete guard, mirroring the chat-assistant sidebar:
     // while any delete request is outstanding, every tile's "x" is disabled so
     // a second delete cannot race the active identified DELETE request.
     const [deleting, setDeleting] = React.useState(false);
+
+    // Selecting a story is a user action — bump its lastActionedAt so the
+    // tile moves to the top of the sidebar ("last actioned on top"). The
+    // selection itself is applied in the same click via setStore below;
+    // touchStory only writes the ordering timestamp on the record.
+    const handleSelect = React.useCallback(
+        (entry: StoryEntry) => {
+            touchStory(entry.storyId);
+            setStore((prev) => ({ ...prev, selected: entry }));
+        },
+        [touchStory, setStore]
+    );
 
     const handleDelete = React.useCallback(
         async (storyId: string) => {
@@ -430,10 +442,18 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     No stories yet. Create one below.
                 </EmptyMessage>
             )}
-            {/* Sort records by createdDate descending so the newest story appears
-                at the top. ISO 8601 timestamps sort correctly as strings in
-                descending order. */}
-            {[...records].sort((a, b) => b.createdDate.localeCompare(a.createdDate)).map((entry) => {
+            {/* Sort so the LAST ACTIONED story is on top. The sort key is the
+                user-action timestamp (entry.lastActionedAt, bumped ONLY by
+                explicit user actions via touchStory — see StoryEntry) falling
+                back to createdDate for stories never actioned in this browser
+                (legacy cache entries, freshly synced server stories). Within
+                each group ISO 8601 strings sort correctly as strings in
+                descending order. Background work (generation writes, poll
+                refreshes, list syncs) never changes the key — only the user
+                does. */}
+            {[...records]
+                .sort((a, b) => (b.lastActionedAt || b.createdDate).localeCompare(a.lastActionedAt || a.createdDate))
+                .map((entry) => {
                 const isSelected = selected?.id === entry.id;
                 const chapterBadge = entry.data?.chapters && entry.data.chapters.length > 0
                     ? `${entry.data.chapters.length}ch`
@@ -450,7 +470,9 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 const processingBadge = isProcessing ? '⏳' : '';
 
                 const itemProps = {
-                    onClick: () => setStore((prev) => ({ ...prev, selected: entry })),
+                    // Click = select + user-action timestamp bump (reorders the
+                    // sidebar so this tile is on top).
+                    onClick: () => handleSelect(entry),
                     'data-testid': `story-tab-${entry.storyId}`,
                     'aria-pressed': isSelected
                 };

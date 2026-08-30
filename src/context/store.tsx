@@ -108,7 +108,7 @@ export const clearExpandedChapters = (storyId: string) => {
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
 // that don't survive across sessions (error, isProcessing, serverProcessing).
-type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterRequested' | 'chapterCompleted' | 'createdDate' | 'status' | 'isRemote' | 'missingFromServer'> & {
+type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterRequested' | 'chapterCompleted' | 'createdDate' | 'lastActionedAt' | 'status' | 'isRemote' | 'missingFromServer'> & {
     data: StoryData | null;
 };
 
@@ -122,6 +122,7 @@ const toPersistable = (entry: StoryEntry): PersistableStoryEntry => ({
     chapterRequested: entry.chapterRequested,
     chapterCompleted: entry.chapterCompleted,
     createdDate: entry.createdDate,
+    lastActionedAt: entry.lastActionedAt,
     status: entry.status,
     data: entry.data,
     isRemote: entry.isRemote,
@@ -180,6 +181,10 @@ export const loadRecordsFromStorage = (): StoryEntry[] => {
  *     (storyName, chapterRequested/Completed, createdDate, status) is
  *     refreshed from the server — the server is the source of truth for
  *     metadata, the cache is the source of truth for content.
+ *   - The user-action timestamp (lastActionedAt) is CLIENT-OWNED: the server
+ *     never reports it and the merge never overwrites it. The overlay spread
+ *     (`...existing`) carries it through untouched so the sidebar's "last
+ *     actioned on top" ordering survives every list sync.
  *   - Stories present ONLY in the cache (absent from a successful server
  *     response) are RETAINED and flagged `missingFromServer: true` — they
  *     must stay visible in the sidebar and deletable without a server call.
@@ -384,6 +389,18 @@ export type StoryEntry = {
     chapterRequested: number;
     chapterCompleted: number;
     createdDate: string; // ISO 8601 timestamp from the server's collection endpoint
+    // ISO 8601 timestamp of the last USER-ACTIONED event on this story —
+    // bumped ONLY by explicit user actions (select tile, Generate, fork,
+    // expand, rewrite, append, resume, terminate, delete revision/chapter,
+    // rename) via touchStory()/the action handlers. Deliberately NOT the
+    // server's last-modified time: background generation writes, poll
+    // refreshes, and list syncs NEVER touch this field, so the sidebar's
+    // "last actioned on top" ordering reflects what the user did, not what
+    // the server wrote. Optional: entries that predate the feature (legacy
+    // localStorage cache, freshly synced server stories) have undefined and
+    // fall back to createdDate for sorting. Persisted with the records cache
+    // so the ordering survives page reloads.
+    lastActionedAt?: string;
     status: 'generating' | 'completed' | 'failed';
     // Progressive data fetched via GET polling. Starts as an empty story (status 200
     // returns { chapters: [], meta: null } for an existing-but-empty dir — see
@@ -472,6 +489,11 @@ type StoryStoreContextValue = {
     setStore: (updater: (prev: StoryStore) => StoryStore) => void;
     // Delete a story by storyId. Calls DELETE API then removes the entry from the store.
     deleteStory: (storyId: string) => Promise<void>;
+    // Bump the user-action timestamp (lastActionedAt) for a story. Called by
+    // every explicit user action on a story (see StoryEntry.lastActionedAt).
+    // Background work (poll loops, list syncs, server job writes) must NEVER
+    // call this — only user-initiated actions change the ordering timestamp.
+    touchStory: (storyId: string) => void;
 };
 
 // Default LLM client id. Must stay in sync with the server-side fallback in
@@ -574,11 +596,23 @@ export const StoryStoreProvider: React.FC<{
 
     // Delete a story by storyId.
     //
-    // Two paths:
+    // Three paths:
     //   - Server-known story: call the DELETE API, then remove the entry.
     //   - Cache-only story (flagged missingFromServer by the last successful
     //     list sync): the server has no record of it, so the DELETE would just
     //     404 — skip the network call and purge the local cache instead.
+    //   - Stale-flag story: the server no longer has the story but the client
+    //     doesn't know yet (deleted by another session after the last list
+    //     sync, or the list sync never succeeded — e.g. server unreachable at
+    //     page load, so missingFromServer was never set). The DELETE answers
+    //     404 (generation-delete-story.ts) — treated as an idempotent SUCCESS:
+    //     the story is provably gone server-side, so fall through and purge
+    //     the local cache anyway. Without this, the DELETE throws, the entry
+    //     survives in `records`, the records auto-persist effect keeps
+    //     rewriting it to localStorage, and the story resurrects after a page
+    //     reload. Any OTHER error (network down, 5xx) rethrows: the server may
+    //     still hold the story, so the record must stay (the next successful
+    //     list sync either flags it missingFromServer or re-adds it).
     //
     // Removing the entry from `records` feeds the records-persist effect
     // above, which rewrites localStorage without the story — that is what
@@ -589,7 +623,15 @@ export const StoryStoreProvider: React.FC<{
         async (storyId: string) => {
             const entry = store.records.find((r) => r.storyId === storyId);
             if (!entry?.missingFromServer) {
-                await deleteStoryApi(store.config.baseUrl, storyId);
+                try {
+                    await deleteStoryApi(store.config.baseUrl, storyId);
+                } catch (err) {
+                    // 404 = already gone from the server → idempotent success,
+                    // continue with the local purge. `status` is attached by
+                    // the API client (src/api/storyboard.ts deleteStory).
+                    const status = (err as { status?: number } | null)?.status;
+                    if (status !== 404) throw err;
+                }
             }
             // Purge the per-story UI preference cache alongside the record.
             clearExpandedChapters(storyId);
@@ -603,8 +645,27 @@ export const StoryStoreProvider: React.FC<{
         [store.records, store.config.baseUrl, setStore]
     );
 
+    // Bump the user-action timestamp for one story. Sets lastActionedAt = now
+    // on the matching record(s). The `selected` reference is intentionally
+    // left untouched: the sidebar reads lastActionedAt from `records` (not
+    // from `selected`), and every merge/poll path re-resolves `selected` by
+    // storyId anyway — churning the selected object here would just trigger
+    // extra effect re-runs downstream.
+    const touchStory = useCallback(
+        (storyId: string) => {
+            // Capture the timestamp at call time (the user-action moment), not
+            // inside the updater (which React may defer/re-run).
+            const now = new Date().toISOString();
+            setStore((prev) => ({
+                ...prev,
+                records: prev.records.map((e) => (e.storyId === storyId ? { ...e, lastActionedAt: now } : e))
+            }));
+        },
+        [setStore]
+    );
+
     return (
-        <StoryStoreContext.Provider value={{ store, setStore, deleteStory }}>
+        <StoryStoreContext.Provider value={{ store, setStore, deleteStory, touchStory }}>
             {children}
         </StoryStoreContext.Provider>
     );

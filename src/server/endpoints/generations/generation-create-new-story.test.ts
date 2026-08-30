@@ -68,6 +68,7 @@ vi.mock('./generation-config', () => {
         OPENING_USER_MESSAGE: 'Hey ENI',
         STORY_REQUEST_MESSAGE: 'You know the story I like',
         MAX_PLOT_ATTEMPTS: 3,
+        MAX_EXPAND_ATTEMPTS: 10,
         MAX_STALL_RETRIES: 10,
         PLOTPOINT_STALL_TIMEOUT_MS: 5 * 60 * 1000,
         PREVIOUS_EXPANDED_CHAPTERS: 4,

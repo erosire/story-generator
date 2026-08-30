@@ -23,6 +23,9 @@
 //     renders before the chapter listing
 //   - the Terminate control inside the processing banner PATCHes
 //     { abortJob: true } to the story URL and retires the banner on success
+//   - the sidebar sorts by the USER-ACTION timestamp (lastActionedAt): selecting
+//     a story tile or triggering a chapter action (re-expand) moves that story
+//     to the top — never modified by background work or list syncs
 //
 // fetch is mocked globally. Poll interval is overridden via configOverrides to a
 // tiny value so the loop advances quickly under real timers.
@@ -408,6 +411,212 @@ describe('StoryGeneratorApp', () => {
         fireEvent.click(screen.getByTestId('rename-cancel'));
         expect(screen.queryByTestId('rename-dialog')).toBeNull();
         expect(screen.getByTestId('story-title').textContent).toBe('Original title');
+    });
+
+    // Read the sidebar tile order (top-to-bottom) as an array of testids.
+    // Tiles are <button data-testid="story-tab-<storyId>"> elements; DOM order
+    // IS the sorted display order (see SectionStoryTabs' last-actioned sort).
+    const readSidebarOrder = () =>
+        screen
+            .getAllByRole('button')
+            .filter((b) => b.dataset.testid?.startsWith('story-tab-'))
+            .map((b) => b.dataset.testid);
+
+    it('moves the last actioned story to the top of the sidebar when it is selected', async () => {
+        // createdDates are relative to the REAL clock so the assertions stay
+        // deterministic regardless of when the suite runs: the touched story's
+        // lastActionedAt (= now at click time) always sorts above both.
+        const dayMs = 86_400_000;
+        // Most recently CREATED — starts on top (createdDate sort fallback).
+        const storyRecent = {
+            id: 1,
+            storyId: 'recent-story',
+            storyName: 'Recent Tale',
+            title: 'Recent Tale',
+            storyline: '',
+            chapterRequested: 1,
+            chapterCompleted: 0,
+            createdDate: new Date(Date.now() - dayMs).toISOString(),
+            // Data pre-seeded so the selection catch-up effect stays quiet —
+            // this test isolates the SELECTION bump, not the fetch path.
+            data: { chapters: [], meta: null },
+            status: 'generating' as const,
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+        // Older story — starts at the bottom.
+        const storyOld = {
+            id: 2,
+            storyId: 'old-story',
+            storyName: 'Old Tale',
+            title: 'Old Tale',
+            storyline: '',
+            chapterRequested: 1,
+            chapterCompleted: 0,
+            createdDate: new Date(Date.now() - 2 * dayMs).toISOString(),
+            data: { chapters: [], meta: null },
+            status: 'generating' as const,
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [storyRecent, storyOld] }}
+            />
+        );
+
+        // Baseline: no user action yet — the newer-CREATED story is on top
+        // (createdDate is the sorting fallback for never-actioned stories).
+        expect(readSidebarOrder()).toEqual(['story-tab-recent-story', 'story-tab-old-story']);
+
+        // User action: select the older story's tile.
+        fireEvent.click(screen.getByTestId('story-tab-old-story'));
+
+        // The selection bumped old-story's lastActionedAt (= now), which sorts
+        // above both createdDates → the sidebar reorders instantly.
+        await waitFor(() => {
+            expect(readSidebarOrder()).toEqual(['story-tab-old-story', 'story-tab-recent-story']);
+        });
+        // The clicked tile is also the selected one.
+        expect(screen.getByTestId('story-tab-old-story').getAttribute('aria-pressed')).toBe('true');
+        // The untouched story kept its position relative to nothing else —
+        // exactly one reorder happened.
+        expect(readSidebarOrder()).toEqual(['story-tab-old-story', 'story-tab-recent-story']);
+    });
+
+    it('moves the story to the top of the sidebar when a chapter action (re-expand) is triggered', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const dayMs = 86_400_000;
+        // Selected story: sits at the BOTTOM by createdDate and holds one
+        // pending chapter that can be re-expanded.
+        const storySelected = {
+            id: 2,
+            storyId: 'old-story',
+            storyName: 'Old Tale',
+            title: 'Old Tale',
+            storyline: 'An old storyline',
+            chapterRequested: 2,
+            chapterCompleted: 0,
+            createdDate: new Date(Date.now() - 2 * dayMs).toISOString(),
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Old Chapter',
+                        plotpoints: ['beat one'],
+                        expanded: false,
+                        canReExpand: true
+                    }
+                ],
+                meta: { storyline: 'An old storyline', chapterCount: 2, createdAt: new Date(Date.now() - 2 * dayMs).toISOString() }
+            },
+            status: 'generating' as const,
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+        // Idle story: newer by createdDate, starts on top, never actioned.
+        const storyIdle = {
+            id: 1,
+            storyId: 'recent-story',
+            storyName: 'Recent Tale',
+            title: 'Recent Tale',
+            storyline: '',
+            chapterRequested: 1,
+            chapterCompleted: 0,
+            createdDate: new Date(Date.now() - dayMs).toISOString(),
+            data: { chapters: [], meta: null },
+            status: 'generating' as const,
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'PATCH') {
+                // Re-expand PATCH accepted — background job started.
+                return Promise.resolve(
+                    mockResponse(200, {
+                        storyId: 'old-story',
+                        expandChapterIndex: 0,
+                        chapterNumber: '1',
+                        title: 'Old Chapter',
+                        message: 'ok'
+                    })
+                );
+            }
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    // Collection endpoint: empty list (keeps the seeded records).
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                // Per-story GET: the chapter now expanded with one revision —
+                // this is what the re-expand completion poller waits for.
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'Old Chapter',
+                                plotpoints: ['beat one'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [{ content: '## Old Chapter\n\nExpanded body', wordCount: 2, generationTimeMs: 100 }]
+                            }
+                        ],
+                        meta: { storyline: 'An old storyline', chapterCount: 2, createdAt: storySelected.createdDate }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(
+            <StoryGeneratorApp
+                // activePollIntervalMs drives the re-expand completion poller —
+                // 10ms keeps the test fast under real timers.
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS, activePollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [storyIdle, storySelected], selected: storySelected }}
+            />
+        );
+
+        // Baseline: the idle (newer-created) story is on top — the selected
+        // story has NOT been actioned yet.
+        expect(readSidebarOrder()).toEqual(['story-tab-recent-story', 'story-tab-old-story']);
+
+        // User action: re-expand chapter 1 of the SELECTED (bottom) story.
+        // The auto-expand-latest effect opens chapter 0, which renders the
+        // per-chapter action bar containing the re-expand button.
+        const reexpandButton = await waitFor(() => {
+            const button = screen.getByTestId('chapter-0-reexpand');
+            expect(button).toBeDefined();
+            return button;
+        });
+        await act(async () => {
+            fireEvent.click(reexpandButton);
+        });
+
+        // The PATCH fired for the right story...
+        await waitFor(() => {
+            const patch = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'PATCH');
+            expect(patch).toBeDefined();
+            expect(patch![0]).toBe(`${BASE_URL}/old-story`);
+            expect(JSON.parse(patch![1].body).expandChapterIndex).toBe(0);
+        });
+
+        // ...and the user action bumped old-story's lastActionedAt (= now),
+        // moving it above the untouched story even though its createdDate is
+        // a full day older. This is the "last actioned on top" contract for
+        // generation-triggering actions (expand/rewrite/append/resume/fork).
+        await waitFor(() => {
+            expect(readSidebarOrder()).toEqual(['story-tab-old-story', 'story-tab-recent-story']);
+        });
     });
 
     it('creates a new story when Generate is clicked with valid input', async () => {
@@ -2279,6 +2488,82 @@ describe('StoryGeneratorApp', () => {
             expect(raw).toContain('server-1');
         });
         expect(localStorage.getItem('storyGenerator:expanded:local-only-1')).toBeNull();
+    });
+
+    it('deleting a cached story the server already lost (DELETE 404) still purges the cache', async () => {
+        // Regression: the story is cached in localStorage but ALREADY GONE from
+        // the server, and the client's missingFromServer flag is stale-false
+        // (the story was deleted on the server after the last successful list
+        // sync). Before the fix the DELETE answered 404 → deleteStory threw →
+        // handleDelete only logged → the record survived in the store AND in
+        // localStorage → the story resurrected after a page reload.
+        seedRecordsCache([
+            {
+                id: 9,
+                storyId: 'gone-server-1',
+                storyName: 'Ghost Tale',
+                title: 'Ghost Tale',
+                storyline: 'cached storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-09T09:00:00.000Z',
+                status: 'completed',
+                data: { chapters: [], meta: null },
+                isRemote: false
+            }
+        ]);
+
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    // The list STILL contains the story (the deletion happened
+                    // server-side after this sync) → missingFromServer stays
+                    // false and the delete path takes the server-DELETE branch.
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'gone-server-1', storyName: 'Ghost Tale', chapterRequested: 1, chapterCompleted: 1, createdDate: '2026-08-09T09:00:00Z', status: 'completed' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            if (init?.method === 'DELETE') {
+                // The story directory is already gone server-side.
+                return Promise.resolve(mockResponse(404, { error: "Story 'gone-server-1' not found" }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-gone-server-1')).toBeDefined();
+        });
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('story-delete-gone-server-1'));
+        });
+
+        // The DELETE was attempted exactly once (the flag was stale-false)…
+        await waitFor(() => {
+            const deleteCalls = fetchMock.mock.calls.filter(([, init]: any[]) => init?.method === 'DELETE');
+            expect(deleteCalls.length).toBe(1);
+            expect(deleteCalls[0][0]).toBe(`${BASE_URL}/gone-server-1`);
+        });
+
+        // …and despite the 404 the tile is removed from the sidebar and the
+        // records cache no longer contains the story (no resurrection after
+        // a reload).
+        await waitFor(() => {
+            expect(screen.queryByTestId('story-tab-gone-server-1')).toBeNull();
+        });
+        await waitFor(() => {
+            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            expect(raw).not.toContain('gone-server-1');
+        });
     });
 
     it('deleting a server-known story still sends the DELETE request', async () => {

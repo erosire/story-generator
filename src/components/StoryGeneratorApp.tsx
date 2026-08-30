@@ -227,7 +227,7 @@ const HeaderControls: React.FC<{
     sidebarOpen: boolean;
     onToggleSidebar: () => void;
 }> = React.memo(({ sidebarOpen, onToggleSidebar }) => {
-    const { store, setStore } = useStoryStore();
+    const { store, setStore, touchStory } = useStoryStore();
     const { selected } = store;
     const [renaming, setRenaming] = React.useState(false);
     const [renameValue, setRenameValue] = React.useState('');
@@ -346,6 +346,9 @@ const HeaderControls: React.FC<{
                 storyName: renameValue.trim(),
                 clientId: store.config.clientId
             });
+            // Rename is a user action — bump the ordering timestamp so the
+            // renamed story moves to the top of the sidebar.
+            touchStory(selected.storyId);
             setStore((prev) => {
                 const records = prev.records.map((e) =>
                     e.storyId === selected.storyId
@@ -359,7 +362,7 @@ const HeaderControls: React.FC<{
         } catch (err) {
             console.error('Failed to rename story:', err);
         }
-    }, [selected, renameValue, store.config.baseUrl, store.config.clientId, setStore]);
+    }, [selected, renameValue, store.config.baseUrl, store.config.clientId, setStore, touchStory]);
 
     const handleRenameKeyDown = React.useCallback(
         (e: React.KeyboardEvent) => {

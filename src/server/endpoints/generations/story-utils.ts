@@ -13,6 +13,7 @@ import { jsonComplete } from '@presource/core';
 import {
     DATABASE_BASE_DIR,
     EXPAND_TIMEOUT_MS,
+    MAX_EXPAND_ATTEMPTS,
     OPENING_USER_MESSAGE,
     resolveClient,
     TARGET_WORD_COUNT_PROMPT,
@@ -380,9 +381,37 @@ export const expandChapter = async (opts: {
         console.log(`Written to ${chapterFilePath} (attempt ${attempts})`);
 
         if (minWords && wordCount < minWords) {
-            console.log(`Word count ${wordCount} is below minimum ${minWords}. Retrying...`);
+            // Retry budget: 1 initial attempt + up to MAX_EXPAND_ATTEMPTS
+            // retries (attempts counts CALLS, so call N+1 only happens while
+            // attempts <= MAX_EXPAND_ATTEMPTS). Without this cap the loop
+            // below retried INFINITELY whenever the model kept returning
+            // sub-minimum content or kept erroring — see MAX_EXPAND_ATTEMPTS
+            // in generation-config.ts.
+            if (attempts > MAX_EXPAND_ATTEMPTS) {
+                console.warn(
+                    `Word count ${wordCount} is below minimum ${minWords} after ${attempts} attempts ` +
+                        `(retry budget MAX_EXPAND_ATTEMPTS=${MAX_EXPAND_ATTEMPTS} exhausted). Keeping best-effort content.`
+                );
+            } else {
+                console.log(`Word count ${wordCount} is below minimum ${minWords}. Retrying...`);
+            }
         }
-    } while (minWords && wordCount < minWords);
+    } while (minWords && wordCount < minWords && attempts <= MAX_EXPAND_ATTEMPTS);
+
+    // Budget exhausted with NOTHING produced: every attempt errored/timed out
+    // (the catch block resets content=''). Throwing routes the failure through
+    // the callers' existing error paths — create/append/resume mark the story
+    // failed in place, PATCH re-expand/rewrite log and release the tracked job
+    // — instead of silently writing a 0-word finalized revision. When the last
+    // attempt produced sub-minimum (but non-empty) content it is KEPT above:
+    // the per-attempt file writes already persisted it, and a short chapter
+    // beats no chapter.
+    if (typeof content !== 'string' || content.length === 0) {
+        throw new Error(
+            `Chapter ${chapterNumber} expansion failed after ${attempts} attempt(s) ` +
+                `(retry budget MAX_EXPAND_ATTEMPTS=${MAX_EXPAND_ATTEMPTS} exhausted)`
+        );
+    }
 
     // Return expanded content so the caller can update appending[]
     return { title, content };

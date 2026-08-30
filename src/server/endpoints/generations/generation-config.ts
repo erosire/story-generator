@@ -38,6 +38,21 @@ export const STORY_REQUEST_MESSAGE = 'You know the story I like';
 export const MAX_PLOT_ATTEMPTS = 3;
 
 /**
+ * Maximum number of RETRIES for a single chapter expansion (story-utils
+ * expandChapter — the shared workhorse behind EVERY expansion variation:
+ * create/append/resume chains, fork re-expansion, PATCH expandChapterIndex
+ * re-expansion, and PATCH rewriteChapter). Convention matches
+ * MAX_PLOT_ATTEMPTS: 1 initial attempt + up to MAX_EXPAND_ATTEMPTS retries,
+ * so the LLM is called at most MAX_EXPAND_ATTEMPTS + 1 times per chapter.
+ *
+ * Without this budget the expandChapter do/while loop retried INFINITELY
+ * whenever the model kept producing sub-minimum content (below
+ * MIN_WORDS_PER_CHAPTER) or kept erroring — burning tokens forever on a
+ * chapter that would never converge. 10 retries mirrors MAX_STALL_RETRIES.
+ */
+export const MAX_EXPAND_ATTEMPTS = 10;
+
+/**
  * Timeout (in milliseconds) for each expand-chapter LLM call.
  * If the LLM does not respond within this window the request is
  * terminated and retried.
