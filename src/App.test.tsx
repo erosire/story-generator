@@ -23,9 +23,9 @@
 //     renders before the chapter listing
 //   - the Terminate control inside the processing banner PATCHes
 //     { abortJob: true } to the story URL and retires the banner on success
-//   - the sidebar sorts by the USER-ACTION timestamp (lastActionedAt): selecting
-//     a story tile or triggering a chapter action (re-expand) moves that story
-//     to the top — never modified by background work or list syncs
+//   - the sidebar sorts by the USER-ACTION timestamp (lastActionedAt): triggering
+//     a data-mutating action (re-expand PATCH) moves that story to the top, while
+//     read-only viewing (selection) NEVER reorders the list
 //
 // fetch is mocked globally. Poll interval is overridden via configOverrides to a
 // tiny value so the loop advances quickly under real timers.
@@ -422,12 +422,14 @@ describe('StoryGeneratorApp', () => {
             .filter((b) => b.dataset.testid?.startsWith('story-tab-'))
             .map((b) => b.dataset.testid);
 
-    it('moves the last actioned story to the top of the sidebar when it is selected', async () => {
-        // createdDates are relative to the REAL clock so the assertions stay
-        // deterministic regardless of when the suite runs: the touched story's
-        // lastActionedAt (= now at click time) always sorts above both.
+    it('does NOT reorder the sidebar when a story is selected (viewing is not an action)', async () => {
+        // Viewing contract: lastActionedAt tracks data-MUTATING user actions
+        // (POST/PATCH flows only). Selecting a tile is read-only (GET) and
+        // must change the selection without touching the sort order —
+        // otherwise the list would shuffle under the user's cursor just
+        // because they clicked a story open.
         const dayMs = 86_400_000;
-        // Most recently CREATED — starts on top (createdDate sort fallback).
+        // Most recently CREATED — stays on top (createdDate sort fallback).
         const storyRecent = {
             id: 1,
             storyId: 'recent-story',
@@ -438,7 +440,7 @@ describe('StoryGeneratorApp', () => {
             chapterCompleted: 0,
             createdDate: new Date(Date.now() - dayMs).toISOString(),
             // Data pre-seeded so the selection catch-up effect stays quiet —
-            // this test isolates the SELECTION bump, not the fetch path.
+            // this test isolates the SELECTION behaviour, not the fetch path.
             data: { chapters: [], meta: null },
             status: 'generating' as const,
             isProcessing: false,
@@ -469,23 +471,20 @@ describe('StoryGeneratorApp', () => {
             />
         );
 
-        // Baseline: no user action yet — the newer-CREATED story is on top
-        // (createdDate is the sorting fallback for never-actioned stories).
+        // Baseline: the newer-CREATED story is on top (createdDate is the
+        // sorting fallback for never-actioned stories).
         expect(readSidebarOrder()).toEqual(['story-tab-recent-story', 'story-tab-old-story']);
 
-        // User action: select the older story's tile.
+        // Read-only action: select the older story's tile.
         fireEvent.click(screen.getByTestId('story-tab-old-story'));
 
-        // The selection bumped old-story's lastActionedAt (= now), which sorts
-        // above both createdDates → the sidebar reorders instantly.
+        // The selection took effect...
         await waitFor(() => {
-            expect(readSidebarOrder()).toEqual(['story-tab-old-story', 'story-tab-recent-story']);
+            expect(screen.getByTestId('story-tab-old-story').getAttribute('aria-pressed')).toBe('true');
         });
-        // The clicked tile is also the selected one.
-        expect(screen.getByTestId('story-tab-old-story').getAttribute('aria-pressed')).toBe('true');
-        // The untouched story kept its position relative to nothing else —
-        // exactly one reorder happened.
-        expect(readSidebarOrder()).toEqual(['story-tab-old-story', 'story-tab-recent-story']);
+        // ...but the ordering is UNCHANGED — viewing never bumps
+        // lastActionedAt, so the older story stays where it was.
+        expect(readSidebarOrder()).toEqual(['story-tab-recent-story', 'story-tab-old-story']);
     });
 
     it('moves the story to the top of the sidebar when a chapter action (re-expand) is triggered', async () => {

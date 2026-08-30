@@ -110,6 +110,63 @@ export const buildAppendingFromChapters = (
 };
 
 /**
+ * Roll back the progressive streaming state a FAILED chapter expansion left
+ * behind (see expandChapter below). During streaming, expandChapter writes
+ * partial content progressively: a `generationTimeMs === 0` streaming entry
+ * is appended to chapter-XXX.json, and chapter-XXX.md is overwritten on every
+ * attempt (line ~380). When the retry budget is exhausted without quality,
+ * expandChapter now THROWS instead of keeping best-effort content — so this
+ * rollback runs first, otherwise the chapter would stay "expanded" with a
+ * truncated/broken revision and poison the context of any later expansion.
+ *
+ * Cleanup contract (mirrors deleteChapter in generation-update-chapter.ts):
+ *   - Strip ONLY trailing streaming entries (generationTimeMs === 0) from
+ *     revisions[]. Finalized revisions from earlier successful expansions are
+ *     kept — a failed re-expand/rewrite must not destroy the previous revision.
+ *   - .md mirror: rewrite from the latest surviving finalized revision, or
+ *     remove the file entirely when none remain (chapter returns to
+ *     plotlines-only and is expandable again).
+ *
+ * Best-effort by design: a rollback failure must not mask the real expansion
+ * error that follows, so every problem is warned and swallowed.
+ */
+const rollbackFailedChapterExpansion = (chapterDir: string, chapterIndex: number): void => {
+    const paddedNumber = String(chapterIndex + 1).padStart(3, '0');
+    const chapterFilePath = path.join(chapterDir, `chapter-${paddedNumber}.md`);
+    const chapterJsonPath = path.join(chapterDir, `chapter-${paddedNumber}.json`);
+    try {
+        if (!fs.existsSync(chapterJsonPath)) return;
+        const chapterJson: Record<string, any> = JSON.parse(fs.readFileSync(chapterJsonPath, 'utf-8'));
+        if (!Array.isArray(chapterJson.revisions)) return;
+
+        // Pop trailing streaming entries (generationTimeMs === 0 marks a
+        // not-yet-finalized progressive write from THIS failed expansion).
+        while (
+            chapterJson.revisions.length > 0 &&
+            typeof chapterJson.revisions[chapterJson.revisions.length - 1].generationTimeMs === 'number' &&
+            chapterJson.revisions[chapterJson.revisions.length - 1].generationTimeMs === 0
+        ) {
+            chapterJson.revisions.pop();
+        }
+        fs.writeFileSync(chapterJsonPath, JSON.stringify(chapterJson, null, 2), 'utf-8');
+
+        // Restore the .md from the latest surviving finalized revision, or
+        // remove it when the chapter is back to plotlines-only.
+        const latest = chapterJson.revisions[chapterJson.revisions.length - 1];
+        if (latest && typeof latest.content === 'string' && latest.content.length > 0) {
+            const restoreTitle = typeof chapterJson.title === 'string' && chapterJson.title.length > 0
+                ? chapterJson.title
+                : `Chapter ${chapterIndex + 1}`;
+            fs.writeFileSync(chapterFilePath, `## ${restoreTitle}\n\n${latest.content}`, 'utf-8');
+        } else if (fs.existsSync(chapterFilePath)) {
+            fs.rmSync(chapterFilePath);
+        }
+    } catch (err) {
+        console.warn(`[rollback] Failed to roll back chapter ${chapterIndex + 1} streaming state: ${err}`);
+    }
+};
+
+/**
  * Expand a single chapter using the LLM client.
  *
  * @param opts.client       - The LLM client (will be cloned internally to avoid mutation)
@@ -119,7 +176,10 @@ export const buildAppendingFromChapters = (
  * @param opts.chapterNumber - The chapter number string (e.g. "1")
  * @param opts.chapterIndex  - Zero-based index of the chapter
  * @param opts.request      - The expansion request prompt
- * @param opts.minWords     - Optional minimum word count; expansion retries until met
+ * @param opts.minWords     - Optional minimum word count; retries until met,
+ *                            then THROWS on failure (empty or sub-minimum
+ *                            content after the retry budget) so callers
+ *                            terminate instead of proceeding on broken content
  * @returns The expanded title and content
  */
 export const expandChapter = async (opts: {
@@ -388,9 +448,13 @@ export const expandChapter = async (opts: {
             // sub-minimum content or kept erroring — see MAX_EXPAND_ATTEMPTS
             // in generation-config.ts.
             if (attempts > MAX_EXPAND_ATTEMPTS) {
+                // Retry budget exhausted with sub-minimum content — the
+                // post-loop quality gate below will throw, terminating the
+                // job (chain/create/fork/rewrite) instead of proceeding to
+                // the next chapter on broken context.
                 console.warn(
                     `Word count ${wordCount} is below minimum ${minWords} after ${attempts} attempts ` +
-                        `(retry budget MAX_EXPAND_ATTEMPTS=${MAX_EXPAND_ATTEMPTS} exhausted). Keeping best-effort content.`
+                        `(retry budget MAX_EXPAND_ATTEMPTS=${MAX_EXPAND_ATTEMPTS} exhausted). Failing expansion.`
                 );
             } else {
                 console.log(`Word count ${wordCount} is below minimum ${minWords}. Retrying...`);
@@ -398,18 +462,36 @@ export const expandChapter = async (opts: {
         }
     } while (minWords && wordCount < minWords && attempts <= MAX_EXPAND_ATTEMPTS);
 
-    // Budget exhausted with NOTHING produced: every attempt errored/timed out
-    // (the catch block resets content=''). Throwing routes the failure through
-    // the callers' existing error paths — create/append/resume mark the story
-    // failed in place, PATCH re-expand/rewrite log and release the tracked job
-    // — instead of silently writing a 0-word finalized revision. When the last
-    // attempt produced sub-minimum (but non-empty) content it is KEPT above:
-    // the per-attempt file writes already persisted it, and a short chapter
-    // beats no chapter.
+    // Budget exhausted without usable output — TERMINATE the job instead of
+    // proceeding. Throwing routes the failure through the callers' existing
+    // error paths — create/append/resume mark the story failed in place,
+    // PATCH re-expand/rewrite log and release the tracked job, and
+    // reExpandChapter's chain loop stops (a throw propagates out of the
+    // while). This replaces the old "keeping best-effort content" policy:
+    // a short/broken chapter written as finalized would feed its content
+    // into the NEXT chapter's context, producing a chain of broken chapters.
+    //
+    // Two terminal outcomes (both roll back the progressive streaming state
+    // first, via rollbackFailedChapterExpansion above, so the failed chapter
+    // returns to a clean, expandable state):
+    //   1. Empty content — every attempt errored/timed out (the catch block
+    //      resets content='').
+    //   2. Non-empty but sub-minimum content (below minWords) — quality gate
+    //      failure after the retry budget.
     if (typeof content !== 'string' || content.length === 0) {
+        rollbackFailedChapterExpansion(chapterDir, chapterIndex);
         throw new Error(
             `Chapter ${chapterNumber} expansion failed after ${attempts} attempt(s) ` +
                 `(retry budget MAX_EXPAND_ATTEMPTS=${MAX_EXPAND_ATTEMPTS} exhausted)`
+        );
+    }
+    // Quality gate: sub-minimum (but non-empty) content is now a FAILURE, not
+    // a best-effort keep. Same terminal treatment as the empty-content case.
+    if (minWords && wordCount < minWords) {
+        rollbackFailedChapterExpansion(chapterDir, chapterIndex);
+        throw new Error(
+            `Chapter ${chapterNumber} expansion produced only ${wordCount} words (minimum: ${minWords}) ` +
+                `after ${attempts} attempt(s) (retry budget MAX_EXPAND_ATTEMPTS=${MAX_EXPAND_ATTEMPTS} exhausted)`
         );
     }
 

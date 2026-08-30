@@ -3,7 +3,8 @@
  * story-utils imports @runtime/secret/private (via generation-config) which
  * transitively imports OpenAI SDK — that SDK throws in jsdom environments.
  *
- * Tests for expandChapter's RETRY BUDGET (the infinite-retry bug fix).
+ * Tests for expandChapter's RETRY BUDGET (the infinite-retry bug fix) and
+ * its TERMINATION + ROLLBACK contract (the chain-of-broken-chapters fix).
  *
  * expandChapter (src/server/endpoints/generations/story-utils.ts) is the
  * shared server-side workhorse behind EVERY chapter expansion variation:
@@ -13,6 +14,17 @@
  * attempt errored) — burning tokens forever. The fix caps it at
  * MAX_EXPAND_ATTEMPTS (generation-config.ts): 1 initial attempt + up to
  * 10 retries = at most 11 LLM calls per chapter.
+ *
+ * Termination contract: when the budget is exhausted WITHOUT meeting the
+ * quality gate (minWords), expandChapter THROWS instead of keeping
+ * best-effort content. A kept short chapter would be finalized by the
+ * caller and feed its content into the NEXT chapter's context, producing
+ * a chain of broken chapters. Before throwing, expandChapter rolls back
+ * the progressive streaming state (rollbackFailedChapterExpansion):
+ * trailing `generationTimeMs === 0` streaming revisions are stripped from
+ * chapter-XXX.json, the previous finalized revision (if any) is kept, and
+ * chapter-XXX.md is restored from it — or removed entirely when the
+ * chapter is back to plotlines-only.
  *
  * The generation-config module is mocked (same pattern as
  * generation-update-chapter.test.ts) so no real LLM client is built.
@@ -82,6 +94,28 @@ const baseOpts = (chapterDir: string, minWords: number) => ({
     minWords
 });
 
+// Seeds a skeleton chapter-XXX.json (as writeChapterPayload does at plotline
+// time) so rollbackFailedChapterExpansion has a payload to clean up.
+const seedChapterJson = (chapterDir: string, revisions: any[], title = 'The Beginning'): void => {
+    fs.writeFileSync(
+        path.join(chapterDir, 'chapter-001.json'),
+        JSON.stringify({
+            storyId: 'test',
+            chapterNumber: '1',
+            chapterIndex: 0,
+            title,
+            plotpoints: ['Opening scene'],
+            context: { appending: ['> 1: The Beginning\n\n- Opening scene'], request: '> Expand the chapter "1: The Beginning"' },
+            config: { systemInstructions: 'test', openingMessage: 'test' },
+            revisions
+        }),
+        'utf-8'
+    );
+};
+
+const readChapterJson = (chapterDir: string): any =>
+    JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+
 describe('expandChapter retry budget (MAX_EXPAND_ATTEMPTS)', () => {
     beforeEach(() => {
         vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -95,33 +129,76 @@ describe('expandChapter retry budget (MAX_EXPAND_ATTEMPTS)', () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     });
 
-    it('stops after 1 initial attempt + MAX_EXPAND_ATTEMPTS retries when content stays below minWords, keeping best-effort content', async () => {
+    it('stops after 1 initial attempt + MAX_EXPAND_ATTEMPTS retries when content stays below minWords, then THROWS (no best-effort keep)', async () => {
         // Every attempt returns 51 words (below the 100-word minimum) — the
-        // pre-fix loop would retry forever. The budget must stop it.
+        // pre-fix loop would retry forever. The budget must stop it, and the
+        // quality-gate failure must TERMINATE (throw) rather than keep the
+        // short chapter — a kept short chapter would poison the next
+        // chapter's context in every chaining caller.
         const shortContent = 'word '.repeat(50);
         const { client, format } = createClient(() =>
             Promise.resolve({ response: { title: 'Short Chapter', content: shortContent } })
         );
         const chapterDir = newChapterDir();
+        seedChapterJson(chapterDir, []);
 
-        const result = await expandChapter({ ...baseOpts(chapterDir, 100), client });
+        await expect(expandChapter({ ...baseOpts(chapterDir, 100), client })).rejects.toThrow(
+            'Chapter 1 expansion produced only 51 words (minimum: 100) after 11 attempt(s) ' +
+                '(retry budget MAX_EXPAND_ATTEMPTS=10 exhausted)'
+        );
 
         // 1 initial + 10 retries = exactly 11 calls, then the loop stops.
         expect(MAX_EXPAND_ATTEMPTS).toBe(10);
         expect(format).toHaveBeenCalledTimes(11);
 
-        // The best-effort (sub-minimum) content is KEPT, not discarded — the
-        // chapter stays expanded with the last attempt's output.
-        expect(result).toEqual({ title: 'Short Chapter', content: shortContent });
+        // ROLLBACK: the chapter returns to plotlines-only. The per-attempt
+        // .md write persisted the short content, so rollback must REMOVE it.
+        expect(fs.existsSync(path.join(chapterDir, 'chapter-001.md'))).toBe(false);
+        // The skeleton revisions[] stays empty — no finalized revision exists.
+        expect(readChapterJson(chapterDir).revisions).toEqual([]);
+    });
 
-        // The last attempt was persisted to the chapter markdown file.
+    it('rolls back a streaming partial revision on failure while KEEPING the previous finalized revision', async () => {
+        // Simulates a failed RE-EXPAND: the chapter already has one finalized
+        // revision (generationTimeMs > 0), and the failed expansion left a
+        // streaming partial (generationTimeMs === 0) on top. Rollback must
+        // strip the streaming entry and restore the .md from the previous
+        // revision — the chapter stays expanded with its old content.
+        const previousRevision = {
+            content: 'Previous good revision content.',
+            wordCount: 4,
+            generationTimeMs: 4321
+        };
+        const streamingPartial = {
+            content: 'truncated partial output from the failed attempt',
+            wordCount: 8,
+            generationTimeMs: 0
+        };
+        const shortContent = 'word '.repeat(50);
+        const { client, format } = createClient(() =>
+            Promise.resolve({ response: { title: 'Short Chapter', content: shortContent } })
+        );
+        const chapterDir = newChapterDir();
+        seedChapterJson(chapterDir, [previousRevision, streamingPartial]);
+
+        await expect(expandChapter({ ...baseOpts(chapterDir, 100), client })).rejects.toThrow(
+            'Chapter 1 expansion produced only 51 words (minimum: 100) after 11 attempt(s) ' +
+                '(retry budget MAX_EXPAND_ATTEMPTS=10 exhausted)'
+        );
+        expect(format).toHaveBeenCalledTimes(11);
+
+        // Streaming entry stripped, previous finalized revision intact.
+        expect(readChapterJson(chapterDir).revisions).toEqual([previousRevision]);
+
+        // .md restored from the surviving revision (with the payload title).
         const written = fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8');
-        expect(written).toBe(`## Short Chapter\n\n${shortContent}`);
+        expect(written).toBe(`## The Beginning\n\nPrevious good revision content.`);
     });
 
     it('stops after the budget when every attempt rejects, and throws instead of returning empty content', async () => {
         const { client, format } = createClient(() => Promise.reject(new Error('LLM exploded')));
         const chapterDir = newChapterDir();
+        seedChapterJson(chapterDir, []);
 
         await expect(expandChapter({ ...baseOpts(chapterDir, 100), client })).rejects.toThrow(
             'Chapter 1 expansion failed after 11 attempt(s) (retry budget MAX_EXPAND_ATTEMPTS=10 exhausted)'

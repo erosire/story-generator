@@ -809,6 +809,15 @@ const reExpandChapter = async (options: {
     // to the next chapter and check whether it is pending. If pending, continue
     // expanding. Stop when there are no more chapters or the next chapter is
     // already expanded.
+    //
+    // TERMINATION: expandChapter THROWS when its retry budget is exhausted
+    // without meeting MIN_WORDS_PER_CHAPTER (see story-utils.ts). There is no
+    // try/catch here on purpose — the throw propagates out of this while loop
+    // and rejects the background job (caught by the PATCH handler's .catch,
+    // which logs and releases the tracked job), so a failed expansion can
+    // never proceed to the next chapter on broken context. expandChapter also
+    // rolls back the failed chapter's streaming state, leaving it expandable
+    // again with its previous revision intact.
     let currentIndex = startChapterIndex;
     let currentAppending = [...options.appending];
     let currentRequest = options.request;

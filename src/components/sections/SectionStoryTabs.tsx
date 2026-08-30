@@ -50,7 +50,7 @@ import React from 'react';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
 import { fetchStoryList } from '../../api';
-import { mergeServerStoryList, type StoryEntry } from '../../context/store';
+import { mergeServerStoryList } from '../../context/store';
 
 // How often to auto-refresh the story list from the server when the dashboard
 // looks idle (30 seconds).
@@ -315,25 +315,13 @@ const EmptyMessage = styled('div', {
 });
 
 export const SectionStoryTabs: React.FC = React.memo(() => {
-    const { store, setStore, deleteStory, touchStory } = useStoryStore();
+    const { store, setStore, deleteStory } = useStoryStore();
     const { records, selected } = store;
 
     // Single in-flight delete guard, mirroring the chat-assistant sidebar:
     // while any delete request is outstanding, every tile's "x" is disabled so
     // a second delete cannot race the active identified DELETE request.
     const [deleting, setDeleting] = React.useState(false);
-
-    // Selecting a story is a user action — bump its lastActionedAt so the
-    // tile moves to the top of the sidebar ("last actioned on top"). The
-    // selection itself is applied in the same click via setStore below;
-    // touchStory only writes the ordering timestamp on the record.
-    const handleSelect = React.useCallback(
-        (entry: StoryEntry) => {
-            touchStory(entry.storyId);
-            setStore((prev) => ({ ...prev, selected: entry }));
-        },
-        [touchStory, setStore]
-    );
 
     const handleDelete = React.useCallback(
         async (storyId: string) => {
@@ -470,9 +458,13 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 const processingBadge = isProcessing ? '⏳' : '';
 
                 const itemProps = {
-                    // Click = select + user-action timestamp bump (reorders the
-                    // sidebar so this tile is on top).
-                    onClick: () => handleSelect(entry),
+                    // Click = selection ONLY. Viewing a story is read-only
+                    // (GET) — it must NOT bump lastActionedAt, which tracks
+                    // data-mutating user actions (POST/PATCH: generate, fork,
+                    // expand, rewrite, append, resume, terminate, deletes,
+                    // rename). Bumping on view would reorder the list under
+                    // the user's cursor without any data actually changing.
+                    onClick: () => setStore((prev) => ({ ...prev, selected: entry })),
                     'data-testid': `story-tab-${entry.storyId}`,
                     'aria-pressed': isSelected
                 };

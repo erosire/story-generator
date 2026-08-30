@@ -1,8 +1,9 @@
 // Tests for the story store's lastActionedAt (user-action timestamp) plumbing.
 //
 // lastActionedAt is the sidebar's "last actioned on top" sort key. It is
-// CLIENT-OWNED: bumped only by explicit user actions (see touchStory in
-// store.tsx), never by server metadata. These tests pin the two non-UI
+// CLIENT-OWNED: bumped only by data-mutating user actions (POST/PATCH flows —
+// see touchStory in store.tsx; read-only viewing like selection never counts),
+// never by server metadata. These tests pin the two non-UI
 // invariants:
 //   1. mergeServerStoryList preserves the client-owned timestamp across list
 //      syncs (overlay spread) and leaves it undefined for stories new to the

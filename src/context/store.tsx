@@ -390,16 +390,18 @@ export type StoryEntry = {
     chapterCompleted: number;
     createdDate: string; // ISO 8601 timestamp from the server's collection endpoint
     // ISO 8601 timestamp of the last USER-ACTIONED event on this story —
-    // bumped ONLY by explicit user actions (select tile, Generate, fork,
-    // expand, rewrite, append, resume, terminate, delete revision/chapter,
-    // rename) via touchStory()/the action handlers. Deliberately NOT the
-    // server's last-modified time: background generation writes, poll
+    // bumped ONLY by data-mutating user actions (POST/PATCH flows: generate,
+    // fork, expand, rewrite, append, resume, terminate, delete revision/
+    // chapter, rename) via touchStory()/the action handlers. VIEWING does not
+    // count: selecting a story or reading its content is read-only (GET) and
+    // must never change this timestamp. Deliberately NOT the server's
+    // last-modified time either: background generation writes, poll
     // refreshes, and list syncs NEVER touch this field, so the sidebar's
-    // "last actioned on top" ordering reflects what the user did, not what
-    // the server wrote. Optional: entries that predate the feature (legacy
-    // localStorage cache, freshly synced server stories) have undefined and
-    // fall back to createdDate for sorting. Persisted with the records cache
-    // so the ordering survives page reloads.
+    // "last actioned on top" ordering reflects what the user changed, not
+    // what they looked at or what the server wrote. Optional: entries that
+    // predate the feature (legacy localStorage cache, freshly synced server
+    // stories) have undefined and fall back to createdDate for sorting.
+    // Persisted with the records cache so the ordering survives page reloads.
     lastActionedAt?: string;
     status: 'generating' | 'completed' | 'failed';
     // Progressive data fetched via GET polling. Starts as an empty story (status 200
@@ -490,9 +492,11 @@ type StoryStoreContextValue = {
     // Delete a story by storyId. Calls DELETE API then removes the entry from the store.
     deleteStory: (storyId: string) => Promise<void>;
     // Bump the user-action timestamp (lastActionedAt) for a story. Called by
-    // every explicit user action on a story (see StoryEntry.lastActionedAt).
+    // every data-mutating user action on a story (POST/PATCH flows — see
+    // StoryEntry.lastActionedAt). VIEWING (selection, reading content) must
+    // NOT call this — read-only actions never change the ordering timestamp.
     // Background work (poll loops, list syncs, server job writes) must NEVER
-    // call this — only user-initiated actions change the ordering timestamp.
+    // call it either.
     touchStory: (storyId: string) => void;
 };
 
