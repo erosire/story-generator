@@ -34,8 +34,29 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters, vari
     // plotline (resume button, SectionStoryContent) from a finished one; the
     // list endpoint's deriveStatus (generation-list-stories.ts) stays the
     // authoritative computed status.
-    let meta: { storyName?: string; storyline: string; chapterCount: number; createdAt: string; status?: string } | null = null;
+    // meta.lastUpdatedAt mirrors the list endpoint's lastUpdatedDate (mtime of
+    // plotpoint.json as ISO string) — the dashboard's localStorage cache
+    // compares this against the cached record to decide whether the cached
+    // chapter data is stale and needs a re-fetch. Read from fs.statSync even
+    // when JSON.parse fails below (stat only needs the file to exist).
+    let meta: {
+        storyName?: string;
+        storyline: string;
+        chapterCount: number;
+        createdAt: string;
+        status?: string;
+        lastUpdatedAt: string;
+    } | null = null;
     let plotpointChapters: { number: string; title: string; plotpoints: string[] }[] = [];
+    // Computed once, outside the try/catch — mtime stays meaningful even for a
+    // corrupted plotpoint.json (catch treats it as no plotpoints but meta still
+    // carries lastUpdatedAt when any metadata field is present).
+    let lastUpdatedAt = '';
+    try {
+        lastUpdatedAt = fs.statSync(plotpointJsonPath).mtime.toISOString();
+    } catch {
+        // Missing/unstattable plotpoint.json — '' means "unknown" to the client
+    }
     if (fs.existsSync(plotpointJsonPath)) {
         try {
             const plotpointData = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
@@ -46,7 +67,8 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters, vari
                     storyline: plotpointData.storyline ?? '',
                     chapterCount: plotpointData.chapterCount ?? 0,
                     createdAt: plotpointData.createdAt ?? '',
-                    ...(typeof plotpointData.status === 'string' ? { status: plotpointData.status } : {})
+                    ...(typeof plotpointData.status === 'string' ? { status: plotpointData.status } : {}),
+                    lastUpdatedAt
                 };
             }
             if (Array.isArray(plotpointData.chapters)) {

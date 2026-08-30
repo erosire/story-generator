@@ -30,11 +30,13 @@
 //       See generation-create-new-story.ts.
 //
 //   - GET /v1/storyboard/generations/:storyId
-//       returns: { chapters: Chapter[], meta: StoryMeta | null }
-//       Each chapter includes plotpoints and expansion status. Expanded chapters
-//       include content/length/generationTimeMs; pending chapters have expanded=false.
-//       404 if the storyId dir doesn't exist yet (no POST issued / generation
-//       hasn't started creating files). See generation-get-story-data.ts.
+//   returns: { chapters: Chapter[], meta: StoryMeta | null }
+//   Each chapter includes plotpoints and expansion status. Expanded chapters
+//   include content/length/generationTimeMs; pending chapters have expanded=false.
+//   meta.lastUpdatedAt (plotpoint.json mtime) is the staleness key the static
+//   memory compares against the cached record. 404 if the storyId dir doesn't
+//   exist yet (no POST issued / generation hasn't started creating files).
+//   See generation-get-story-data.ts.
 //
 //   - PATCH /v1/storyboard/generations/:storyId
 //       body: { storyName?: string, expandChapterIndex?: number,
@@ -96,6 +98,14 @@ export type StoryMeta = {
     chapterRequested: number;
     chapterCompleted: number;
     createdDate: string;
+    // Staleness key for the browser's static memory (localStorage records
+    // cache): the mtime of plotpoint.json as an ISO string, emitted by
+    // generation-list-stories.ts via fs.statSync. Every write to
+    // plotpoint.json bumps it, so a cached record whose lastUpdatedDate
+    // differs from the server's value must be re-fetched. '' when the server
+    // cannot stat the file (treated as "unknown"). Optional: a server
+    // predating this field omits it, which the cache treats as "unknown".
+    lastUpdatedDate?: string;
     status: 'generating' | 'completed' | 'failed';
     // LIVE background-thread flag from the server's in-memory job registry
     // (generation-job-registry.ts). True while any background job (create,
@@ -370,11 +380,11 @@ export async function fetchStoryData(
 //
 // The server returns { stories: StoryMeta[], jobs: ActiveJob[] } where each
 // story entry contains story metadata (storyId, chapterRequested,
-// chapterCompleted, createdDate, status, processing) from plotpoint.json
-// (see generation-list-stories.ts). Stories are sorted by createdDate
-// descending (newest first) on the server side. `jobs` is the server's
-// in-memory background-thread registry snapshot (empty after a restart).
-// Storyline is intentionally omitted from the list response.
+// chapterCompleted, createdDate, lastUpdatedDate, status, processing) from
+// plotpoint.json (see generation-list-stories.ts). Stories are sorted by
+// createdDate descending (newest first) on the server side. `jobs` is the
+// server's in-memory background-thread registry snapshot (empty after a
+// restart). Storyline is intentionally omitted from the list response.
 //
 // The list never includes chapter content — callers issue a second
 // GET with a specific storyId for that.

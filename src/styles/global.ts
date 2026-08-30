@@ -45,7 +45,7 @@ const sheet = `
 .sg-hover:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Destructive hover — flat solid danger surface swap. */
-.sg-danger:hover { background-color: ${theme.danger}; border-color: ${theme.danger}; color: #ffffff; }
+.sg-danger:hover { background-color: ${theme.danger}; border-color: ${theme.danger}; color: ${theme.highlight}; }
 .sg-danger:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Primary action button — flat solid accent fill. Hover swaps to a brighter
@@ -130,7 +130,7 @@ const sheet = `
     overflow: hidden;
     background-color: ${theme.accentSoft};
     border-color: ${theme.accent};
-    color: #ffffff;
+    color: ${theme.highlight};
 }
 .sg-story-selected:hover {
     background-color: ${theme.accentSoftHover};
@@ -182,6 +182,12 @@ const sheet = `
 
 /* Collapsible header — flat hover surface swap. */
 .sg-collapse-header:hover { background-color: ${theme.surface2}; }
+
+/* Sidebar search input — placeholder colored via the pseudo-selector that
+   inline styles cannot express (see src/styles/styled.tsx note). The focus
+   treatment is the shared .sg-input flat swap (accent border, no glow); this
+   rule only pins the placeholder to the dimmest text token. */
+.sg-search::placeholder { color: ${theme.textFaint}; }
 
 /* Plotpoints toggle — flat hover, surface + text color swap. */
 .sg-plot-toggle:hover { background-color: ${theme.surface3}; color: ${theme.text}; border-color: ${theme.borderStrong}; }

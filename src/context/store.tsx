@@ -108,7 +108,7 @@ export const clearExpandedChapters = (storyId: string) => {
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
 // that don't survive across sessions (error, isProcessing, serverProcessing).
-type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterRequested' | 'chapterCompleted' | 'createdDate' | 'lastActionedAt' | 'status' | 'isRemote' | 'missingFromServer'> & {
+type PersistableStoryEntry = Pick<StoryEntry, 'id' | 'storyId' | 'storyName' | 'title' | 'storyline' | 'chapterRequested' | 'chapterCompleted' | 'createdDate' | 'lastActionedAt' | 'lastUpdatedAt' | 'dataStale' | 'status' | 'isRemote' | 'missingFromServer'> & {
     data: StoryData | null;
 };
 
@@ -123,6 +123,10 @@ const toPersistable = (entry: StoryEntry): PersistableStoryEntry => ({
     chapterCompleted: entry.chapterCompleted,
     createdDate: entry.createdDate,
     lastActionedAt: entry.lastActionedAt,
+    // Persisted so staleness survives reloads: a cached payload flagged
+    // dataStale must still refresh after the browser restarts.
+    lastUpdatedAt: entry.lastUpdatedAt,
+    dataStale: entry.dataStale,
     status: entry.status,
     data: entry.data,
     isRemote: entry.isRemote,
@@ -152,6 +156,11 @@ export const loadRecordsFromStorage = (): StoryEntry[] => {
             // Cache-only flag persists across reloads so the story still renders
             // (and deletes locally) before the next successful list sync.
             missingFromServer: entry.missingFromServer ?? false,
+            // Staleness flag persists across reloads: a cached payload older
+            // than the server's last write must still trigger a refresh after
+            // the browser restarts. Legacy cached entries lack the field →
+            // not stale until the next list sync computes the delta.
+            dataStale: entry.dataStale ?? false,
             // Transient live-job flag starts false on rehydrate — the server's
             // in-memory job registry is the only source of truth and is
             // re-synced by the next list fetch (BootstrapLayer / sidebar
@@ -185,6 +194,12 @@ export const loadRecordsFromStorage = (): StoryEntry[] => {
  *     never reports it and the merge never overwrites it. The overlay spread
  *     (`...existing`) carries it through untouched so the sidebar's "last
  *     actioned on top" ordering survives every list sync.
+ *   - Staleness delta: each server entry carries lastUpdatedDate (plotpoint.json
+ *     mtime). When it differs from the entry's stored lastUpdatedAt (the
+ *     timestamp of the cached `data`'s fetch), the entry is flagged
+ *     `dataStale: true` — the cached payload predates a server write and the
+ *     next view re-fetches instead of showing stale content. Unknown values
+ *     (legacy server / legacy cache) never flag stale.
  *   - Stories present ONLY in the cache (absent from a successful server
  *     response) are RETAINED and flagged `missingFromServer: true` — they
  *     must stay visible in the sidebar and deletable without a server call.
@@ -236,6 +251,29 @@ export const mergeServerStoryList = (
                 // Cache-only stories (absent from the response) keep their flag
                 // — see cacheOnlyEntries below.
                 isProcessing: meta.processing ? existing.isProcessing : false,
+                // Static-memory staleness delta: the server's lastUpdatedDate
+                // (plotpoint.json mtime) vs the timestamp recorded when the
+                // cached `data` was fetched. Different (and both known) →
+                // dataStale: the cached payload predates a server write and
+                // must be re-fetched on next view. Equal → dataStale clears
+                // (the delta was resolved by a fetch that already saw the
+                // latest write — e.g. the poll loop landing fresh data and the
+                // list sync arriving after). Unknown timestamps (legacy server
+                // omits lastUpdatedDate, or entry has no stored lastUpdatedAt)
+                // never flag stale — we can't prove a delta without both
+                // values, and false-positives would refetch every sync.
+                dataStale:
+                    meta.lastUpdatedDate && existing.lastUpdatedAt
+                        ? meta.lastUpdatedDate !== existing.lastUpdatedAt
+                        : false,
+                // Track the server's latest timestamp as the entry's
+                // lastUpdatedAt. NOTE: this field doubles as "when our cached
+                // data was fetched" — SectionStoryContent updates it when it
+                // stores fetched data, so between syncs it reflects the fetch,
+                // and a list sync only marks dataStale when the server moved
+                // BEYOND what the fetch saw. A server write that happens and
+                // is then fully fetched lands the values back in agreement.
+                lastUpdatedAt: meta.lastUpdatedDate ?? existing.lastUpdatedAt,
                 missingFromServer: false
             };
         }
@@ -252,12 +290,18 @@ export const mergeServerStoryList = (
             chapterRequested: meta.chapterRequested,
             chapterCompleted: meta.chapterCompleted,
             createdDate: meta.createdDate,
+            // Record the server's timestamp; data is null for new entries so
+            // there is no cached payload that could be stale — dataStale is
+            // explicitly false (not undefined) so consumers comparing strictly
+            // see a settled value.
+            lastUpdatedAt: meta.lastUpdatedDate,
             status: meta.status,
             data: null,
             isProcessing: false,
             serverProcessing: meta.processing ?? false,
             error: '',
             isRemote: true,
+            dataStale: false,
             missingFromServer: false
         };
     });
@@ -371,9 +415,19 @@ export type Chapter = {
 // meta.status is the raw plotpoint.json status when present ('generating' |
 // 'completed' | 'failed') — SectionStoryContent uses it (with the chapter
 // count) to offer the resume action for interrupted plotline generation.
+// meta.lastUpdatedAt mirrors the list endpoint's lastUpdatedDate (mtime of
+// plotpoint.json) — the staleness key the static memory compares against the
+// cached record to decide whether `data` is stale and must be re-fetched.
 export type StoryData = {
     chapters: Chapter[];
-    meta: { storyName?: string; storyline: string; chapterCount: number; createdAt: string; status?: string } | null;
+    meta: {
+        storyName?: string;
+        storyline: string;
+        chapterCount: number;
+        createdAt: string;
+        status?: string;
+        lastUpdatedAt?: string;
+    } | null;
 };
 
 // A single story session in the dashboard.
@@ -403,6 +457,26 @@ export type StoryEntry = {
     // stories) have undefined and fall back to createdDate for sorting.
     // Persisted with the records cache so the ordering survives page reloads.
     lastActionedAt?: string;
+    // The story's last-updated timestamp from the server (ISO string): the
+    // mtime of plotpoint.json. Tracked in THREE places, and they must agree:
+    //   - list endpoint: StoryMeta.lastUpdatedDate (mergeServerStoryList copies
+    //     it here on every sync)
+    //   - per-story GET: StoryData.meta.lastUpdatedAt (SectionStoryContent
+    //     refreshes it whenever it fetches fresh data)
+    // Undefined means "unknown" — legacy servers predating the field, stories
+    // the server cannot stat, cache entries persisted before the feature.
+    // Persisted so the staleness comparison survives reloads.
+    lastUpdatedAt?: string;
+    // True when the server's lastUpdatedAt differs from the cached `data`'s
+    // fetch timestamp — i.e. plotpoint.json was rewritten after we fetched,
+    // so the cached chapters/storyline may be out of date and the next view
+    // must trigger a one-shot re-fetch instead of showing stale content.
+    // Set by mergeServerStoryList (delta between the server's
+    // lastUpdatedDate and the entry's stored lastUpdatedAt) and cleared by
+    // SectionStoryContent once fresh data lands. Persisted so a reload while
+    // stale doesn't wrongly show the old payload as fresh. Optional because
+    // entries seeded by tests / initialStore may omit it.
+    dataStale?: boolean;
     status: 'generating' | 'completed' | 'failed';
     // Progressive data fetched via GET polling. Starts as an empty story (status 200
     // returns { chapters: [], meta: null } for an existing-but-empty dir — see

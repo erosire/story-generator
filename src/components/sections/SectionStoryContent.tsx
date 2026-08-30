@@ -152,7 +152,7 @@ const PendingExpansion = styled('div', {
 const RewriteOverlay = styled('div', {
     position: 'fixed' as const,
     inset: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: theme.overlayDialog,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -161,13 +161,13 @@ const RewriteOverlay = styled('div', {
 
 // Modal dialogue box for rewrite context input.
 const RewriteDialog = styled('div', {
-    background: '#1e2330',
+    background: theme.surfaceDialogAlt,
     border: `1px solid ${theme.border}`,
     borderRadius: theme.radiusLg,
     padding: 24,
     width: '90%',
     maxWidth: 520,
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
+    boxShadow: theme.shadowDialog
 });
 
 const RewriteDialogTitle = styled('h3', {
@@ -209,7 +209,7 @@ const RewriteDialogActions = styled('div', {
 const AppendOverlay = styled('div', {
     position: 'fixed' as const,
     inset: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: theme.overlayDialog,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -223,7 +223,7 @@ const AppendDialog = styled('div', {
     padding: 24,
     width: '90%',
     maxWidth: 520,
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
+    boxShadow: theme.shadowDialog
 });
 
 const AppendDialogTitle = styled('h3', {
@@ -283,7 +283,7 @@ const AppendButton = styled('button', {
     borderRadius: theme.radiusMd,
     border: 'none',
     backgroundColor: theme.accent,
-    color: '#ffffff',
+    color: theme.highlight,
     fontSize: theme.fontSize.body,
     fontWeight: 600,
     cursor: 'pointer',
@@ -316,7 +316,7 @@ const DeleteDialog = styled('div', {
     padding: 24,
     width: '90%',
     maxWidth: 520,
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
+    boxShadow: theme.shadowDialog
 });
 
 // Primary confirm action — danger fill so the destructive nature reads at a
@@ -326,7 +326,7 @@ const DeleteConfirmButton = styled('button', {
     borderRadius: theme.radiusMd,
     border: 'none',
     backgroundColor: theme.danger,
-    color: '#ffffff',
+    color: theme.highlight,
     fontSize: theme.fontSize.body,
     fontWeight: 600,
     cursor: 'pointer',
@@ -1043,12 +1043,31 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                             ...prev,
                             records: prev.records.map((e) =>
                                 e.id === entryId
-                                    ? { ...e, data: result.data, isProcessing: false }
+                                    ? {
+                                          ...e,
+                                          data: result.data,
+                                          isProcessing: false,
+                                          // Fresh payload landed — sync static-memory
+                                          // timestamp + clear stale flag (mirrors
+                                          // the main onData merge).
+                                          ...(result.data.meta?.lastUpdatedAt
+                                              ? { lastUpdatedAt: result.data.meta.lastUpdatedAt }
+                                              : {}),
+                                          dataStale: false
+                                      }
                                     : e
                             ),
                             selected:
                                 prev.selected?.id === entryId
-                                    ? { ...prev.selected, data: result.data, isProcessing: false }
+                                    ? {
+                                          ...prev.selected,
+                                          data: result.data,
+                                          isProcessing: false,
+                                          ...(result.data.meta?.lastUpdatedAt
+                                              ? { lastUpdatedAt: result.data.meta.lastUpdatedAt }
+                                              : {}),
+                                          dataStale: false
+                                      }
                                     : prev.selected
                         }));
                         setReExpandState(null);
@@ -1237,11 +1256,32 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                 setStore((prev) => ({
                     ...prev,
                     records: prev.records.map((e) =>
-                        e.id === selected.id ? { ...e, data: result.data, error: '' } : e
+                        e.id === selected.id
+                            ? {
+                                  ...e,
+                                  data: result.data,
+                                  error: '',
+                                  // Fresh payload just landed — sync the static-memory
+                                  // timestamp and clear any stale flag a concurrent
+                                  // list sync raised.
+                                  ...(result.data.meta?.lastUpdatedAt
+                                      ? { lastUpdatedAt: result.data.meta.lastUpdatedAt }
+                                      : {}),
+                                  dataStale: false
+                              }
+                            : e
                     ),
                     selected:
                         prev.selected?.id === selected.id
-                            ? { ...prev.selected, data: result.data, error: '' }
+                            ? {
+                                  ...prev.selected,
+                                  data: result.data,
+                                  error: '',
+                                  ...(result.data.meta?.lastUpdatedAt
+                                      ? { lastUpdatedAt: result.data.meta.lastUpdatedAt }
+                                      : {}),
+                                  dataStale: false
+                              }
                             : prev.selected
                 }));
                 // Repair the revision-tab selection: indices after the deleted
@@ -1331,7 +1371,14 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                   // "Generating X/Y" banner would chase a
                                   // phantom chapter. Floor at 0 for stories
                                   // that were never counted.
-                                  chapterRequested: Math.max(0, (e.chapterRequested ?? 0) - 1)
+                                  chapterRequested: Math.max(0, (e.chapterRequested ?? 0) - 1),
+                                  // Fresh payload just landed — sync the static-memory
+                                  // timestamp and clear any stale flag (mirrors
+                                  // the revision-delete merge above).
+                                  ...(result.data.meta?.lastUpdatedAt
+                                      ? { lastUpdatedAt: result.data.meta.lastUpdatedAt }
+                                      : {}),
+                                  dataStale: false
                               }
                             : e
                     ),
@@ -1341,7 +1388,11 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                   ...prev.selected,
                                   data: result.data,
                                   error: '',
-                                  chapterRequested: Math.max(0, (prev.selected.chapterRequested ?? 0) - 1)
+                                  chapterRequested: Math.max(0, (prev.selected.chapterRequested ?? 0) - 1),
+                                  ...(result.data.meta?.lastUpdatedAt
+                                      ? { lastUpdatedAt: result.data.meta.lastUpdatedAt }
+                                      : {}),
+                                  dataStale: false
                               }
                             : prev.selected
                 }));
@@ -1385,18 +1436,26 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     //   immediately below) → check the server ONCE → update the store
     //   (auto-persisted to the cache) → STOP.
     //
-    // Fires only when the selected story has no data yet (fresh remote entry,
-    // never-polled cache entry) or its cache-only state just resolved (the
-    // story reappeared on the server). An idle story is NEVER polled in a
-    // loop — its files only change while a background job writes them, and
-    // job activity is handled by the job-gated loop below. Errors and 404s
-    // are silent here: the cached copy stays the displayed truth (mirrors the
-    // old quiet cache-only policy) and the sidebar's loadWarning covers
-    // server unreachability.
+    // Fires in TWO cases:
+    //   1. No data yet (fresh remote entry, never-polled cache entry) or its
+    //      cache-only state just resolved (the story reappeared on the server).
+    //   2. STATIC-MEMORY STALENESS (browser cache feature): the entry is
+    //      flagged dataStale — a list sync saw the server's lastUpdatedDate
+    //      (plotpoint.json mtime) move past the timestamp recorded when the
+    //      cached `data` was fetched, meaning the cached chapters/storyline
+    //      predate a server write (another session expanded/renamed/rewrote
+    //      the story). The cached payload is REPLACED by a fresh one-shot GET
+    //      instead of shown as-is; lastUpdatedAt/dataStale sync below.
+    //
+    // An idle story is NEVER polled in a loop — its files only change while a
+    // background job writes them, and job activity is handled by the
+    // job-gated loop below. Errors and 404s are silent here: the cached copy
+    // stays the displayed truth (mirrors the old quiet cache-only policy) and
+    // the sidebar's loadWarning covers server unreachability.
     React.useEffect(() => {
         if (!selected?.storyId) return;
-        // Content already available — nothing to catch up on.
-        if (selected.data) return;
+        // Content already available AND not stale — nothing to catch up on.
+        if (selected.data && !selected.dataStale) return;
 
         const entryId = selected.id;
         const { storyId } = selected;
@@ -1415,6 +1474,17 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                   data: { chapters: result.data.chapters, meta: result.data.meta },
                                   storyline: result.data.meta?.storyline ?? e.storyline,
                                   missingFromServer: false,
+                                  // Static-memory sync: adopt the server's
+                                  // fetch-time stamp (meta.lastUpdatedAt = the
+                                  // plotpoint.json mtime this payload reflects)
+                                  // and clear the stale flag — the cached copy
+                                  // has been replaced by this fresh payload.
+                                  // Legacy servers omit meta.lastUpdatedAt →
+                                  // keep the previous stamp (never regress).
+                                  ...(result.data.meta?.lastUpdatedAt
+                                      ? { lastUpdatedAt: result.data.meta.lastUpdatedAt }
+                                      : {}),
+                                  dataStale: false,
                                   ...(result.data.meta?.storyName
                                       ? { storyName: result.data.meta.storyName, title: result.data.meta.storyName }
                                       : {})
@@ -1430,7 +1500,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             })
             .catch(() => {
                 // Silent — the cached/empty view stands until a job (or the
-                // next selection) triggers a fresh check.
+                // next selection) triggers a fresh check. dataStale stays set
+                // so the NEXT selection of this story retries the refresh.
             });
 
         return () => {
@@ -1441,6 +1512,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         selected?.id,
         selected?.storyId,
         selected?.data === null,
+        selected?.dataStale,
         selected?.missingFromServer,
         store.config.baseUrl
     ]);
@@ -1517,7 +1589,11 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         // Also propagates meta.storyline into entry.storyline and meta.storyName
         // into entry.storyName/title so the sidebar and header update with a
         // meaningful name once the server responds. A data answer also clears
-        // missingFromServer — the story provably exists on the server again.
+        // missingFromServer — the story provably exists on the server again —
+        // and syncs the static-memory timestamps: lastUpdatedAt adopts
+        // meta.lastUpdatedAt (the plotpoint.json mtime this payload reflects)
+        // and dataStale clears (a concurrent list sync may have flagged the
+        // entry mid-poll; the payload just landed is at least as fresh).
         const onData = (data: { chapters: any[]; meta: any }) => {
             setStore((prev) => {
                 const records = prev.records.map((e) =>
@@ -1527,6 +1603,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                               data: { chapters: data.chapters, meta: data.meta },
                               storyline: data.meta?.storyline ?? e.storyline,
                               missingFromServer: false,
+                              ...(data.meta?.lastUpdatedAt ? { lastUpdatedAt: data.meta.lastUpdatedAt } : {}),
+                              dataStale: false,
                               ...(data.meta?.storyName
                                   ? { storyName: data.meta.storyName, title: data.meta.storyName }
                                   : {})
@@ -2196,7 +2274,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 style={{
                                     pointerEvents: 'auto',
                                     backgroundColor: rewriteContextInput.trim() ? theme.accent : undefined,
-                                    color: rewriteContextInput.trim() ? '#fff' : undefined,
+                                    color: rewriteContextInput.trim() ? theme.highlight : undefined,
                                     borderColor: rewriteContextInput.trim() ? theme.accent : undefined,
                                     opacity: rewriteContextInput.trim() ? 1 : 0.5
                                 }}

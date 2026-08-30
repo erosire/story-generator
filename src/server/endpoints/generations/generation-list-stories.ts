@@ -19,6 +19,12 @@ import { getActiveStoryJobs, isStoryJobActive, type StoryJob } from './generatio
 //     THIS server process. Unlike `status`, it dies with a server restart
 //     (blank slate), so a stuck 'generating' story without a live job is NOT
 //     reported as processing. This is what the sidebar animates on.
+//   - `lastUpdatedDate` is the mtime of plotpoint.json (fs.statSync), emitted
+//     as an ISO string. Every write to plotpoint.json (plotline generation,
+//     chapterCompleted denormalization, rename, chapter add/remove) bumps the
+//     mtime, so the dashboard's static memory (localStorage cache) uses this
+//     as the staleness key: a cached record whose lastUpdatedDate differs from
+//     the server's value must be re-fetched.
 //
 // Note: storyline is intentionally omitted from the list response — it is
 // free-form user text that can be arbitrarily long and is not needed by the
@@ -29,6 +35,7 @@ type StoryMeta = {
     chapterRequested: number;
     chapterCompleted: number;
     createdDate: string;
+    lastUpdatedDate: string;
     status: 'generating' | 'completed' | 'failed';
     processing: boolean;
 };
@@ -53,6 +60,20 @@ const deriveStatus = (
     if (rawStatus === 'completed') return 'completed';
     if (chapterRequested > 0 && chapterCompleted >= chapterRequested) return 'completed';
     return 'generating';
+};
+
+// Read the mtime of plotpoint.json as the story's last-updated timestamp,
+// normalized to an ISO string. Every server-side write path (plotline
+// generation, writeChapterFiles denormalizing chapterCompleted, rename,
+// chapter add/remove) rewrites plotpoint.json, so mtime moves on any change.
+// Returns '' when stat fails (file vanished mid-list, Windows race) so the
+// client treats missing timestamp as "unknown" rather than crashing.
+const readLastUpdatedDate = (plotpointJsonPath: string): string => {
+    try {
+        return fs.statSync(plotpointJsonPath).mtime.toISOString();
+    } catch {
+        return '';
+    }
 };
 
 // List all stories in the storyboard directory below the shared database root.
@@ -109,28 +130,34 @@ export const generationListStories = asHandlerMethod(async (_, parameters, varia
                     chapterCompleted,
                     // Rename createdAt → createdDate per the API spec
                     createdDate: data.createdAt ?? '',
+                    // mtime of plotpoint.json — staleness key for the dashboard's static memory
+                    lastUpdatedDate: readLastUpdatedDate(plotpointJsonPath),
                     // Derive status from raw plotpoint.json status + chapter completion
                     status: deriveStatus(data.status, chapterCompleted, chapterRequested),
                     processing
                 });
             } catch {
                 // If plotpoint.json is corrupted or unreadable, fall back to minimal metadata
+                // (mtime still readable even when JSON.parse fails)
                 stories.push({
                     storyId: entry.name,
                     chapterRequested: 0,
                     chapterCompleted: 0,
                     createdDate: '',
+                    lastUpdatedDate: readLastUpdatedDate(plotpointJsonPath),
                     status: 'generating',
                     processing
                 });
             }
         } else {
             // Legacy story without plotpoint.json — include with empty metadata
+            // (no plotpoint.json → no mtime → empty lastUpdatedDate)
             stories.push({
                 storyId: entry.name,
                 chapterRequested: 0,
                 chapterCompleted: 0,
                 createdDate: '',
+                lastUpdatedDate: '',
                 status: 'generating',
                 processing
             });

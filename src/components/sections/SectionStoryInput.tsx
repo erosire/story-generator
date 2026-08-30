@@ -79,7 +79,7 @@ const GenerateButton = styled('button', {
     borderRadius: theme.radiusMd,
     border: 'none',
     backgroundColor: theme.accent,
-    color: '#ffffff',
+    color: theme.highlight,
     fontSize: theme.fontSize.body,
     fontWeight: 600,
     cursor: 'pointer',

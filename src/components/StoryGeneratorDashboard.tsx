@@ -89,7 +89,7 @@ export const DashboardContent = styled('div', {
 const SidebarOverlay = styled('div', {
     position: 'absolute' as const,
     inset: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    backgroundColor: theme.overlayDim,
     zIndex: 10,
     cursor: 'pointer',
     animation: 'sg-fade-in 160ms ease both'

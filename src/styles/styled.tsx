@@ -13,6 +13,9 @@
 //   - numbers stay as-is (React converts unitless numeric CSS values to px)
 //   - strings are passed through verbatim (e.g. '100%', '1rem', '8px')
 //   - functions are NOT supported (use inline override for dynamic values)
+//   - pseudo-selector objects ('::placeholder', ':hover' as keys) are NOT
+//     applied by this helper — inline styles cannot carry them. Use the class
+//     hooks in styles/global.ts for pseudo-selector styling.
 //
 // This is intentionally tiny and only used by dashboard layout pieces. Component
 // sections (SectionStoryTabs / SectionStoryContent / SectionStoryInput) use it too

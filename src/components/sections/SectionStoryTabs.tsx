@@ -12,6 +12,15 @@
 // for how the server registry snapshot (store.activeJobs) combines with this
 // session's local processing flags.
 //
+// Real-time SEARCH: below the header sits a text input (data-testid
+// "sidebar-search") that filters the story tiles as the user types. Matching
+// is case-insensitive substring against the tile's visible title text
+// (entry.title — storyName or storyId prefix). The filter is CLIENT-ONLY and
+// purely presentational: it never mutates `records`, so the lastActionedAt
+// ordering, the selection, the records cache, and the auto-refresh merge are
+// all untouched — clearing the query restores the exact list that was there
+// before. Empty/whitespace query shows every story.
+//
 // No manual refresh button — the sidebar auto-refreshes periodically by polling
 // GET /v1/storyboard/generations to pick up stories created by other
 // sessions/devices and the server's live background-job flags.
@@ -109,11 +118,44 @@ const JobCountBadge = styled('span', {
     fontSize: theme.fontSize.xs,
     lineHeight: 1,
     fontWeight: 600,
-    color: '#e0e1ff',
-    background: 'rgba(129, 140, 248, 0.35)',
-    border: '1px solid rgba(199, 205, 252, 0.45)',
+    // accentChip* tokens — same near-white accent-hue chip family as the
+    // selected-tile badges (BadgeActive) so the header chip and tile chips
+    // read as one visual family.
+    color: theme.accentChipText,
+    background: theme.accentChipFill,
+    border: `1px solid ${theme.accentChipBorder}`,
     textTransform: 'none' as const,
     letterSpacing: 0
+});
+
+// Real-time search input below the "Stories" header. Filters the tile list
+// as the user types (see the SEARCH note in the file header: the filter never
+// mutates `records`). Two class hooks do the pseudo-selector work the vendored
+// styled() cannot express inline (see src/styles/styled.tsx):
+//   - "sg-input"  — flat focus treatment (accent border swap, no glow)
+//   - "sg-search" — placeholder color (styles/global.ts)
+const SearchInput = styled('input', {
+    display: 'block',
+    boxSizing: 'border-box' as const,
+    width: 'calc(100% - 20px)',
+    margin: '0 10px 8px',
+    padding: '6px 10px',
+    borderRadius: theme.radiusSm,
+    border: `1px solid ${theme.border}`,
+    background: theme.surface1,
+    color: theme.text,
+    fontSize: theme.fontSize.sm,
+    fontFamily: 'inherit'
+});
+
+// Message shown when the search query matches nothing (distinct from the
+// "No stories yet" empty state, which only renders when records are empty).
+const SearchEmptyMessage = styled('div', {
+    padding: '14px 14px',
+    color: theme.textFaint,
+    fontSize: theme.fontSize.sm,
+    fontStyle: 'italic',
+    lineHeight: 1.5
 });
 
 // Positioning context for each story tile. Holds the select button (fills the
@@ -195,7 +237,7 @@ const StoryItemSelected = styled('button', {
     // yet (eg. during SSR). The .sg-story-selected class sets the same
     // background; both agree.
     backgroundColor: theme.accentSoft,
-    color: '#ffffff',
+    color: theme.highlight,
     // Flat: no shadow. The accent border + rail supply the visual emphasis.
     transition: `background-color ${theme.transition}, border-color ${theme.transition}, color ${theme.transition}`
 });
@@ -298,9 +340,11 @@ const BadgeActive = styled('span', {
     fontSize: theme.fontSize.xs,
     lineHeight: 1,
     fontWeight: 700,
-    color: '#e0e1ff',
-    background: 'rgba(129, 140, 248, 0.35)',
-    border: '1px solid rgba(199, 205, 252, 0.45)',
+    // accentChip* tokens — near-white accent-hue chip family (theme.ts),
+    // shared with the header job-count chip and inline-code highlight.
+    color: theme.accentChipText,
+    background: theme.accentChipFill,
+    border: `1px solid ${theme.accentChipBorder}`,
     padding: '0 7px',
     borderRadius: 999
 });
@@ -322,6 +366,36 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
     // while any delete request is outstanding, every tile's "x" is disabled so
     // a second delete cannot race the active identified DELETE request.
     const [deleting, setDeleting] = React.useState(false);
+
+    // Real-time search query. Local component state ONLY — the filter is
+    // applied to the rendered list below and never written to the store, so
+    // the records cache, the lastActionedAt ordering, and the selection all
+    // survive a search/clear cycle untouched.
+    const [search, setSearch] = React.useState('');
+
+    // Lowercased trimmed query for matching; empty string matches everything,
+    // which is how a cleared input restores the full list.
+    const searchQuery = search.trim().toLowerCase();
+
+    // The visible tile list: lastActionedAt-ordered (same comparator as
+    // before the search feature), then filtered by the query against the
+    // tile's visible title text. Case-insensitive substring match — the
+    // cheapest useful semantics for a title list (prefix/word-boundary
+    // matching would hide "Space Opera" from an "opera" search's siblings
+    // like "Operatic Mutation" for no benefit). Computed on every render;
+    // records arrays here are small (tens of entries), so no memoization is
+    // needed.
+    const visibleRecords = [...records]
+        .sort((a, b) => (b.lastActionedAt || b.createdDate).localeCompare(a.lastActionedAt || a.createdDate))
+        .filter((entry) => {
+            // Empty query (or whitespace-only input) shows everything.
+            if (!searchQuery) return true;
+            // Match against the title the tile RENDERS (StoryTitle text).
+            // entry.title falls back to storyName or the storyId prefix by
+            // construction (mergeServerStoryList / SectionStoryInput), so it
+            // is always a non-empty string.
+            return entry.title.toLowerCase().includes(searchQuery);
+        });
 
     const handleDelete = React.useCallback(
         async (storyId: string) => {
@@ -425,10 +499,34 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     </JobCountBadge>
                 )}
             </SectionLabel>
+            {/* Real-time search — filters the tiles below as the user types.
+                Controlled input: value mirrors the local `search` state and
+                onChange lowercases nothing (matching is case-insensitive at
+                compare time via searchQuery). type="search" gives the native
+                clear affordance in some browsers; aria-label keeps it usable
+                for screen readers since the input carries no visible label. */}
+            <SearchInput
+                data-testid="sidebar-search"
+                className="sg-input sg-search"
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search stories…"
+                aria-label="Search stories by title"
+            />
             {records.length === 0 && (
                 <EmptyMessage data-testid="sidebar-empty">
                     No stories yet. Create one below.
                 </EmptyMessage>
+            )}
+            {/* No matches for the CURRENT query — distinct from the empty
+                sidebar state above (records exist but the filter hides them
+                all). data-testid is the test contract for the filtered-list
+                assertions. */}
+            {records.length > 0 && searchQuery && visibleRecords.length === 0 && (
+                <SearchEmptyMessage data-testid="sidebar-search-empty">
+                    No stories match “{search.trim()}”.
+                </SearchEmptyMessage>
             )}
             {/* Sort so the LAST ACTIONED story is on top. The sort key is the
                 user-action timestamp (entry.lastActionedAt, bumped ONLY by
@@ -438,10 +536,12 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 each group ISO 8601 strings sort correctly as strings in
                 descending order. Background work (generation writes, poll
                 refreshes, list syncs) never changes the key — only the user
-                does. */}
-            {[...records]
-                .sort((a, b) => (b.lastActionedAt || b.createdDate).localeCompare(a.lastActionedAt || a.createdDate))
-                .map((entry) => {
+                does. The SEARCH filter is applied AFTER the sort so the
+                visible subset keeps the exact same lastActionedAt ordering
+                the unfiltered list has (filter → re-sort would be equivalent
+                here, but sort-then-filter keeps this a pure presentation
+                concern: nothing about `records` is touched). */}
+            {visibleRecords.map((entry) => {
                 const isSelected = selected?.id === entry.id;
                 const chapterBadge = entry.data?.chapters && entry.data.chapters.length > 0
                     ? `${entry.data.chapters.length}ch`
@@ -533,7 +633,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                         fontSize: theme.fontSize.sm,
                         color: theme.warning,
                         background: theme.warningSoft,
-                        border: `1px solid rgba(251, 191, 36, 0.25)`,
+                        border: `1px solid ${theme.warningBorder}`,
                         padding: '6px 10px',
                         margin: '10px 10px 0',
                         borderRadius: theme.radiusSm,

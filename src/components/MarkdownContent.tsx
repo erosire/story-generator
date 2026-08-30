@@ -101,8 +101,10 @@ const InlineCode: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
             background: theme.accentSoft,
             padding: '2px 6px',
             borderRadius: 4,
-            color: '#c7c9ff',
-            border: `1px solid rgba(129, 140, 248, 0.25)`
+            // accentChipText/accentChipBorder — the near-white accent-hue
+            // family tokens (see theme.ts), shared with the sidebar badges.
+            color: theme.accentChipText,
+            border: `1px solid ${theme.accentChipBorder}`
         }}
     >
         {children}

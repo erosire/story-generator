@@ -2705,4 +2705,287 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('chapter-1-delete')).toBeDefined();
         expect((screen.getByTestId('chapter-1-revisions-select') as HTMLSelectElement).options.length).toBe(2);
     });
+
+    // ── Sidebar search (real-time filtering) ────────────────────────────
+    // Contract: the sidebar renders a text input (data-testid "sidebar-search")
+    // that filters the story tiles as the user types. Matching is
+    // case-insensitive substring against the tile's title; the filter never
+    // mutates the records (order, selection, cache are untouched), so
+    // clearing the query restores the exact previous list.
+    it('filters the sidebar story tiles in real time as the user types', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const dayMs = 86_400_000;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'alpha-story', storyName: 'Space Opera', chapterRequested: 2, chapterCompleted: 0, createdDate: new Date(Date.now() - dayMs).toISOString(), status: 'generating' },
+                                { storyId: 'beta-story', storyName: 'Deep Forest', chapterRequested: 2, chapterCompleted: 0, createdDate: new Date(Date.now() - 2 * dayMs).toISOString(), status: 'generating' },
+                                { storyId: 'gamma-story', storyName: 'Ocean Deep', chapterRequested: 2, chapterCompleted: 0, createdDate: new Date(Date.now() - 3 * dayMs).toISOString(), status: 'generating' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // All three tiles are listed once the sync lands.
+        await waitFor(() => {
+            expect(readSidebarOrder()).toEqual(['story-tab-alpha-story', 'story-tab-beta-story', 'story-tab-gamma-story']);
+        });
+
+        // The search input exists and starts empty.
+        const search = screen.getByTestId('sidebar-search') as HTMLInputElement;
+        expect(search.value).toBe('');
+
+        // Case-insensitive partial match: "deep" keeps Deep Forest AND Ocean
+        // Deep (substring anywhere in the title) and hides Space Opera.
+        fireEvent.change(search, { target: { value: 'DEEP' } });
+        expect(readSidebarOrder()).toEqual(['story-tab-beta-story', 'story-tab-gamma-story']);
+
+        // Narrow to one: "space".
+        fireEvent.change(search, { target: { value: 'space' } });
+        expect(readSidebarOrder()).toEqual(['story-tab-alpha-story']);
+
+        // No match: zero tiles + the search-empty message (distinct from the
+        // sidebar-empty state — records still exist).
+        fireEvent.change(search, { target: { value: 'volcano' } });
+        expect(readSidebarOrder()).toEqual([]);
+        expect(screen.getByTestId('sidebar-search-empty')).toBeDefined();
+        // The "No stories yet" message must NOT show — stories exist, they are
+        // just filtered out.
+        expect(screen.queryByTestId('sidebar-empty')).toBeNull();
+
+        // Clearing the query restores the exact full list with its
+        // lastActionedAt/createdDate ordering intact.
+        fireEvent.change(search, { target: { value: '' } });
+        expect(readSidebarOrder()).toEqual(['story-tab-alpha-story', 'story-tab-beta-story', 'story-tab-gamma-story']);
+    });
+
+    it('search keeps the selection working and leaves the records cache unfiltered', async () => {
+        // The filter is presentation-only: selecting a filtered-in tile works,
+        // and the persisted records cache still contains EVERY story (the
+        // search never prunes `records`).
+        const fetchMock = globalThis.fetch as any;
+        const dayMs = 86_400_000;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'sel-a', storyName: 'Alpha Tale', chapterRequested: 1, chapterCompleted: 0, createdDate: new Date(Date.now() - dayMs).toISOString(), status: 'generating' },
+                                { storyId: 'sel-b', storyName: 'Beta Tale', chapterRequested: 1, chapterCompleted: 0, createdDate: new Date(Date.now() - 2 * dayMs).toISOString(), status: 'generating' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        await waitFor(() => {
+            expect(readSidebarOrder()).toEqual(['story-tab-sel-a', 'story-tab-sel-b']);
+        });
+
+        // Filter down to Beta Tale only, then select it.
+        const search = screen.getByTestId('sidebar-search') as HTMLInputElement;
+        fireEvent.change(search, { target: { value: 'beta' } });
+        expect(readSidebarOrder()).toEqual(['story-tab-sel-b']);
+        fireEvent.click(screen.getByTestId('story-tab-sel-b'));
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-sel-b').getAttribute('aria-pressed')).toBe('true');
+        });
+
+        // The records cache (auto-persisted) contains BOTH stories — the
+        // filter never reached the store.
+        await waitFor(() => {
+            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            expect(raw).toContain('"storyId":"sel-a"');
+            expect(raw).toContain('"storyId":"sel-b"');
+        });
+    });
+
+    // ── Static memory (localStorage) timestamp-delta refresh ─────────────
+    // Contract: a story viewed once is cached in the browser's static memory.
+    // On later loads the cached payload renders instantly; the cached record
+    // carries the plotpoint.json mtime it was fetched at (lastUpdatedAt), and
+    // the server's list reports the CURRENT mtime (lastUpdatedDate). When
+    // they differ (another session rewrote the story), the dashboard
+    // re-fetches and replaces the cached content; when they agree, the
+    // cached copy is served without a per-story GET.
+    it('re-fetches a cached story when the server timestamp moved past the cached fetch', async () => {
+        // Seed the static memory the way a previous session left it: the story
+        // was viewed at T1 (lastUpdatedAt) with an OLD chapter title.
+        const staleStory = {
+            id: 21,
+            storyId: 'stale-story-1',
+            storyName: 'Stale Tale',
+            title: 'Stale Tale',
+            storyline: 'a storyline',
+            chapterRequested: 1,
+            chapterCompleted: 1,
+            createdDate: '2026-08-10T09:00:00.000Z',
+            lastUpdatedAt: '2026-08-10T10:00:00.000Z',
+            status: 'completed' as const,
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Old Chapter Title',
+                        plotpoints: ['old plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: '## Old Chapter Title\n\nold cached body', wordCount: 3, generationTimeMs: 500 }]
+                    }
+                ],
+                meta: { storyline: 'a storyline', chapterCount: 1, createdAt: '2026-08-10T09:00:00Z', lastUpdatedAt: '2026-08-10T10:00:00.000Z' }
+            },
+            isRemote: false
+        };
+        seedRecordsCache([staleStory]);
+
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    // The server rewrote plotpoint.json at T2 — AFTER the
+                    // cached fetch at T1. The cache is provably stale.
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'stale-story-1', storyName: 'Stale Tale', chapterRequested: 1, chapterCompleted: 1, createdDate: '2026-08-10T09:00:00.000Z', lastUpdatedDate: '2026-08-10T11:00:00.000Z', status: 'completed' }
+                            ]
+                        })
+                    );
+                }
+                // The fresh per-story GET answers the REWRITTEN content.
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'New Chapter Title',
+                                plotpoints: ['new plot'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [{ content: '## New Chapter Title\n\nfresh server body', wordCount: 3, generationTimeMs: 600 }]
+                            }
+                        ],
+                        meta: { storyline: 'a storyline', chapterCount: 1, createdAt: '2026-08-10T09:00:00Z', lastUpdatedAt: '2026-08-10T11:00:00.000Z' }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Cache-first: the OLD content renders instantly, before any refresh.
+        expect(screen.getByTestId('chapter-0-content').textContent).toContain('old cached body');
+
+        // The static memory sees the timestamp delta → one-shot re-fetch →
+        // the fresh server content replaces the stale cache.
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('fresh server body');
+        });
+
+        // The refreshed payload (with its T2 timestamp) lands back in the
+        // records cache — the next reload serves the fresh copy instantly.
+        await waitFor(() => {
+            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            expect(raw).toContain('fresh server body');
+            expect(raw).toContain('"lastUpdatedAt":"2026-08-10T11:00:00.000Z"');
+            expect(raw).toContain('"dataStale":false');
+        });
+    });
+
+    it('serves the cached copy without a per-story GET when the timestamps agree', async () => {
+        // The mirrored case of the refresh test: the cached fetch timestamp
+        // MATCHES the server's current mtime — the cached payload is provably
+        // fresh, so no re-fetch happens (static memory is the whole point).
+        const freshStory = {
+            id: 22,
+            storyId: 'fresh-story-1',
+            storyName: 'Fresh Tale',
+            title: 'Fresh Tale',
+            storyline: 'a storyline',
+            chapterRequested: 1,
+            chapterCompleted: 1,
+            createdDate: '2026-08-12T09:00:00.000Z',
+            lastUpdatedAt: '2026-08-12T10:00:00.000Z',
+            status: 'completed' as const,
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Cached Chapter',
+                        plotpoints: ['cached plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: '## Cached Chapter\n\ncached body still fresh', wordCount: 4, generationTimeMs: 500 }]
+                    }
+                ],
+                meta: { storyline: 'a storyline', chapterCount: 1, createdAt: '2026-08-12T09:00:00Z', lastUpdatedAt: '2026-08-12T10:00:00.000Z' }
+            },
+            isRemote: false
+        };
+        seedRecordsCache([freshStory]);
+
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    // Timestamps AGREE with the cached record — nothing changed
+                    // server-side since the cached fetch.
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'fresh-story-1', storyName: 'Fresh Tale', chapterRequested: 1, chapterCompleted: 1, createdDate: '2026-08-12T09:00:00.000Z', lastUpdatedDate: '2026-08-12T10:00:00.000Z', status: 'completed' }
+                            ]
+                        })
+                    );
+                }
+                // Any per-story GET on this story would signal a broken
+                // staleness check — return obviously-wrong content so the
+                // content assertion below fails loudly if it happens.
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [],
+                        meta: null
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // The cached content renders and STAYS — the cache is fresh.
+        expect(screen.getByTestId('chapter-0-content').textContent).toContain('cached body still fresh');
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-fresh-story-1')).toBeDefined();
+        });
+        // Give any would-be refresh a beat to fire, then assert it never did.
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 50));
+        });
+        expect(screen.getByTestId('chapter-0-content').textContent).toContain('cached body still fresh');
+        const storyGets = fetchMock.mock.calls.filter(
+            ([url, init]: any[]) => url === `${BASE_URL}/fresh-story-1` && (!init || init.method === 'GET')
+        );
+        expect(storyGets).toEqual([]);
+    });
 });

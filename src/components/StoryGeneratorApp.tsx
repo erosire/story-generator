@@ -80,7 +80,7 @@ const ToggleButton = styled('button', {
 const DialogOverlay = styled('div', {
     position: 'fixed',
     inset: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.74)',
+    backgroundColor: theme.overlayDeeper,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -103,7 +103,7 @@ const DialogBox = styled('div', {
     display: 'flex',
     flexDirection: 'column',
     gap: 16,
-    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.48)'
+    boxShadow: theme.shadowDialogLg
 });
 
 // Dialog label — provides a high-contrast task heading above the editable field.
@@ -169,7 +169,7 @@ const DialogConfirmButton = styled('button', {
     cursor: 'pointer',
     border: `1px solid ${theme.accent}`,
     backgroundColor: theme.accent,
-    color: '#ffffff',
+    color: theme.highlight,
     transition: `background-color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
 });
 
@@ -352,7 +352,20 @@ const HeaderControls: React.FC<{
             setStore((prev) => {
                 const records = prev.records.map((e) =>
                     e.storyId === selected.storyId
-                        ? { ...e, storyName: renameValue.trim(), title: renameValue.trim() }
+                        ? {
+                              ...e,
+                              storyName: renameValue.trim(),
+                              title: renameValue.trim(),
+                              // The PATCH rewrites plotpoint.json server-side, so
+                              // our cached `data` (which still carries the OLD
+                              // storyName in its meta) is now behind the server.
+                              // Flag dataStale: the next view triggers a one-shot
+                              // refresh that pulls the new name into meta and
+                              // re-syncs lastUpdatedAt (mergeServerStoryList
+                              // would otherwise flag it on the next list sync
+                              // anyway — this avoids the 30s window).
+                              dataStale: true
+                          }
                         : e
                 );
                 const selectedEntry = records.find((e) => e.storyId === selected.storyId) ?? prev.selected;

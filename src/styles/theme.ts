@@ -54,6 +54,34 @@ export const theme = {
     // so the active card visibly brightens without a solid fill swap.
     accentSoftHover: 'rgba(129, 140, 248, 0.30)',
     accentRing: 'rgba(129, 140, 248, 0.45)',
+    // Crisp near-white accent tints used by status chips whose text sits on a
+    // translucent accent fill (sidebar badges). Deriving them from the accent
+    // hue keeps the chip family in the same color story as the accent itself.
+    accentChipText: '#e0e1ff',
+    accentChipBorder: 'rgba(199, 205, 252, 0.45)',
+    accentChipFill: 'rgba(129, 140, 248, 0.35)',
+
+    // Overlay blacks — solid translucent scrims for modal/drawer isolation.
+    // Kept as tokens (not inline literals) so the elevation story of every
+    // overlay lives in this file.
+    overlayDim: 'rgba(0, 0, 0, 0.55)',
+    overlayDeeper: 'rgba(0, 0, 0, 0.74)',
+    // Content-area dialog scrim (rewrite/append/delete confirms) — slightly
+    // lighter than the rename dialog's overlay so the chapter list beneath
+    // stays readable as context.
+    overlayDialog: 'rgba(0, 0, 0, 0.5)',
+    // Legacy opaque dialog surface kept for the rewrite modal (was #1e2330 —
+    // deliberately brighter than surfaceDialog for the oldest dialog).
+    surfaceDialogAlt: '#1e2330',
+    // Dialog elevation shadow — the one place the flat design keeps a real
+    // drop shadow (floating task surfaces above a scrim).
+    shadowDialog: '0 8px 32px rgba(0, 0, 0, 0.3)',
+    // Rename dialog's larger elevation (see StoryGeneratorApp DialogBox).
+    shadowDialogLg: '0 20px 60px rgba(0, 0, 0, 0.48)',
+
+    // Pure highlight token — text/icons that must sit at maximum contrast
+    // above an accent/danger fill (flat-design replacement for #ffffff/#fff).
+    highlight: '#ffffff',
 
     // Secondary accent for status badges (e.g. word-count timing chip).
     accent2: '#93b4d4',
@@ -64,6 +92,9 @@ export const theme = {
     dangerBorder: 'rgba(248, 113, 113, 0.35)',
     warning: '#fbbf24',
     warningSoft: 'rgba(251, 191, 36, 0.12)',
+    // Stronger warning tint for the load-warning chip border (and any other
+    // warning-adjacent hairline) — keeps the amber family out of inline literals.
+    warningBorder: 'rgba(251, 191, 36, 0.25)',
     success: '#6ee7b7',
 
     // Radii.

@@ -139,6 +139,10 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         // New fields
         expect(found1.chapterCompleted).toBe(0);
         expect(found1.status).toBe('generating');
+        // lastUpdatedDate = mtime of plotpoint.json, ISO string. Capture the
+        // expected value BEFORE listing so the assertion is exact.
+        const expectedLastUpdated1 = fs.statSync(path.join(dir1, 'plotpoint.json')).mtime.toISOString();
+        expect(found1.lastUpdatedDate).toBe(expectedLastUpdated1);
 
         const found2 = result.response.stories.find((s: any) => s.storyId === story2);
         expect(found2.storyline).toBeUndefined();
@@ -147,6 +151,9 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         expect(found2.createdDate).toBe('2026-02-01T00:00:00.000Z');
         expect(found2.chapterCompleted).toBe(0);
         expect(found2.status).toBe('generating');
+        // Same mtime contract as story1
+        const expectedLastUpdated2 = fs.statSync(path.join(dir2, 'plotpoint.json')).mtime.toISOString();
+        expect(found2.lastUpdatedDate).toBe(expectedLastUpdated2);
 
         console.log('Listed stories with metadata:', result.response.stories);
     });
@@ -171,6 +178,8 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         expect(found.chapterRequested).toBe(0);
         expect(found.chapterCompleted).toBe(0);
         expect(found.createdDate).toBe('');
+        // No plotpoint.json → no mtime → empty lastUpdatedDate
+        expect(found.lastUpdatedDate).toBe('');
         expect(found.status).toBe('generating');
 
         console.log('Legacy story entry:', found);
@@ -586,5 +595,54 @@ describe('generationListStories', { timeout: 30_000 }, () => {
         expect(found).toBeDefined();
         expect(found.processing).toBe(false);
         expect(result.response.jobs.find((j: any) => j.storyId === storyId)).toBeUndefined();
+    });
+
+    // ── lastUpdatedDate (mtime staleness key) ──────────────────────────
+
+    it('should bump lastUpdatedDate when plotpoint.json is rewritten', async () => {
+        // The static-memory feature keys staleness off this timestamp: a cached
+        // record is refreshed ONLY when the server's lastUpdatedDate differs.
+        // Rewriting plotpoint.json (what every write path does — rename,
+        // chapterCompleted denormalization, chapter add/remove) must move it.
+        const storyId = `test-list-mtime-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const dir = getStoryboardDir(storyId);
+        fs.mkdirSync(dir, { recursive: true });
+        const plotpointJsonPath = path.join(dir, 'plotpoint.json');
+        fs.writeFileSync(
+            plotpointJsonPath,
+            JSON.stringify({
+                storyId,
+                storyline: 'Original storyline.',
+                chapterCount: 2,
+                chapterCompleted: 0,
+                chapters: [],
+                createdAt: '2026-08-20T00:00:00.000Z'
+            }),
+            'utf-8'
+        );
+
+        const first = await generationListStories(mockContext, createMockParameters(), { root: projectRoot });
+        const firstStamp = first.response.stories.find((s: any) => s.storyId === storyId)?.lastUpdatedDate;
+        expect(firstStamp).toBe(fs.statSync(plotpointJsonPath).mtime.toISOString());
+
+        // Simulate a server-side write (e.g. writeChapterFiles denormalizing
+        // chapterCompleted): rewrite the file and force a NEW mtime. Some
+        // filesystems store mtime at 1s granularity, so explicitly set a
+        // later time instead of relying on write latency.
+        const data = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        data.chapterCompleted = 1;
+        const laterTime = new Date(Date.now() + 5000);
+        fs.writeFileSync(plotpointJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+        fs.utimesSync(plotpointJsonPath, laterTime, laterTime);
+
+        const second = await generationListStories(mockContext, createMockParameters(), { root: projectRoot });
+        const secondStamp = second.response.stories.find((s: any) => s.storyId === storyId)?.lastUpdatedDate;
+
+        // Exact values, both pinned against the file's actual mtime
+        expect(secondStamp).toBe(laterTime.toISOString());
+        expect(secondStamp).not.toBe(firstStamp);
+        expect(new Date(secondStamp).getTime()).toBeGreaterThan(new Date(firstStamp).getTime());
     });
 });
