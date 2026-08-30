@@ -24,6 +24,11 @@ export const theme = {
     // The rename dialog uses an opaque surface so the form stays visually
     // grounded above the dimmed dashboard instead of blending into the overlay.
     surfaceDialog: '#151b29',
+    // Opaque hover/focus variant of surfaceDialog — used by the header client
+    // dropdown (.sg-select in global.ts). Must stay OPAQUE: translucent
+    // backgrounds on native form controls composite over the browser's light
+    // UA control base when color-scheme is ignored (white-control bug).
+    surfaceDialogHover: '#1c2434',
 
     // Border hairlines. Stronger on hover/focus.
     border: 'rgba(255, 255, 255, 0.15)',

@@ -186,14 +186,18 @@ const HeaderTitle = styled('span', {
 
 // Top-right LLM client dropdown. `marginLeft: 'auto'` pushes it to the right
 // edge of the flex DashboardHeader row (toggle + title sit on the left).
-// Theming: a native <select> + its options popup is painted by the browser's
-// UA layer, so `colorScheme: 'dark'` (inline here AND on :root in global.ts)
-// tells the UA to draw the control and popup in the DARK scheme; without it
-// Chromium/Windows falls back to the light scheme (grey on white). The
-// `sg-select` / `sg-input` class hooks (global.ts) add hover + focus
-// treatments. NOTE: this distribution package vendors the minimal `styled()`
-// helper (src/styles/styled.tsx) instead of @presource/react's styledComponent
-// — the latter cannot be imported here (not in package.json deps).
+// Theming: ALL colors (surface/text/border + hover/focus states + the <option>
+// popup entries) live in the `.sg-select` class rules in styles/global.ts —
+// NOT inline. Reason: the vendored styled() applies a static inline `style`
+// attribute, and inline styles outrank every class rule (including :hover /
+// :focus), which previously left the sg-select hover/focus hooks dead code and
+// let a translucent background composite over the browser's light UA control
+// base (white control + unreadable text whenever `color-scheme` is ignored).
+// `colorScheme: 'dark'` stays inline — it only needs to exist on the element
+// so the UA-drawn options popup renders dark (App.test.tsx:94 asserts it).
+// NOTE: this distribution package vendors the minimal `styled()` helper
+// (src/styles/styled.tsx) instead of @presource/react's styledComponent — the
+// latter cannot be imported here (not in package.json deps).
 const ClientSelect = styled('select', {
     marginLeft: 'auto',
     height: 34,
@@ -201,16 +205,13 @@ const ClientSelect = styled('select', {
     fontFamily: theme.fontSans,
     fontSize: theme.fontSize.md,
     fontWeight: 500,
-    color: theme.text,
-    backgroundColor: theme.surface1,
-    border: `1px solid ${theme.border}`,
     borderRadius: theme.radiusMd,
     cursor: 'pointer',
     outline: 'none',
     // Dark color scheme for the native select control + its options popup
     // (see the comment above). 'dark' is a valid React.CSSProperties value.
     colorScheme: 'dark',
-    transition: `background-color ${theme.transition}, border-color ${theme.transition}`
+    transition: `background-color ${theme.transition}, border-color ${theme.transition}, box-shadow ${theme.transition}`
 });
 
 // Composed dashboard. Accepts optional store overrides (used by tests and by

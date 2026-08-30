@@ -28,6 +28,7 @@ import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoryGeneratorApp } from './components';
 import { cancelPendingStorageWrites } from './context/store';
+import { injectGlobalStyles } from './styles/global';
 
 const BASE_URL = 'http://test.local/v1/storyboard/generations';
 const POLL_INTERVAL_MS = 10;
@@ -88,10 +89,27 @@ describe('StoryGeneratorApp', () => {
         // Theming contract: the native select opts into the dark color scheme
         // (inline, so the UA paints the control + popup dark instead of the
         // default grey-on-white) and carries the sg-select/sg-input class
-        // hooks that drive the flat hover/focus treatment (styles/global.ts).
+        // hooks. All COLORS for the dropdown (opaque dark surface + light
+        // text + hover/focus states + the <option> popup entries) live in the
+        // `.sg-select` class rules injected by styles/global.ts — inline style
+        // would outrank every class rule and kill the hover/focus states.
         expect(clientSelect.className).toContain('sg-select');
         expect(clientSelect.className).toContain('sg-input');
         expect(clientSelect.style.colorScheme).toBe('dark');
+        // The dropdown styling rules must be present in the injected global
+        // stylesheet, with an OPAQUE dark surface (never translucent — a
+        // translucent background composites over the browser's light UA
+        // control base when color-scheme is ignored → white-on-grey bug).
+        injectGlobalStyles();
+        const sheet = document.querySelector('style[data-sg-styles]')?.textContent ?? '';
+        // Base rule: opaque dialog surface + light text.
+        expect(sheet).toContain('.sg-select {');
+        expect(sheet).toMatch(/\.sg-select\s*{[^}]*background-color:\s*#151b29/);
+        expect(sheet).toMatch(/\.sg-select\s*{[^}]*color:\s*#f0f2f5/);
+        // Option popup entries: same opaque dark surface + light text (Firefox
+        // and embedded webviews paint the popup from the <option> elements).
+        expect(sheet).toMatch(/\.sg-select option\s*{[^}]*background-color:\s*#151b29/);
+        expect(sheet).toMatch(/\.sg-select option\s*{[^}]*color:\s*#f0f2f5/);
     });
 
     it('offers the server-listed clients in the top-right dropdown and posts the chosen clientId on Generate', async () => {

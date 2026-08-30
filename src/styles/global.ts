@@ -61,11 +61,39 @@ const sheet = `
 .sg-input:focus { outline: none; border-color: ${theme.accent}; background-color: ${theme.surface3}; }
 .sg-input:disabled { opacity: 0.55; cursor: not-allowed; }
 
-/* Header client dropdown — same flat hover treatment as outline buttons.
-   (Focus treatment is handled by the .sg-input class hook above; the native
-   select control + popup dark theming comes from the :root color-scheme
-   rule above plus the inline colorScheme on the element itself.) */
-.sg-select:hover { background-color: ${theme.surface2}; border-color: ${theme.borderStrong}; }
+/* Header client dropdown — themed entirely via class hooks so the hover/focus
+   states actually apply. (Inline "style" from styled() outranks every class
+   rule, so colors that lived inline made the sg-hover/sg-input states dead
+   code — they could never override the inline background/border.) The control
+   uses an OPAQUE dark surface + light text: some browsers/webviews ignore
+   the color-scheme hint, and a translucent background then composites over
+   the UA's white control base -> white control with unreadable text. Opaque
+   colors are immune to that. colorScheme:"dark" remains inline on the element
+   (StoryGeneratorApp ClientSelect) for the UA-drawn options popup.
+   NOTE: these rules sit AFTER .sg-input:focus above so, at equal specificity,
+   the opaque focus treatment here wins for the select. */
+.sg-select {
+    color: ${theme.text};
+    background-color: ${theme.surfaceDialog};
+    border: 1px solid ${theme.border};
+}
+.sg-select:hover {
+    background-color: ${theme.surfaceDialogHover};
+    border-color: ${theme.borderStrong};
+}
+.sg-select:focus {
+    background-color: ${theme.surfaceDialogHover};
+    border-color: ${theme.accent};
+    box-shadow: 0 0 0 2px ${theme.accentRing};
+}
+/* Options popup entries — explicit dark surface + light text. Chromium draws
+   the popup per the select's color-scheme (inline "dark"), but Firefox and
+   embedded webviews style the popup from the <option> elements themselves;
+   without this rule those popups render white with grey text. */
+.sg-select option {
+    color: ${theme.text};
+    background-color: ${theme.surfaceDialog};
+}
 
 /* Rename dialog — a stronger input focus treatment makes the active editor
    unambiguous while leaving the dialog's opaque surface visually stable. */
