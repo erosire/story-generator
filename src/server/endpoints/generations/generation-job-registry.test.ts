@@ -8,8 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     acquireStoryJob,
     getActiveStoryJobs,
+    isStoryAborted,
     isStoryJobActive,
     releaseStoryJob,
+    requestStoryAbort,
     trackStoryJob
 } from './generation-job-registry';
 
@@ -149,5 +151,79 @@ describe('generation-job-registry', () => {
 
     it('isStoryJobActive is false for unknown stories', () => {
         expect(isStoryJobActive('story-never-registered')).toBe(false);
+    });
+
+    // ── Abort (user-requested Terminate) ─────────────────────────────────
+    it('requestStoryAbort marks an active job aborted and reports the targeted count', () => {
+        const jobId = acquireStoryJob('story-abort-1', 'create');
+        expect(jobId).not.toBeNull();
+
+        expect(isStoryAborted('story-abort-1')).toBe(false);
+        expect(requestStoryAbort('story-abort-1')).toBe(1);
+        expect(isStoryAborted('story-abort-1')).toBe(true);
+
+        releaseStoryJob(jobId!);
+    });
+
+    it('requestStoryAbort counts BOTH exclusive and tracked jobs on the story', () => {
+        const exclusive = acquireStoryJob('story-abort-2', 'append');
+        const tracked = trackStoryJob('story-abort-2', 'expand');
+
+        // 2 active jobs → the abort targets both.
+        expect(requestStoryAbort('story-abort-2')).toBe(2);
+        expect(isStoryAborted('story-abort-2')).toBe(true);
+
+        releaseStoryJob(exclusive!);
+        releaseStoryJob(tracked);
+    });
+
+    it('requestStoryAbort for a story with no active job is a no-op (returns 0, flag NOT set)', () => {
+        // A no-op abort must not poison a story that a NEW job might start a
+        // moment later — the flag is only set when something is running.
+        expect(requestStoryAbort('story-abort-idle')).toBe(0);
+        expect(isStoryAborted('story-abort-idle')).toBe(false);
+    });
+
+    it('releaseStoryJob clears the abort flag once the LAST job for the story is gone', () => {
+        const first = trackStoryJob('story-abort-3', 'expand');
+        const second = trackStoryJob('story-abort-3', 'rewrite');
+        expect(requestStoryAbort('story-abort-3')).toBe(2);
+
+        // First job released → another job still runs → the abort flag STAYS
+        // (the surviving flow must still observe the termination request).
+        releaseStoryJob(first);
+        expect(isStoryJobActive('story-abort-3')).toBe(true);
+        expect(isStoryAborted('story-abort-3')).toBe(true);
+
+        // Last job released → nothing left to abort → the flag clears so the
+        // story is immediately resumable/expandable again.
+        releaseStoryJob(second);
+        expect(isStoryJobActive('story-abort-3')).toBe(false);
+        expect(isStoryAborted('story-abort-3')).toBe(false);
+    });
+
+    it('an exclusive job released while a tracked job runs keeps the abort flag alive', () => {
+        const tracked = trackStoryJob('story-abort-4', 'rewrite');
+        const exclusive = acquireStoryJob('story-abort-4', 'create');
+        expect(requestStoryAbort('story-abort-4')).toBe(2);
+
+        releaseStoryJob(exclusive!);
+        // The tracked rewrite still runs — the abort signal must survive.
+        expect(isStoryAborted('story-abort-4')).toBe(true);
+
+        releaseStoryJob(tracked);
+        expect(isStoryAborted('story-abort-4')).toBe(false);
+    });
+
+    it('abort flags are story-scoped — aborting one story does not touch another', () => {
+        const a = acquireStoryJob('story-abort-5', 'create');
+        const b = acquireStoryJob('story-abort-6', 'create');
+
+        expect(requestStoryAbort('story-abort-5')).toBe(1);
+        expect(isStoryAborted('story-abort-5')).toBe(true);
+        expect(isStoryAborted('story-abort-6')).toBe(false);
+
+        releaseStoryJob(a!);
+        releaseStoryJob(b!);
     });
 });

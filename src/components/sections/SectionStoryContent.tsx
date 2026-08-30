@@ -35,7 +35,7 @@ import React from 'react';
 import { objectEach } from '@presource/core';
 import { styled, theme } from '../../styles';
 import { useStoryStore } from '../../context';
-import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter } from '../../api';
+import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter, abortStoryJob } from '../../api';
 import { Collapsible } from '../Collapsible';
 import { MarkdownContent } from '../MarkdownContent';
 import { getExpandedChapters, setExpandedChapters } from '../../context/store';
@@ -521,6 +521,22 @@ const TrashIcon: React.FC = () => (
     </svg>
 );
 
+// Inline SVG stop icon — filled square, the universal "terminate" glyph.
+// Used for the Terminate button inside the processing banner (kills the
+// story's active background job via PATCH abortJob).
+const StopIcon: React.FC = () => (
+    <svg
+        width={12}
+        height={12}
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: 'block' }}
+    >
+        <rect x={3} y={3} width={10} height={10} rx={1.5} fill="currentColor" />
+    </svg>
+);
+
 // Chapters list container — flex column with gap between chapter collapsibles.
 const ChapterListContainer = styled('div', {
     display: 'flex',
@@ -564,6 +580,9 @@ const ActionButton = styled('button', {
 
 // In-progress status banner — flat solid accent-tinted surface + accent border
 // so the user notices generation is running without the connotation of red.
+// Hosts the chapter progress count AND the Terminate control (terminateDisabled
+// while the abort PATCH is in flight) so stopping a job is one click away from
+// the very place that announces it.
 const ProgressBanner = styled('div', {
     display: 'flex',
     alignItems: 'center',
@@ -576,6 +595,62 @@ const ProgressBanner = styled('div', {
     backgroundColor: theme.accentSoft,
     border: `1px solid ${theme.accent}`,
     width: 'fit-content'
+});
+
+// Terminate control inside the ProgressBanner — danger-outline pill (same
+// geometry family as RemoveChapterButton) so the destructive nature reads at
+// a glance against the accent-tinted banner without screaming for attention.
+const TerminateButton = styled('button', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '3px 10px',
+    fontSize: theme.fontSize.sm,
+    fontWeight: 600,
+    color: theme.danger,
+    background: theme.dangerSoft,
+    border: `1px solid ${theme.dangerBorder}`,
+    borderRadius: 999,
+    cursor: 'pointer',
+    flex: '0 0 auto',
+    marginLeft: 6,
+    transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
+});
+
+// ── Story stats bar ─────────────────────────────────────────────────────
+// Rendered between the processing banner and the chapter list: a compact row
+// of summary chips for the story as a whole — total chapters, total word
+// count of the currently-viewed revisions, and the estimated LLM token cost
+// of those words (~1.33 tokens per word — the usual English prose heuristic,
+// good enough for a budget gauge; NOT an exact tokenizer count).
+const StatsBar = styled('div', {
+    display: 'flex',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8
+});
+
+// One summary chip — pill geometry matching ChapterMeta (surface3 + hairline
+// border) so the stats read as part of the same design language as the
+// per-chapter meta chips below them.
+const StatChip = styled('div', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '4px 12px',
+    background: theme.surface2,
+    border: `1px solid ${theme.border}`,
+    borderRadius: 999,
+    fontSize: theme.fontSize.base,
+    color: theme.text,
+    fontWeight: 500
+});
+
+// Muted label part inside a StatChip ("Chapters", "Words", "Tokens (est.)").
+const StatLabel = styled('span', {
+    color: theme.textMuted,
+    fontWeight: 500
 });
 
 // Small component that manages the plotpoints toggle state.
@@ -1681,6 +1756,70 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         }
     }, [selected, store.config.baseUrl, store.config.clientId, data?.meta?.chapterCount, setStore]);
 
+    // ── Terminate job (the ■ action inside the progress banner) ──────────
+    // Kills every active background job for the selected story while it is
+    // processing: PATCH { abortJob: true } (abortStoryJob) marks the story
+    // aborted in the server's job registry; the background flow(s) throw at
+    // their next checkpoint boundary and retire through releaseStoryJob.
+    // All generated content is kept — an interrupted plotline stays resumable
+    // via the resume button. Locally we also tear down this session's poll
+    // loops immediately (the job-gated loop's shouldStop flips true; the
+    // per-chapter completion poller is cleared) and retire the processing
+    // flags so the banner and the sidebar tile animation stop at once. The
+    // server registry itself is corrected by the next sidebar list sync.
+    const [terminateState, setTerminateState] = React.useState<{ isSubmitting: boolean }>({
+        isSubmitting: false
+    });
+
+    const handleTerminateJob = React.useCallback(async () => {
+        if (!selected?.storyId) return;
+        setTerminateState({ isSubmitting: true });
+        try {
+            await abortStoryJob(store.config.baseUrl, selected.storyId);
+
+            // Cancel THIS session's poll loops immediately — the entry-scoped
+            // shouldStop (activePollIdRef !== entryId) makes the job-gated
+            // loop return 'stopped' on its next wake-up without touching the
+            // store, and the re-expand/rewrite completion poller is dropped
+            // entirely (its effect cleanup cancels the in-flight loop).
+            activePollIdRef.current = null;
+            setReExpandState(null);
+
+            // Retire the processing flags so the banner + tab chip stop
+            // animating right away (the server-side job exits asynchronously;
+            // the next list sync re-establishes serverProcessing from the
+            // registry once the flow has unwound).
+            setStore((prev) => ({
+                ...prev,
+                records: prev.records.map((e) =>
+                    e.id === selected.id
+                        ? { ...e, isProcessing: false, serverProcessing: false, error: '' }
+                        : e
+                ),
+                selected:
+                    prev.selected?.id === selected.id
+                        ? { ...prev.selected, isProcessing: false, serverProcessing: false, error: '' }
+                        : prev.selected
+            }));
+        } catch (err: any) {
+            // Abort PATCH failed (network / stale server) — surface the exact
+            // reason in the content-error banner; the processing flags stay
+            // as they were so the user can retry the termination.
+            setStore((prev) => ({
+                ...prev,
+                records: prev.records.map((e) =>
+                    e.id === selected.id ? { ...e, error: err?.message || 'Failed to terminate job' } : e
+                ),
+                selected:
+                    prev.selected?.id === selected.id
+                        ? { ...prev.selected, error: err?.message || 'Failed to terminate job' }
+                        : prev.selected
+            }));
+        } finally {
+            setTerminateState({ isSubmitting: false });
+        }
+    }, [selected, store.config.baseUrl, setStore]);
+
     // Whether the action bar should be enabled: append requires at least one
     // existing chapter (the server rejects appends to chapter-less stories),
     // so the bar appears as soon as any chapter is present.
@@ -1727,14 +1866,71 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         );
     }
 
+    // ── Story stats (chips above the chapter list) ────────────────────────
+    // Total words = the ACTIVE revision per chapter (the dropdown selection,
+    // falling back to the latest). Out-of-range selections (e.g. right after
+    // a revision delete) clamp to the latest so the sum can never read a
+    // missing revision as 0.
+    const statChapters = data.chapters.length;
+    const statWords = data.chapters.reduce((sum: number, ch: any, i: number) => {
+        const revisions: Array<{ wordCount?: number }> = Array.isArray(ch.revisions) ? ch.revisions : [];
+        if (revisions.length === 0) return sum;
+        const idx = Math.min(activeRevisions[i] ?? revisions.length - 1, revisions.length - 1);
+        return sum + (revisions[idx]?.wordCount ?? 0);
+    }, 0);
+    // Estimated LLM tokens: ~4 tokens per 3 words (≈1.33 tokens/word) — the
+    // usual English-prose heuristic. A budget gauge, not an exact tokenizer
+    // count (the real number depends on the model's tokenizer).
+    const statTokens = Math.round((statWords * 4) / 3);
+
     return (
         <ContentColumn data-testid="content-story" className="sg-scroll">
-            {/* In-progress banner: spinner chip + chapter progress count. */}
-            {selected.isProcessing && (
-                <ProgressBanner>
+            {/* In-progress banner: spinner chip + chapter progress count +
+                the Terminate control (also shown for jobs this session did
+                NOT start — serverProcessing from the server's registry). */}
+            {(selected.isProcessing || selected.serverProcessing) && (
+                <ProgressBanner data-testid="progress-banner">
                     <span className="sg-spinner" />
-                    <span>Generating {data.chapters.length}/{selected.chapterRequested} chapters…</span>
+                    {selected.isProcessing ? (
+                        <span>Generating {data.chapters.length}/{selected.chapterRequested} chapters…</span>
+                    ) : (
+                        <span>Background job running…</span>
+                    )}
+                    <TerminateButton
+                        onClick={handleTerminateJob}
+                        disabled={terminateState.isSubmitting}
+                        data-testid="terminate-job-button"
+                        title={
+                            terminateState.isSubmitting
+                                ? 'Terminating…'
+                                : 'Terminate the background job for this story (generated content is kept)'
+                        }
+                        className="sg-danger"
+                    >
+                        <StopIcon />
+                        {terminateState.isSubmitting ? 'Terminating…' : 'Terminate'}
+                    </TerminateButton>
                 </ProgressBanner>
+            )}
+
+            {/* Story stats — total chapters, total words of the currently-viewed
+                revisions, and the estimated token cost of those words. Shown
+                only once chapters exist (an empty story has nothing to sum). */}
+            {statChapters > 0 && (
+                <StatsBar data-testid="story-stats">
+                    <StatChip data-testid="stat-chapters">
+                        <StatLabel>Chapters</StatLabel>
+                        <span>{statChapters}</span>
+                    </StatChip>
+                    <StatChip data-testid="stat-words">
+                        <StatLabel>Words</StatLabel>
+                        <span>{statWords.toLocaleString('en-US')}</span>
+                    </StatChip>
+                    <StatChip data-testid="stat-tokens">
+                        <StatLabel>Tokens (est.)</StatLabel>
+                        <span>~{statTokens.toLocaleString('en-US')}</span>
+                    </StatChip>
+                </StatsBar>
             )}
 
             <ChapterListContainer data-testid="chapters-list">

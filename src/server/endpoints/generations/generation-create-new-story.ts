@@ -26,7 +26,7 @@ import {
 import { forkStory } from './generation-fork-story';
 import { appendStoryChapters, validateAppendableStory } from './generation-append-story';
 import { resumeStoryPlotlines, validateResumableStory } from './generation-resume-story';
-import { acquireStoryJob, releaseStoryJob } from './generation-job-registry';
+import { acquireStoryJob, isStoryAborted, releaseStoryJob } from './generation-job-registry';
 
 // Generate the story in the background
 const generateStory = async (options: {
@@ -68,7 +68,20 @@ const generateStory = async (options: {
     const client = createStoryClient(options.clientId);
 
     // Helper: check if story folder still exists (user may have deleted the story)
+    // AND whether the user requested a job termination (dashboard Terminate
+    // button → PATCH abortJob → requestStoryAbort). Both conditions are
+    // terminal for this background flow: the throw unwinds the fire-and-forget
+    // promise and the .finally(releaseStoryJob) retires the registry entry.
+    // An aborted story intentionally keeps its plotpoint.json at
+    // status 'generating' with every accepted chapter preserved — exactly the
+    // interrupted-create state the resume branch (generation-resume-story.ts)
+    // knows how to continue from.
     const assertStoryExists = () => {
+        // Abort check FIRST: a pending user termination must win over every
+        // subsequent write, even while the folder is still on disk.
+        if (isStoryAborted(storyId)) {
+            throw new Error(`Story generation aborted by user request — storyId: ${storyId}`);
+        }
         if (!fs.existsSync(databaseDir)) {
             throw new Error(`Story folder deleted — aborting generation for storyId: ${storyId}`);
         }
@@ -495,6 +508,10 @@ const generateStory = async (options: {
                 // A deleted story folder aborts immediately — there is nothing
                 // left to retry into (assertStoryExists contract).
                 if (!fs.existsSync(databaseDir)) throw err;
+                // A user-requested job termination also aborts immediately —
+                // the retry budget below must NOT eat the abort and keep
+                // issuing LLM calls the user explicitly cancelled.
+                if (isStoryAborted(storyId)) throw err;
                 // Any other failure retries the identical payload in place.
                 chapterFailureReason = reason;
                 console.error(

@@ -180,7 +180,14 @@ Update story metadata, re-expand a chapter, rewrite a chapter, delete a revision
 { "removeChapterIndex": 0 }
 ```
 
-`expandChapterIndex`, `rewriteChapter`, `deleteChapterIndex`, and `removeChapterIndex` are mutually exclusive.
+**Terminate the running background job** (the Terminate button in the content banner; synchronous registry mark — every active job for the story stops at its next checkpoint boundary, generated content is kept, an interrupted plotline stays resumable):
+```json
+{ "abortJob": true }
+```
+
+Response: `{ "storyId", "abortJob": true, "aborted": <active jobs targeted>, "message" }` — `aborted: 0` means nothing was running.
+
+`expandChapterIndex`, `rewriteChapter`, `deleteChapterIndex`, and `removeChapterIndex` are mutually exclusive. `abortJob` answers before those are evaluated.
 
 ### `DELETE /v1/storyboard/generations/:storyId`
 
@@ -243,7 +250,7 @@ During chapter expansion, only the most recent `PREVIOUS_EXPANDED_CHAPTERS = 4` 
 | `StoryGeneratorApp` | `StoryGeneratorApp.tsx` | Root — composes layout, header controls (rename, delete, sidebar toggle) |
 | `BootstrapLayer` | `BootstrapLayer.tsx` | Hidden — hydrates from localStorage, fetches collection from server, merges into store |
 | `SectionStoryTabs` | `sections/SectionStoryTabs.tsx` | Sidebar — vertical story list with auto-refresh every 30s |
-| `SectionStoryContent` | `sections/SectionStoryContent.tsx` | Content area — progressive chapter rendering with expand/collapse, re-expand, rewrite |
+| `SectionStoryContent` | `sections/SectionStoryContent.tsx` | Content area — story stats bar (total chapters / total words / estimated tokens), progressive chapter rendering with expand/collapse, re-expand, rewrite, and a Terminate control inside the processing banner (PATCH `abortJob`) |
 | `SectionStoryInput` | `sections/SectionStoryInput.tsx` | Footer — storyline textarea + chapter count input + Generate button |
 | `Collapsible` | `Collapsible.tsx` | Generic expand/collapse wrapper for chapters and plotpoints |
 | `MarkdownContent` | `MarkdownContent.tsx` | Renders markdown content from expanded chapters |

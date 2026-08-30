@@ -82,6 +82,9 @@ import {
     readChapterPayload,
     writeChapterPayload
 } from './story-utils';
+// Abort signal from the job registry — a user-requested Terminate (PATCH
+// abortJob) must stop this background flow at its next checkpoint boundary.
+import { isStoryAborted } from './generation-job-registry';
 
 export type ResumeStoryChaptersOptions = {
     storyId: string;
@@ -208,7 +211,14 @@ export const resumeStoryPlotlines = async (options: ResumeStoryChaptersOptions) 
 
     // The story dir can be deleted mid-LLM-call (user deletes from the list);
     // guard every post-call write with this, matching generateStory's contract.
+    // A user-requested job termination (PATCH abortJob) is equally terminal —
+    // the story keeps its status 'generating' + accepted chapters, so a later
+    // resume click simply restarts from the same complete prefix.
     const assertStoryExists = () => {
+        // Abort check FIRST — a pending termination wins over folder state.
+        if (isStoryAborted(storyId)) {
+            throw new Error(`Story resume aborted by user request — storyId: ${storyId}`);
+        }
         if (!fs.existsSync(databaseDir)) {
             throw new Error(`Story folder deleted — aborting resume for storyId: ${storyId}`);
         }
@@ -352,6 +362,10 @@ export const resumeStoryPlotlines = async (options: ResumeStoryChaptersOptions) 
             } catch (err) {
                 // A deleted story folder aborts immediately — nothing left to retry into.
                 if (!fs.existsSync(databaseDir)) throw err;
+                // A user-requested job termination aborts immediately too —
+                // the retry budget below must NOT eat the abort and keep
+                // issuing LLM calls the user explicitly cancelled.
+                if (isStoryAborted(storyId)) throw err;
                 chapterFailureReason = err instanceof Error ? err.message : String(err);
                 console.error(
                     `[RESUME] Chapter ${chapterLabel} call failed ` +

@@ -17,8 +17,15 @@
 //   - removeChapterIndex (number): remove the chapter ENTIRELY — its
 //     plotpoint.json entry, its chapter-XXX.json/.md files (including every
 //     revision), and renumbers the chapters after it to fill the gap.
+//   - abortJob (true): TERMINATE every active background job for this story
+//     (create/fork/append/resume/expand/rewrite) — the dashboard Terminate
+//     button. Marks the story aborted in the job registry; the marked
+//     background flow(s) throw at their next checkpoint boundary and retire
+//     through .finally(releaseStoryJob). Registry-only: no LLM work, no file
+//     I/O, mutually exclusive with every chapter operation above (the abort
+//     branch returns before those are evaluated).
 //
-// Only one of expandChapterIndex, rewriteChapter, deleteChapterIndex, or
+// Only one of expandChapterIndex, rewriteChapterIndex, deleteChapterIndex, or
 // removeChapterIndex may be provided per request.
 // When both expandChapterIndex and storyName are provided, metadata is updated
 // first, then re-expansion starts in the background.
@@ -38,7 +45,7 @@ import {
     writeChapterFiles,
     writeChapterPayload
 } from './story-utils';
-import { releaseStoryJob, trackStoryJob } from './generation-job-registry';
+import { isStoryAborted, releaseStoryJob, requestStoryAbort, trackStoryJob } from './generation-job-registry';
 
 export const generationUpdateChapter = asHandlerMethod(async (_, parameters, variables) => {
     const { path: pathParams, body } = parameters;
@@ -49,6 +56,39 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         return {
             status: 400,
             response: { error: 'storyId is required' }
+        };
+    }
+
+    // ── Abort-job branch (the dashboard's Terminate button) ──────────────
+    // body.abortJob === true requests termination of every active background
+    // job for this story (create/fork/append/resume exclusive jobs and
+    // tracked expand/rewrite jobs alike). Pure registry operation — no files
+    // are read or written, and no clientId is involved (abort does no LLM
+    // work). The marked flows throw at their NEXT checkpoint boundary
+    // (assertStoryExists-style guards) and retire themselves through the
+    // standard .finally(releaseStoryJob) — an LLM call already in flight is
+    // not cut mid-stream, the abort lands at the next chapter boundary.
+    // aborted: 0 → nothing was running (the job likely finished between the
+    // UI's list sync and this click) — reported so the client doesn't claim
+    // a termination that never happened.
+    if (body.abortJob === true) {
+        const aborted = requestStoryAbort(storyId);
+        console.log(
+            aborted > 0
+                ? `[PATCH] Abort requested for story '${storyId}' — ${aborted} active job(s) will terminate at their next checkpoint`
+                : `[PATCH] Abort requested for story '${storyId}' — no active job found`
+        );
+        return {
+            status: 200,
+            response: {
+                storyId,
+                abortJob: true,
+                aborted,
+                message:
+                    aborted > 0
+                        ? `Abort requested — ${aborted} active job(s) will stop at their next checkpoint`
+                        : 'No active background job for this story'
+            }
         };
     }
 
@@ -517,8 +557,14 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
             };
         }
 
-        // Guard: check if story folder still exists
+        // Guard: check if story folder still exists — and whether the user
+        // requested a job termination (PATCH abortJob), which is equally
+        // terminal for this background rewrite.
         const assertStoryExists = () => {
+            // Abort check FIRST — a pending termination wins over folder state.
+            if (isStoryAborted(storyId)) {
+                throw new Error(`Chapter rewrite aborted by user request — storyId: ${storyId}`);
+            }
             if (!fs.existsSync(databaseDir)) {
                 throw new Error(`Story folder deleted — aborting rewrite for storyId: ${storyId}`);
             }
@@ -656,8 +702,14 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
         };
     }
 
-    // Guard: check if story folder still exists (user may have deleted during processing)
+    // Guard: check if story folder still exists (user may have deleted during
+    // processing) — and whether the user requested a job termination (PATCH
+    // abortJob), which is equally terminal for this background chain.
     const assertStoryExists = () => {
+        // Abort check FIRST — a pending termination wins over folder state.
+        if (isStoryAborted(storyId)) {
+            throw new Error(`Chapter expansion aborted by user request — storyId: ${storyId}`);
+        }
         if (!fs.existsSync(databaseDir)) {
             throw new Error(`Story folder deleted — aborting generation for storyId: ${storyId}`);
         }

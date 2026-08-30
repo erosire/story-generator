@@ -23,6 +23,9 @@ import {
     writeChapterPayload,
     writeChapterFiles
 } from './story-utils';
+// Abort signal from the job registry — a user-requested Terminate (PATCH
+// abortJob) must stop this background flow at its next checkpoint boundary.
+import { isStoryAborted } from './generation-job-registry';
 
 export type ForkStoryOptions = {
     newStoryId: string;
@@ -241,7 +244,15 @@ export const forkStory = async (options: ForkStoryOptions) => {
 
         const expandStartMs = Date.now();
 
+        // Guard mirrors the other background flows: the forked dir can be
+        // deleted mid-expansion (user deletes from the list) AND a
+        // user-requested job termination (PATCH abortJob) is equally terminal
+        // — both throw to unwind the fire-and-forget promise.
         const assertStoryExists = () => {
+            // Abort check FIRST — a pending termination wins over folder state.
+            if (isStoryAborted(newStoryId)) {
+                throw new Error(`Story fork aborted by user request — storyId: ${newStoryId}`);
+            }
             if (!fs.existsSync(newDir)) {
                 throw new Error(`Forked story folder deleted — aborting generation for storyId: ${newStoryId}`);
             }

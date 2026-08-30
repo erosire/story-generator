@@ -286,6 +286,52 @@ export async function resumeStoryPlotpoints(
     return (await response.json()) as { storyId: string; resumed: number; chapterCount: number };
 }
 
+// Terminate every active background job for a story via PATCH { abortJob: true }.
+// The dashboard's Terminate button (SectionStoryContent) calls this while the
+// story is processing: the server marks the story aborted in its in-memory
+// job registry (generation-job-registry.ts requestStoryAbort) and every
+// active background flow (create/fork/append/resume/expand/rewrite) stops at
+// its next checkpoint boundary — an LLM call already streaming is not cut
+// mid-stream. All generated content is kept; an interrupted plotline stays
+// resumable via resumeStoryPlotpoints.
+//
+// Returns { storyId, aborted, message } — `aborted` is how many active jobs
+// the server targeted; 0 means nothing was running (the job likely finished
+// between the UI's list sync and the click; the caller should still retire
+// its local processing flags). No clientId is sent: abort does no LLM work.
+// Throws on network failure or non-200 response.
+export type AbortStoryJobResponse = {
+    storyId: string;
+    abortJob: boolean;
+    aborted: number;
+    message: string;
+};
+
+export async function abortStoryJob(
+    baseUrl: string,
+    storyId: string
+): Promise<AbortStoryJobResponse> {
+    const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
+    const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ abortJob: true })
+    });
+
+    if (!response.ok) {
+        let message = `Failed to abort story job (HTTP ${response.status})`;
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore
+        }
+        throw new Error(message);
+    }
+
+    return (await response.json()) as AbortStoryJobResponse;
+}
+
 // Fetch the current story data once via GET. Maps HTTP status to PollResult.
 // 404 → 'not-found' (transient; story dir not created yet). 200 → 'data'.
 // Anything else → 'error' with the server's error message if present.

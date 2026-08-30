@@ -232,7 +232,11 @@ paths:
         entry, its chapter-XXX.json/.md files (every revision), and renumbers
         the chapters after it to fill the gap (files renamed, payload
         identity and context.appending updated). No LLM work is triggered by
-        the deletion operations.
+        the deletion operations. abortJob (true) TERMINATES every active
+        background job for this story (create/fork/append/resume/expand/
+        rewrite): the marked flow(s) stop at their next checkpoint boundary
+        and the job registry entry is retired — an LLM call already in flight
+        is not cut mid-stream. Registry-only: no LLM work, no file I/O.
         expandChapterIndex, rewriteChapter, deleteChapterIndex, and
         removeChapterIndex are mutually exclusive.
       tags:
@@ -274,6 +278,10 @@ paths:
                 summary: Remove chapter 2 entirely (later chapters renumber)
                 value:
                   removeChapterIndex: 1
+              abort:
+                summary: Terminate every active background job for this story
+                value:
+                  abortJob: true
               both:
                 summary: Rename and re-expand
                 value:
@@ -746,6 +754,20 @@ components:
             value → the server's default client. Unknown value → 400 listing
             the available clients.
           example: Qwen3_8
+        abortJob:
+          type: boolean
+          description: >-
+            When true, TERMINATE every active background job for this story
+            (create/fork/append/resume exclusive jobs and tracked
+            expand/rewrite jobs). The marked flow(s) stop at their next
+            checkpoint boundary and retire through the job registry's release
+            path; the story keeps all generated content and an interrupted
+            plotline stays resumable. Registry-only — no LLM work, no file
+            I/O, no clientId involved. Mutually exclusive with every chapter
+            operation (the abort branch answers first). The response's
+            `aborted` field reports how many active jobs were targeted; 0
+            means nothing was running.
+          example: true
     PatchStoryResponse:
       type: object
       properties:
@@ -785,6 +807,14 @@ components:
           type: integer
           description: How many chapters the story has left after a whole-chapter removal (if removeChapterIndex was provided)
           example: 2
+        abortJob:
+          type: boolean
+          description: Echoes the abortJob request field (if abortJob was provided)
+          example: true
+        aborted:
+          type: integer
+          description: How many active background jobs the abort targeted (if abortJob was provided); 0 means nothing was running
+          example: 1
         chapterNumber:
           type: string
           description: The chapter number as assigned by the LLM (if expandChapterIndex or rewriteChapter was provided)

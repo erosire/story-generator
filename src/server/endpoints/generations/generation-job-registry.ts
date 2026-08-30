@@ -30,6 +30,11 @@
 // partial chapters in plotpoint.json) is then resumable via the resume branch
 // (generation-resume-story.ts). Restart → blank slate is the intended
 // semantics, mirrored on the client by rehydrating serverProcessing=false.
+//
+// 3. USER-REQUESTED TERMINATION: requestStoryAbort lets a client kill the
+//    active job(s) for a story (the dashboard's Terminate button) without
+//    deleting the story folder. Background flows throw at their next
+//    checkpoint; the abort flag clears with the last released job.
 // ---------------------------------------------------------------------------
 
 // The kinds of background work this registry tracks. Exclusive kinds hold the
@@ -66,6 +71,18 @@ const activeJobs = new Map<string, RegistryJob>();
 // tracked (non-exclusive) job can never accidentally free a story slot it
 // does not own.
 const exclusiveStoryIds = new Set<string>();
+
+// storyIds whose active job(s) the user asked to TERMINATE (the dashboard's
+// Terminate button → PATCH abortJob → requestStoryAbort). In-memory abort
+// signal only: background flows consult isStoryAborted at their existing
+// checkpoint boundaries (assertStoryExists-style guards) and bail out by
+// throwing, which retires the job via the standard .finally(releaseStoryJob).
+// A streaming LLM call in flight is not interrupted mid-stream — the abort
+// lands at the NEXT boundary (chapter loop iteration / post-call write), the
+// same granularity the folder-deletion guard has always had. The flag is
+// cleared by releaseStoryJob once NO active jobs remain for the story, so a
+// terminated story is immediately resumable/expandable again.
+const abortedStoryIds = new Set<string>();
 
 // Monotonic jobId sequence — process-local, resets on restart together with
 // the rest of the registry.
@@ -115,13 +132,54 @@ export const trackStoryJob = (storyId: string, kind: StoryJobKind): string => {
  * Releasing an exclusive job frees the story's exclusive slot; releasing a
  * tracked job only removes that one job entry — an exclusive slot on the
  * same story stays held.
+ *
+ * Abort-flag cleanup: when the LAST active job for the story is released,
+ * any pending abort signal is cleared too — with nothing running there is
+ * nothing left to abort, and a stale flag would make a future job for the
+ * same storyId die on its first boundary check.
  */
 export const releaseStoryJob = (jobId: string): void => {
     const job = activeJobs.get(jobId);
     if (!job) return;
     if (job.exclusive) exclusiveStoryIds.delete(job.storyId);
     activeJobs.delete(jobId);
+    // No more active jobs for this story → the abort signal has nowhere left
+    // to land; drop it so the next job starts clean.
+    if (!isStoryJobActive(job.storyId)) {
+        abortedStoryIds.delete(job.storyId);
+    }
 };
+
+/**
+ * Request termination of every active background job for storyId (the
+ * dashboard's Terminate button). Marks the story aborted so the background
+ * flow(s) bail out at their next checkpoint boundary (assertStoryExists-style
+ * guards), then the standard .finally(releaseStoryJob) retires the job(s).
+ *
+ * Returns how many active jobs the abort targets: 0 means nothing was
+ * running (the job may have finished between the UI's list sync and the
+ * click) — the caller answers with a "no active job" message instead of
+ * claiming success.
+ */
+export const requestStoryAbort = (storyId: string): number => {
+    let activeCount = 0;
+    for (const job of activeJobs.values()) {
+        if (job.storyId === storyId) activeCount++;
+    }
+    // Only mark the abort when something is actually running; a no-op abort
+    // must not poison a story that a NEW job might start a moment later.
+    if (activeCount > 0) {
+        abortedStoryIds.add(storyId);
+    }
+    return activeCount;
+};
+
+/**
+ * True when storyId has a pending user-requested abort. Background flows
+ * check this at their checkpoint boundaries (alongside the story-folder
+ * existence guard) and throw to unwind the fire-and-forget promise.
+ */
+export const isStoryAborted = (storyId: string): boolean => abortedStoryIds.has(storyId);
 
 /**
  * True when storyId has ANY active background job (exclusive or tracked).

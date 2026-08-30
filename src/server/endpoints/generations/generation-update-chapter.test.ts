@@ -84,6 +84,7 @@ vi.mock('@runtime/data/prompts', () => ({
 import { CLIENT, EXPAND_TIMEOUT_MS } from './generation-config';
 import { generationUpdateChapter } from './generation-update-chapter';
 import { DATABASE_BASE_DIR } from './generation-config';
+import { acquireStoryJob, isStoryAborted, releaseStoryJob, trackStoryJob } from './generation-job-registry';
 
 // Use an isolated temp directory as the project root so tests never pollute the
 // source tree. The service normally passes temporary/database via variables.root.
@@ -1640,6 +1641,105 @@ describe('generationUpdateChapter', () => {
             expect(fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8')).toBe('## The Middle\n\nMiddle pass two');
             expect(fs.readFileSync(path.join(chapterDir, 'chapter-002.md'), 'utf-8')).toBe('## The End');
             expect(fs.existsSync(path.join(chapterDir, 'chapter-003.md'))).toBe(false);
+        });
+    });
+
+    // ── abortJob (the dashboard's Terminate button) ────────────────────────
+    // Registry-only branch: marks the story aborted in the job registry and
+    // reports how many active jobs were targeted. No files are read/written,
+    // no LLM work is triggered, and the branch answers before the chapter
+    // operations are evaluated (mutually exclusive with all of them).
+    describe('abortJob', () => {
+        it('should return aborted: 1 for a story with one active exclusive job and mark it aborted', async () => {
+            const storyId = `test-abort-single-${Date.now()}`;
+            const jobId = acquireStoryJob(storyId, 'create');
+            expect(jobId).not.toBeNull();
+
+            try {
+                const result = await generationUpdateChapter(
+                    mockContext,
+                    createMockParameters(storyId, { abortJob: true }),
+                    { root: projectRoot }
+                );
+
+                expect(result.status).toBe(200);
+                expect(result.response).toEqual({
+                    storyId,
+                    abortJob: true,
+                    aborted: 1,
+                    message: 'Abort requested — 1 active job(s) will stop at their next checkpoint'
+                });
+                // The registry actually carries the abort signal — the
+                // background flow's checkpoint guard will see it.
+                expect(isStoryAborted(storyId)).toBe(true);
+            } finally {
+                // Drain the registry + abort flag for suite order-independence.
+                releaseStoryJob(jobId!);
+            }
+            expect(isStoryAborted(storyId)).toBe(false);
+        });
+
+        it('should count tracked expand/rewrite jobs alongside exclusive ones', async () => {
+            const storyId = `test-abort-mixed-${Date.now()}`;
+            const exclusiveJobId = acquireStoryJob(storyId, 'append');
+            const trackedJobId = trackStoryJob(storyId, 'rewrite');
+
+            try {
+                const result = await generationUpdateChapter(
+                    mockContext,
+                    createMockParameters(storyId, { abortJob: true }),
+                    { root: projectRoot }
+                );
+
+                expect(result.status).toBe(200);
+                expect(result.response.aborted).toBe(2);
+                expect(result.response.message).toBe('Abort requested — 2 active job(s) will stop at their next checkpoint');
+            } finally {
+                releaseStoryJob(exclusiveJobId!);
+                releaseStoryJob(trackedJobId);
+            }
+        });
+
+        it('should return aborted: 0 for a story with no active job (and NOT set the flag)', async () => {
+            const storyId = `test-abort-idle-${Date.now()}`;
+
+            const result = await generationUpdateChapter(
+                mockContext,
+                createMockParameters(storyId, { abortJob: true }),
+                { root: projectRoot }
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.response).toEqual({
+                storyId,
+                abortJob: true,
+                aborted: 0,
+                message: 'No active background job for this story'
+            });
+            // A no-op abort must not poison a story a future job might start.
+            expect(isStoryAborted(storyId)).toBe(false);
+        });
+
+        it('should not require the story to exist on disk (registry-only operation)', async () => {
+            const storyId = `test-abort-no-dir-${Date.now()}`;
+            const jobId = acquireStoryJob(storyId, 'resume');
+
+            try {
+                // No story directory is created for this storyId — the abort
+                // branch never touches the filesystem, so it still answers.
+                expect(fs.existsSync(getStoryboardDir(storyId))).toBe(false);
+
+                const result = await generationUpdateChapter(
+                    mockContext,
+                    createMockParameters(storyId, { abortJob: true }),
+                    { root: projectRoot }
+                );
+
+                expect(result.status).toBe(200);
+                expect(result.response.aborted).toBe(1);
+            } finally {
+                releaseStoryJob(jobId!);
+            }
         });
     });
 });

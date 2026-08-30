@@ -52,6 +52,9 @@ import {
     readChapterPayload,
     writeChapterPayload
 } from './story-utils';
+// Abort signal from the job registry — a user-requested Terminate (PATCH
+// abortJob) must stop this background flow at its next checkpoint boundary.
+import { isStoryAborted } from './generation-job-registry';
 
 export type AppendStoryChaptersOptions = {
     storyId: string;
@@ -130,7 +133,13 @@ export const appendStoryChapters = async (options: AppendStoryChaptersOptions) =
 
     // The story dir can be deleted mid-LLM-call (user deletes from the list);
     // guard every post-call write with this, matching generateStory's contract.
+    // A user-requested job termination (PATCH abortJob) is equally terminal:
+    // the throw unwinds this background flow and retires its registry entry.
     const assertStoryExists = () => {
+        // Abort check FIRST — a pending termination wins over folder state.
+        if (isStoryAborted(storyId)) {
+            throw new Error(`Story append aborted by user request — storyId: ${storyId}`);
+        }
         if (!fs.existsSync(databaseDir)) {
             throw new Error(`Story folder deleted — aborting append for storyId: ${storyId}`);
         }

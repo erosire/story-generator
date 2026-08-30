@@ -19,6 +19,10 @@
 //   - the "Delete Chapter" pill is revealed by SHOWING a chapter's plotpoints
 //     (hidden while collapsed); confirming PATCHes { removeChapterIndex } and
 //     the story shrinks to the renumbered chapter list; cancel sends nothing
+//   - the story stats bar (total chapters / total words / estimated tokens)
+//     renders before the chapter listing
+//   - the Terminate control inside the processing banner PATCHes
+//     { abortJob: true } to the story URL and retires the banner on success
 //
 // fetch is mocked globally. Poll interval is overridden via configOverrides to a
 // tiny value so the loop advances quickly under real timers.
@@ -1348,6 +1352,172 @@ describe('StoryGeneratorApp', () => {
         });
         expect(screen.queryByTestId('extend-plotpoints-button')).toBeNull();
         expect(screen.queryByTestId('content-action-bar')).toBeNull();
+    });
+
+    // ── Story stats bar ───────────────────────────────────────────────────
+    // A row of summary chips sits between the processing banner and the
+    // chapter list: total chapters, total words of the currently-viewed
+    // revisions, and the estimated token cost (~4 tokens per 3 words).
+    it('shows the story stats (chapters / words / estimated tokens) before the chapter listing', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        // Two expanded chapters: 1200 + 1800 = 3000 words →
+        // 3000 * 4 / 3 = 4000 estimated tokens (exact — no rounding drift).
+        const chapters = [
+            {
+                chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['plot1'],
+                expanded: true, canReExpand: true,
+                revisions: [{ content: '## Ch1\n\nbody', wordCount: 1200, generationTimeMs: 1000 }]
+            },
+            {
+                chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['plot2'],
+                expanded: true, canReExpand: true,
+                revisions: [{ content: '## Ch2\n\nbody', wordCount: 1800, generationTimeMs: 1000 }]
+            }
+        ];
+        const meta = { storyline: 'Stats story', chapterCount: 2, createdAt: '2026-08-01T12:00:00Z' };
+        const story = {
+            id: 1,
+            storyId: 'stats-story-1',
+            storyline: 'Stats story',
+            title: 'Stats story',
+            chapterRequested: 2,
+            chapterCompleted: 2,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'completed' as const,
+            data: { chapters, meta },
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('story-stats')).toBeDefined();
+        });
+
+        // Exact values: 2 chapters, 3,000 words, ~4,000 estimated tokens
+        // (en-US thousands separators, matching the component's formatting).
+        expect(screen.getByTestId('stat-chapters').textContent).toBe('Chapters2');
+        expect(screen.getByTestId('stat-words').textContent).toBe('Words3,000');
+        expect(screen.getByTestId('stat-tokens').textContent).toBe('Tokens (est.)~4,000');
+
+        // The stats bar sits BEFORE the chapter listing (document order).
+        const content = screen.getByTestId('content-story');
+        const statsEl = screen.getByTestId('story-stats');
+        const listEl = screen.getByTestId('chapters-list');
+        expect(content.contains(statsEl)).toBe(true);
+        expect(content.contains(listEl)).toBe(true);
+        expect(statsEl.compareDocumentPosition(listEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    // ── Terminate job (the ■ action inside the processing banner) ─────────
+    // While the story is processing, the banner carries a Terminate button.
+    // Clicking it PATCHes { abortJob: true } to the story URL and retires the
+    // local processing flags — the banner disappears immediately while the
+    // server-side flow stops at its next checkpoint boundary.
+    it('terminates the running job from the banner: PATCHes abortJob and clears the processing banner', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'PATCH') {
+                return Promise.resolve(
+                    mockResponse(200, {
+                        storyId: String(url.split('/').pop() ?? ''),
+                        abortJob: true,
+                        aborted: 1,
+                        message: 'Abort requested — 1 active job(s) will stop at their next checkpoint'
+                    })
+                );
+            }
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(mockResponse(200, { stories: [] }));
+                }
+                // 2 of 5 chapters expanded → the poll loop keeps running while
+                // isProcessing stays true (target not reached).
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['plot1'], expanded: true, canReExpand: true, revisions: [{ content: '## Ch1', wordCount: 10, generationTimeMs: 1000 }] },
+                            { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['plot2'], expanded: true, canReExpand: true, revisions: [{ content: '## Ch2', wordCount: 20, generationTimeMs: 1000 }] }
+                        ],
+                        meta: { storyline: 'Busy story', chapterCount: 5, createdAt: '2026-08-01T12:00:00Z', status: 'generating' }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        // isProcessing: true — this session started a job that is running.
+        const story = {
+            id: 1,
+            storyId: 'busy-story-1',
+            storyline: 'Busy story',
+            title: 'Busy story',
+            chapterRequested: 5,
+            chapterCompleted: 2,
+            createdDate: '2026-08-01T12:00:00.000Z',
+            status: 'generating' as const,
+            data: {
+                chapters: [
+                    { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['plot1'], expanded: true, canReExpand: true, revisions: [{ content: '## Ch1', wordCount: 10, generationTimeMs: 1000 }] },
+                    { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['plot2'], expanded: true, canReExpand: true, revisions: [{ content: '## Ch2', wordCount: 20, generationTimeMs: 1000 }] }
+                ],
+                meta: { storyline: 'Busy story', chapterCount: 5, createdAt: '2026-08-01T12:00:00Z', status: 'generating' }
+            },
+            isProcessing: true,
+            error: '',
+            isRemote: true
+        };
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // The processing banner with the Terminate control is visible.
+        await waitFor(() => {
+            expect(screen.getByTestId('terminate-job-button')).toBeDefined();
+        });
+        expect(screen.getByTestId('progress-banner').textContent).toContain('Generating 2/5 chapters…');
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('terminate-job-button'));
+        });
+
+        // The PATCH carries the abort envelope (no clientId — no LLM work).
+        await waitFor(() => {
+            const patchCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'PATCH');
+            expect(patchCall).toBeDefined();
+            expect(patchCall![0]).toBe(`${BASE_URL}/busy-story-1`);
+            expect(JSON.parse(patchCall![1].body)).toEqual({ abortJob: true });
+        });
+
+        // Success: the local processing flags retire → the banner (and its
+        // Terminate control) disappears immediately. The generated chapters
+        // stay listed.
+        await waitFor(() => {
+            expect(screen.queryByTestId('progress-banner')).toBeNull();
+        });
+        expect(screen.queryByTestId('terminate-job-button')).toBeNull();
+        expect(screen.getByTestId('chapters-list').textContent).toContain('Chapter 1');
     });
 
     // ── Resume-generation action (the ▶ button) ───────────────────────────

@@ -12,6 +12,8 @@
 //     clientId where applicable) and error branches.
 //   - removeChapter: the remove-entire-chapter PATCH (removeChapterIndex)
 //     payload, URL encoding, and error branches.
+//   - abortStoryJob: the Terminate button's PATCH { abortJob: true } —
+//     payload shape, URL encoding, aborted:0 no-op case, and error branches.
 //   - appendStoryPlotpoints: the "[->]" append dialog's POST — append
 //     envelope shape (notes omitted when blank, clientId optional) and
 //     the 400/500 error branches.
@@ -32,7 +34,8 @@ import {
     deleteChapter,
     removeChapter,
     appendStoryPlotpoints,
-    resumeStoryPlotpoints
+    resumeStoryPlotpoints,
+    abortStoryJob
 } from './storyboard';
 import type { StoryMeta } from './storyboard';
 
@@ -647,6 +650,85 @@ describe('resumeStoryPlotpoints (POST resume envelope)', () => {
 
         await expect(resumeStoryPlotpoints(BASE_URL, 'story-1', {})).rejects.toThrow(
             'Failed to resume story (HTTP 500)'
+        );
+    });
+});
+
+describe('abortStoryJob (PATCH abort envelope)', () => {
+    beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('PATCHes abortJob: true to the story URL and returns the abort summary', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, {
+                storyId: 'story-1',
+                abortJob: true,
+                aborted: 2,
+                message: 'Abort requested — 2 active job(s) will stop at their next checkpoint'
+            })
+        );
+
+        const result = await abortStoryJob(BASE_URL, 'story-1');
+
+        // No clientId — the abort does no LLM work, so the field is never sent.
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/story-1`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ abortJob: true })
+        });
+        expect(result).toEqual({
+            storyId: 'story-1',
+            abortJob: true,
+            aborted: 2,
+            message: 'Abort requested — 2 active job(s) will stop at their next checkpoint'
+        });
+    });
+
+    it('returns aborted: 0 untouched when nothing was running (caller still retires local flags)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { storyId: 'story-1', abortJob: true, aborted: 0, message: 'No active background job for this story' })
+        );
+
+        const result = await abortStoryJob(BASE_URL, 'story-1');
+
+        expect(result).toEqual({
+            storyId: 'story-1',
+            abortJob: true,
+            aborted: 0,
+            message: 'No active background job for this story'
+        });
+    });
+
+    it('URL-encodes the storyId', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { storyId: 'a/b c', abortJob: true, aborted: 1, message: 'ok' })
+        );
+
+        await abortStoryJob(BASE_URL, 'a/b c');
+
+        expect((fetch as any).mock.calls[0][0]).toBe(`${BASE_URL}/a%2Fb%20c`);
+    });
+
+    it('throws with the server message on 404 (unknown story)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(404, { error: "Story 'ghost' not found" })
+        );
+
+        await expect(abortStoryJob(BASE_URL, 'ghost')).rejects.toThrow("Story 'ghost' not found");
+    });
+
+    it('falls back to a status-based message when the body is not JSON', async () => {
+        const badResponse = {
+            ok: false,
+            status: 503,
+            json: async () => {
+                throw new SyntaxError('not json');
+            }
+        } as any;
+        (globalThis.fetch as any).mockResolvedValueOnce(badResponse);
+
+        await expect(abortStoryJob(BASE_URL, 'story-1')).rejects.toThrow(
+            'Failed to abort story job (HTTP 503)'
         );
     });
 });
