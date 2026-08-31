@@ -5,32 +5,36 @@
 // persistence, and the rename PATCH flow. Moved from the old
 // src/components/StoryGeneratorApp HeaderControls.
 //
-// RENAME DIALOG REWORK: the rename flow now uses the modular standard-pattern
-// <Dialog> (components/Dialog.tsx) — header/body/footer bands instead of the
-// old ad hoc overlay/box/label composition. Test contract preserved by
-// construction:
+// RENAME DIALOG REWORK: the rename flow uses the modular standard-pattern
+// <Dialog> (components/Dialog.tsx — MUI Dialog + title/content/actions bands).
+// Test contract preserved by construction:
 //   - frame: data-testid="rename-dialog", role="dialog", aria-modal,
 //     aria-labelledby="rename-dialog-title" (App.test.tsx:395-397)
-//   - input: data-testid="rename-input", className EXACTLY 'sg-dialog-input'
-//     (:399 asserts toBe) — the stronger focus ring class hook
-//   - confirm: data-testid="rename-confirm", className EXACTLY
-//     'sg-dialog-confirm' (:400 asserts toBe)
+//   - input: data-testid="rename-input", className CONTAINS 'sg-dialog-input'
+//     — the stronger focus ring class hook (the MUI TextField merges its own
+//     input classes, so the assertion is a toContain)
+//   - confirm: data-testid="rename-confirm", className CONTAINS
+//     'sg-dialog-confirm' (MUI Button merges its own classes)
 //   - cancel: data-testid="rename-cancel" — closes without renaming
 //
 // LLM client dropdown (top-right): chooses which LLM client the server uses
 // for generation. Stored in config.clientId (persisted to localStorage) and
 // sent as `clientId` with every payload — never stored by the server with the
-// story. Native <select> whose control + popup are dark-themed via
-// colorScheme (inline) — the sg-select/sg-input class hooks add the flat
-// hover/focus treatments. ALL colors for the dropdown live in the
-// `.sg-select` class rules in styles/global.ts, NOT inline: the vendored
-// styled() applies a static inline `style` attribute, and inline styles
-// outrank every class rule (including :hover/:focus), which would leave the
-// sg-select hooks dead and composite a translucent background over the
-// browser's light UA control base (white-control bug). App.test.tsx:103-105
-// asserts the class hooks + inline colorScheme.
+// story. Deliberately a NATIVE <select> (not an MUI Select): the tests drive
+// it as a plain select (fireEvent.change + option children) and the UA-drawn
+// options popup is dark-themed via the inline colorScheme. The sg-select/
+// sg-input class hooks add the flat hover/focus treatments. ALL colors for the
+// dropdown live in the `.sg-select` class rules in styles/global.ts — the
+// styled() Emotion class must not carry background/color/border or it would
+// fight the .sg-select hover/focus rules at equal specificity. A translucent
+// background would also composite over the browser's light UA control base
+// (white-control bug). App.test.tsx:103-105 asserts the class hooks + inline
+// colorScheme.
 
 import React from 'react';
+// Material UI icon button + hamburger glyph — the sidebar toggle.
+import IconButton from '@mui/material/IconButton';
+import MenuIcon from '@mui/icons-material/Menu';
 import { styled, theme } from '../styles';
 import { StoryStoreProvider, useStoryStore, setClientId, type StoryStore } from '../context';
 import { updateStoryMeta, fetchClientOptions } from '../api';
@@ -38,24 +42,33 @@ import { Dialog, Input } from '../components';
 
 // Toggle button — hamburger icon that opens/closes the sidebar.
 // Flat Design: outlined square with solid surface + crisp hairline border.
-// Hover swaps to surface2 + stronger border (sg-hover class). No shadow.
-const ToggleButton = styled('button', {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 34,
-    height: 34,
-    flex: '0 0 auto',
-    borderRadius: theme.radiusMd,
-    border: `1px solid ${theme.border}`,
-    backgroundColor: theme.surface1,
-    color: theme.text,
-    cursor: 'pointer',
-    fontSize: theme.fontSize.xl,
-    lineHeight: 1,
-    padding: 0,
-    transition: `background-color ${theme.transition}, border-color ${theme.transition}`
-});
+// Hover swaps to surface2 + stronger border (CSS :hover in sx — replaces the
+// dead inline-style hover the old styled() version could never apply).
+const ToggleButton: React.FC<React.ComponentProps<typeof IconButton>> = ({ sx, ...rest }) => (
+    <IconButton
+        disableRipple
+        {...rest}
+        sx={{
+            width: 34,
+            height: 34,
+            padding: 0,
+            flex: '0 0 auto',
+            borderRadius: `${theme.radiusMd}px`,
+            border: `1px solid ${theme.border}`,
+            backgroundColor: theme.surface1,
+            color: theme.text,
+            cursor: 'pointer',
+            fontSize: theme.fontSize.xl,
+            lineHeight: 1,
+            transition: `background-color ${theme.transition}, border-color ${theme.transition}`,
+            '&:hover': {
+                backgroundColor: theme.surface2,
+                borderColor: theme.borderStrong
+            },
+            ...sx
+        }}
+    />
+);
 
 // App title text in the header. Slightly larger, brighter, and tracked out
 // for a modern dashboard wordmark look.
@@ -70,8 +83,12 @@ const HeaderTitle = styled('span', {
 
 // Top-right LLM client dropdown. `marginLeft: 'auto'` pushes it to the right
 // edge of the flex header row (toggle + title sit on the left).
-// See the file header for why the colors live in .sg-select (global.ts) and
-// why colorScheme:'dark' stays inline (App.test.tsx:94/105 asserts it).
+// NOTE: colors live in the .sg-select class rules (styles/global.ts), NOT
+// here — the Emotion class must not carry background/color/border or it
+// would fight the .sg-select hover/focus hooks at equal specificity. The
+// dark `colorScheme` stays an INLINE style (see the render call): the
+// UA-drawn options popup reads it from the element, and the test contract
+// (App.test.tsx:105) asserts the inline value.
 const ClientSelect = styled('select', {
     marginLeft: 'auto',
     height: 34,
@@ -82,9 +99,6 @@ const ClientSelect = styled('select', {
     borderRadius: theme.radiusMd,
     cursor: 'pointer',
     outline: 'none',
-    // Dark color scheme for the native select control + its options popup
-    // (see the file header). 'dark' is a valid React.CSSProperties value.
-    colorScheme: 'dark',
     transition: `background-color ${theme.transition}, border-color ${theme.transition}, box-shadow ${theme.transition}`
 });
 
@@ -260,9 +274,8 @@ export const HeaderControls: React.FC<{
                 onClick={onToggleSidebar}
                 aria-label="Toggle story sidebar"
                 data-testid="sidebar-toggle"
-                className="sg-hover"
             >
-                ☰
+                <MenuIcon style={{ fontSize: 18, display: 'block' }} />
             </ToggleButton>
             <HeaderTitle
                 onClick={openRename}
@@ -273,7 +286,9 @@ export const HeaderControls: React.FC<{
                 {selected?.storyName || selected?.title || 'Story Generator'}
             </HeaderTitle>
 
-            {/* Top-right client dropdown — see the file header comment. */}
+            {/* Top-right client dropdown — colors from .sg-select (global.ts);
+                the dark colorScheme stays INLINE for the UA-drawn control +
+                options popup (test contract: App.test.tsx:105). */}
             <ClientSelect
                 value={store.config.clientId}
                 onChange={(e) => handleClientChange(e.target.value)}
@@ -281,6 +296,7 @@ export const HeaderControls: React.FC<{
                 aria-label="LLM client"
                 title="LLM client used for generation"
                 className="sg-input sg-select"
+                style={{ colorScheme: 'dark' }}
             >
                 {clientOptions.map((option) => (
                     <option key={option} value={option}>

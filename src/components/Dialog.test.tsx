@@ -1,14 +1,19 @@
-// Tests for the modular standard-pattern Dialog (src/components/Dialog.tsx).
+// Tests for the modular standard-pattern Dialog (src/components/Dialog.tsx —
+// built on the Material UI Dialog).
 //
 // Covers:
 //   - renders nothing when open=false; frame + regions when open=true
 //   - frame a11y contract: role=dialog, aria-modal, aria-labelledby → title id
+//     (MUI renders all three on its Paper slot — data-testid lands there too)
 //   - title element carries id + data-testid `${testId}-title` with EXACT text
-//   - ConfirmButton default className is EXACTLY 'sg-dialog-confirm'
+//   - ConfirmButton className CONTAINS 'sg-dialog-confirm' (MUI Button merges
+//     its own classes, so the assertion is a toContain)
 //   - CancelButton hook class 'sg-hover'
-//   - danger tone appends the danger class + swaps the fill
-//   - overlay click closes when dismissable; ignored when dismissable=false
-//   - Escape closes via keydown on the frame
+//   - danger tone appends the danger class + swaps the fill (inline style)
+//   - scrim click closes when dismissable; ignored when dismissable=false
+//     (MUI's nested-click guard: the mousedown AND the click must both start
+//     on the scrim, so the tests drive mouseDown + click)
+//   - Escape keydown closes the dialog (MUI Modal handles the bubbling key)
 //
 // These mirror the App.test.tsx contracts (rename/delete/remove dialogs)
 // at the component level so regressions surface without the full app.
@@ -48,7 +53,7 @@ describe('Dialog', () => {
         expect(screen.getByText('Cancel')).toBeDefined();
     });
 
-    it('ConfirmButton carries exactly the sg-dialog-confirm class by default', () => {
+    it('ConfirmButton carries the sg-dialog-confirm class by default', () => {
         render(
             <Dialog open title="T" testId="d">
                 <Dialog.Footer>
@@ -56,8 +61,9 @@ describe('Dialog', () => {
                 </Dialog.Footer>
             </Dialog>
         );
-        // EXACT class (App.test asserts toBe, not toContain).
-        expect((screen.getByTestId('ok') as HTMLButtonElement).className).toBe('sg-dialog-confirm');
+        // MUI Button merges its own classes with the hook class — the flat
+        // contract is that the hook is present, not exclusive.
+        expect((screen.getByTestId('ok') as HTMLButtonElement).className).toContain('sg-dialog-confirm');
     });
 
     it('danger tone swaps the fill and appends the danger hook class', () => {
@@ -71,9 +77,10 @@ describe('Dialog', () => {
             </Dialog>
         );
         const btn = screen.getByTestId('del') as HTMLButtonElement;
-        expect(btn.className).toBe('sg-dialog-confirm sg-dialog-confirm-danger');
-        // jsdom serializes the #f87171 danger fill as rgb(...).
-        expect(btn.style.backgroundColor).toBe('rgb(248, 113, 113)');
+        expect(btn.className).toContain('sg-dialog-confirm');
+        expect(btn.className).toContain('sg-dialog-confirm-danger');
+        // jsdom serializes the theme.danger (#ff7583) fill as rgb(...).
+        expect(btn.style.backgroundColor).toBe('rgb(255, 117, 131)');
     });
 
     it('CancelButton carries the sg-hover hook class', () => {
@@ -84,28 +91,36 @@ describe('Dialog', () => {
                 </Dialog.Footer>
             </Dialog>
         );
-        expect((screen.getByTestId('cancel') as HTMLButtonElement).className).toBe('sg-hover');
+        expect((screen.getByTestId('cancel') as HTMLButtonElement).className).toContain('sg-hover');
     });
 
-    it('overlay click closes when dismissable and is ignored mid-flight', () => {
+    // MUI closes on scrim click only when the mousedown AND the click both
+    // start on the scrim (its nested-popover guard) — drive both events.
+    const scrimClick = (scrim: HTMLElement) => {
+        fireEvent.mouseDown(scrim);
+        fireEvent.mouseUp(scrim);
+        fireEvent.click(scrim);
+    };
+
+    it('scrim click closes when dismissable and is ignored mid-flight', () => {
         const onClose = vi.fn();
         const { rerender } = render(
             <Dialog open title="T" testId="d" onClose={onClose}>
                 <Dialog.Body>x</Dialog.Body>
             </Dialog>
         );
-        // Overlay click → close fired.
-        fireEvent.click(screen.getByTestId('d-overlay'));
+        // Scrim click → close fired.
+        scrimClick(screen.getByTestId('d-overlay'));
         expect(onClose).toHaveBeenCalledTimes(1);
 
-        // Mid-submit (dismissable=false): overlay click ignored.
+        // Mid-submit (dismissable=false): scrim click ignored.
         onClose.mockClear();
         rerender(
             <Dialog open title="T" testId="d" onClose={onClose} dismissable={false}>
                 <Dialog.Body>x</Dialog.Body>
             </Dialog>
         );
-        fireEvent.click(screen.getByTestId('d-overlay'));
+        scrimClick(screen.getByTestId('d-overlay'));
         expect(onClose).not.toHaveBeenCalled();
     });
 

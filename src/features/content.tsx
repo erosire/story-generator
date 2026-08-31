@@ -54,6 +54,18 @@
 
 import React from 'react';
 import { objectEach } from '@presource/core';
+// Material icon set — replaces the previous hand-rolled inline SVG glyphs
+// (the "package is icon-free" convention is retired now that the distribution
+// depends on @mui/icons-material; every glyph below is the MUI outline icon
+// sized down to the 14px action-bar scale via fontSize).
+import RefreshIcon from '@mui/icons-material/Refresh';
+import ForkRightIcon from '@mui/icons-material/ForkRight';
+import EastIcon from '@mui/icons-material/East';
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import AddIcon from '@mui/icons-material/Add';
+import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
+import StopIcon from '@mui/icons-material/Stop';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
 import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter, abortStoryJob } from '../api';
@@ -76,14 +88,26 @@ const EmptyState = styled('div', {
 });
 
 // Hint shown when a story is selected but its generation hasn't been triggered.
-// Lives inside an elevated card so the user knows this is the active state.
+// Lives inside an elevated card so the user knows this is the active state
+// (sky tint — content-zone family, see the ChapterCard note).
 const PendingSubmitHint = styled('div', {
     color: theme.textMuted,
     padding: 24,
-    background: theme.surface1,
-    border: `1px solid ${theme.border}`,
+    background: theme.skySurface,
+    border: `1px solid ${theme.skyBorder}`,
     borderRadius: theme.radiusLg,
     lineHeight: 1.6
+});
+
+// Accent-highlighted story id inside the pending-submit hint.
+const HintCode = styled('code', {
+    color: theme.accent
+});
+
+// "Last error" line inside the pending-submit hint.
+const HintErrorLine = styled('div', {
+    color: theme.danger,
+    marginTop: 12
 });
 
 // Section wrapper for the content column.
@@ -98,13 +122,15 @@ const ContentColumn = styled('div', {
 
 // Chapter card wrapper — always rendered as a border box containing plotpoints
 // and content. Flat Design: solid surface block + crisp hairline border. No
-// shadow — depth comes from the contrast between the card's solid surface2 and
-// the inner-Content background.
+// shadow — depth comes from the contrast between the card's solid fill and the
+// inner-content background. Content-area cards use the SKY tint family
+// (styles/theme.ts) so the reading zone reads as a distinct hue layer next to
+// the violet chrome and periwinkle tiles.
 const ChapterCard = styled('div', {
-    background: theme.surface2,
+    background: theme.skySurface,
     padding: 16,
     borderRadius: theme.radiusLg,
-    border: `1px solid ${theme.border}`
+    border: `1px solid ${theme.skyBorder}`
 });
 
 // Plotpoints list — shown/hidden by the toggle button.
@@ -150,159 +176,10 @@ const DialogCopy = styled('p', {
     lineHeight: 1.5
 });
 
-// Inline SVG refresh icon — circular arrow used for the re-expand action.
-// Keeps the package icon-free (matches the dashboard convention of inline glyphs).
-const RefreshIcon: React.FC = () => (
-    <svg
-        width={14}
-        height={14}
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: 'block' }}
-    >
-        <path
-            d="M13.5 8a5.5 5.5 0 0 1-9.88 3.07"
-            stroke="currentColor"
-            strokeWidth={1.5}
-            strokeLinecap="round"
-        />
-        <path
-            d="M2.5 8a5.5 5.5 0 0 1 9.88-3.07"
-            stroke="currentColor"
-            strokeWidth={1.5}
-            strokeLinecap="round"
-        />
-        <path d="M13.5 4v3.5H10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-);
-
-// Inline SVG fork icon — branch symbol used for the fork action.
-// Keeps the package icon-free (matches the dashboard convention of inline glyphs).
-const ForkIcon: React.FC = () => (
-    <svg
-        width={14}
-        height={14}
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: 'block' }}
-    >
-        {/* Main stem from top to bottom */}
-        <path d="M5 2v12" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
-        {/* Branch forking right and curving down */}
-        <path d="M5 6c0-3 6-3 6 0v4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
-        {/* Dot at the branch tip */}
-        <circle cx={11} cy={10} r={1.2} fill="currentColor" />
-    </svg>
-);
-
-// Inline SVG extend icon — right-pointing arrow ([->]), used for the
-// Append-chapters action button that opens the in-place append dialog
-// (previously: copied plotpoints into the footer storyline input).
-const ExtendIcon: React.FC = () => (
-    <svg
-        width={14}
-        height={14}
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: 'block' }}
-    >
-        {/* Horizontal arrow pointing right */}
-        <path d="M2 8h10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
-        <path d="M9 5l3 3-3 3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-);
-
-// Inline SVG collapse-all icon — two inward-pointing chevrons, used for the
-// collapse-all action button that closes every expanded chapter.
-const CollapseAllIcon: React.FC = () => (
-    <svg
-        width={14}
-        height={14}
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: 'block' }}
-    >
-        {/* Top chevron pointing up */}
-        <path d="M4 6l4-3 4 3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-        {/* Bottom chevron pointing down */}
-        <path d="M4 10l4 3 4-3" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-);
-
-// Inline SVG resume icon — play triangle, used for the resume-generation
-// action button that continues an interrupted plotline generation (server
-// restarted mid-generation, retry budget exhausted, etc.).
-const ResumeIcon: React.FC = () => (
-    <svg
-        width={14}
-        height={14}
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: 'block' }}
-    >
-        {/* Play triangle pointing right */}
-        <path d="M5 3l8 5-8 5V3z" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" fill="currentColor" />
-    </svg>
-);
-
-// Inline SVG plus icon — used for the rewrite chapter action button.
-// A simple "+" glyph indicating "add / rewrite with custom input".
-const RewriteIcon: React.FC = () => (
-    <svg
-        width={14}
-        height={14}
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: 'block' }}
-    >
-        <path d="M8 3v10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
-        <path d="M3 8h10" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
-    </svg>
-);
-
-// Inline SVG trash-can icon — used for the delete chapter action button
-// (clears the chapter's expanded content). Sits next to the rewrite [+]
-// button as its destructive counterpart: "+" adds context, the trash can
-// removes generated content. Keeps the package icon-free (matches the
-// dashboard convention of inline glyphs).
-const TrashIcon: React.FC = () => (
-    <svg
-        width={14}
-        height={14}
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: 'block' }}
-    >
-        {/* Lid bar + lid handle */}
-        <path d="M2.5 4h11" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
-        <path d="M6 4V2.8A.8.8 0 0 1 6.8 2h2.4a.8.8 0 0 1 .8.8V4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-        {/* Can body */}
-        <path d="M4 4l.7 8.9a1 1 0 0 0 1 .86h4.6a1 1 0 0 0 1-.86L12 4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-);
-
-// Inline SVG stop icon — filled square, the universal "terminate" glyph.
-// Used for the Terminate button inside the processing banner (kills the
-// story's active background job via PATCH abortJob).
-const StopIcon: React.FC = () => (
-    <svg
-        width={12}
-        height={12}
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: 'block' }}
-    >
-        <rect x={3} y={3} width={10} height={10} rx={1.5} fill="currentColor" />
-    </svg>
-);
+// Action-bar glyph scale — the MUI icons default to 24px; the chapter action
+// bar's icon buttons are compact 30×30 controls, so every glyph is sized down
+// to the 14px scale the previous inline SVGs used.
+const ICON_STYLE: React.CSSProperties = { fontSize: 14, display: 'block' };
 
 // Chapters list container — flex column with gap between chapter collapsibles.
 const ChapterListContainer = styled('div', {
@@ -360,6 +237,30 @@ const StatsBar = styled('div', {
     gap: 8
 });
 
+// Right-aligned column hosting the plotpoints toggle + the revealed list /
+// delete-chapter control underneath it.
+const PlotpointsColumn = styled('div', {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end' as const
+});
+
+// The "(N)" count suffix inside the toggle button label (spaced off the text).
+const PlotpointsCount = styled('span', {
+    marginLeft: 5,
+    fontSize: theme.fontSize.sm,
+    color: theme.textFaint
+});
+
+// The plotpoints bullet list.
+const PlotpointsOrderedList = styled('ul', {
+    margin: 0,
+    paddingLeft: 22,
+    fontSize: theme.fontSize.body,
+    color: theme.textMuted,
+    lineHeight: 1.7
+});
+
 // Small component that manages the plotpoints toggle state.
 // When the plotpoints are SHOWN (open), the delete-chapter control is revealed
 // underneath the list (see onDeleteChapter) — the requirement is that the
@@ -377,7 +278,7 @@ const PlotpointsWrapper: React.FC<{
     const [open, setOpen] = React.useState(defaultOpen);
 
     return (
-        <div data-testid={testId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+        <PlotpointsColumn data-testid={testId}>
             {/* FLAT REWORK: square outline Button (radiusSm via the modular
                 Button's base frame) — was the 999px PlotpointsButton pill.
                 The sg-plot-toggle class hook keeps its hover treatment. */}
@@ -390,23 +291,15 @@ const PlotpointsWrapper: React.FC<{
                 style={{ marginBottom: 10, fontSize: theme.fontSize.base, fontWeight: 500 }}
             >
                 {open ? 'Hide' : 'Show'} Plot Points
-                <span style={{ fontSize: theme.fontSize.sm, color: theme.textFaint }}>({plotpoints.length})</span>
+                <PlotpointsCount>({plotpoints.length})</PlotpointsCount>
             </Button>
             {open && (
                 <PlotpointsList data-testid={`${testId}-body`} className="sg-fade-in">
-                    <ul
-                        style={{
-                            margin: 0,
-                            paddingLeft: 22,
-                            fontSize: theme.fontSize.body,
-                            color: theme.textMuted,
-                            lineHeight: 1.7
-                        }}
-                    >
+                    <PlotpointsOrderedList>
                         {plotpoints.map((pp: string, j: number) => (
                             <li key={j}>{pp}</li>
                         ))}
-                    </ul>
+                    </PlotpointsOrderedList>
                 </PlotpointsList>
             )}
             {/* Delete-chapter control — revealed together with the plotpoints
@@ -422,12 +315,12 @@ const PlotpointsWrapper: React.FC<{
                         data-testid={`${testId}-delete-chapter`}
                         title="Remove this chapter, its plotpoints, and all its revisions (later chapters renumber)"
                     >
-                        <TrashIcon />
+                        <DeleteOutlinedIcon style={ICON_STYLE} />
                         Delete Chapter
                     </Button>
                 </RemoveChapterRow>
             )}
-        </div>
+        </PlotpointsColumn>
     );
 };
 
@@ -463,6 +356,56 @@ const ChapterMeta: React.FC<{ chapter: any }> = ({ chapter }) => (
 // yet, the left side is empty and the right side still carries the expand/fork
 // actions so the user can trigger expansion. When expanded, a native <select>
 // dropdown lists the revisions (word count + generation time per option).
+// Sticky bar frame — position:sticky pins it to the top of the scroll
+// container (DashboardContent) while reading within a chapter. position:sticky
+// is bounded by the parent (ChapterCard) content box, so the bar scrolls away
+// once the chapter is scrolled past — it never escapes the chapter's box.
+// The opaque background layers the translucent sky surface over the solid
+// dashboard bg, reproducing the ChapterCard's effective sky-over-bg appearance
+// so content scrolling beneath the pinned bar stays hidden.
+// paddingTop/paddingBottom (not margins) keep the gaps above + below the bar
+// inside the opaque box, otherwise scrolling content would bleed through.
+const ChapterStickyBarFrame = styled('div', {
+    position: 'sticky' as const,
+    top: 0,
+    zIndex: 4,
+    paddingTop: 8,
+    paddingBottom: 12,
+    background: `linear-gradient(${theme.skySurface}, ${theme.skySurface}), ${theme.bg}`
+});
+
+// Sticky bar inner row — dropdown on the left, per-chapter actions right.
+const ChapterStickyBarRow = styled('div', {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    borderBottom: `1px solid ${theme.skyBorder}`,
+    paddingBottom: 8
+});
+
+// Revision dropdown — native <select> with the shared .sg-input class hook
+// (focus border swap lives in global.ts; the class must not be overridden by
+// conflicting properties here, so no border/background-color set inline).
+const RevisionSelect = styled('select', {
+    padding: '4px 10px',
+    fontSize: theme.fontSize.sm,
+    color: theme.text,
+    backgroundColor: theme.skySurface,
+    border: `1px solid ${theme.skyBorder}`,
+    borderRadius: theme.radiusMd,
+    cursor: 'pointer',
+    maxWidth: 320,
+    outline: 'none'
+});
+
+// Right-aligned per-chapter action group (re-expand / fork).
+const ChapterStickyBarActions = styled('div', {
+    marginLeft: 'auto',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4
+});
+
 const ChapterStickyBar: React.FC<{
     expanded: boolean;
     revisions: Array<{ content: string; wordCount: number; generationTimeMs: number }>;
@@ -487,52 +430,23 @@ const ChapterStickyBar: React.FC<{
     };
 
     return (
-        <div
-            data-testid={`${testId}-bar`}
-            style={{
-                position: 'sticky' as const,
-                top: 0,
-                zIndex: 4,
-                paddingTop: 8,
-                paddingBottom: 12,
-                background: `linear-gradient(${theme.surface2}, ${theme.surface2}), ${theme.bg}`
-            }}
-        >
-            <div
-                style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    borderBottom: `1px solid ${theme.border}`,
-                    paddingBottom: 8
-                }}
-            >
+        <ChapterStickyBarFrame data-testid={`${testId}-bar`}>
+            <ChapterStickyBarRow>
                 {/* Left: revision dropdown (only when the chapter is expanded
                     and has revisions). Left-aligned via natural flex order. */}
                 {expanded && revisions.length > 0 && (
-                    <select
+                    <RevisionSelect
                         value={activeIndex}
                         onChange={(e) => onSelect(Number(e.target.value))}
                         data-testid={`${testId}-select`}
                         className="sg-input"
-                        style={{
-                            padding: '4px 10px',
-                            fontSize: theme.fontSize.sm,
-                            color: theme.text,
-                            backgroundColor: theme.surface1,
-                            border: `1px solid ${theme.border}`,
-                            borderRadius: theme.radiusMd,
-                            cursor: 'pointer',
-                            maxWidth: 320,
-                            outline: 'none'
-                        }}
                     >
                         {revisions.map((rev, i) => (
                             <option key={i} value={i}>
                                 {formatOption(rev)}
                             </option>
                         ))}
-                    </select>
+                    </RevisionSelect>
                 )}
                 {/* Dropdown actions: sits right next to the dropdown (rewrite +
                     and the destructive delete-content button) before the
@@ -540,20 +454,58 @@ const ChapterStickyBar: React.FC<{
                 {dropdownActions}
                 {/* Right: per-chapter actions (re-expand / fork). marginLeft:auto
                     pushes them to the right edge of the bar. */}
-                <div
-                    style={{
-                        marginLeft: 'auto',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 4
-                    }}
-                >
-                    {actions}
-                </div>
-            </div>
-        </div>
+                <ChapterStickyBarActions>{actions}</ChapterStickyBarActions>
+            </ChapterStickyBarRow>
+        </ChapterStickyBarFrame>
     );
 };
+
+// Right-aligned footer label inside the append dialog ("Chapters").
+const FooterLabel = styled('label', {
+    color: theme.textMuted,
+    fontSize: theme.fontSize.md,
+    fontWeight: 500,
+    marginRight: 'auto'
+});
+
+// Story-stats chip — the modular Badge with the SKY tint family applied on
+// top (the stats row belongs to the content zone; see the ChapterCard note).
+// The style merge swaps the neutral periwinkle rail/surface for sky.
+const StatBadge: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <Badge
+        variant="neutral"
+        style={{
+            fontSize: theme.fontSize.base,
+            fontWeight: 500,
+            padding: '4px 12px',
+            gap: 8,
+            borderLeft: `2px solid ${theme.sky}`,
+            borderRight: `1px solid ${theme.skyBorder}`,
+            borderTop: `1px solid ${theme.skyBorder}`,
+            borderBottom: `1px solid ${theme.skyBorder}`,
+            background: theme.skySoft
+        }}
+    >
+        {children}
+    </Badge>
+);
+
+// Empty-chapters placeholder inside the chapter list.
+const EmptyChaptersHint = styled('div', {
+    color: theme.textFaint,
+    fontStyle: 'italic',
+    padding: '8px 0'
+});
+
+// Inline error banner for the selected story's last failed request.
+const ContentErrorBanner = styled('div', {
+    color: theme.danger,
+    fontSize: theme.fontSize.md,
+    padding: '8px 12px',
+    background: theme.dangerSoft,
+    border: `1px solid ${theme.dangerBorder}`,
+    borderRadius: theme.radiusMd
+});
 
 export const StoryContent: React.FC = React.memo(() => {
     const { store, setStore, touchStory } = useStoryStore();
@@ -1625,11 +1577,11 @@ export const StoryContent: React.FC = React.memo(() => {
             <PendingSubmitHint data-testid="content-pending-submit">
                 Enter a storyline and chapter count in the field below, then click
                 "Generate" to start generation for story{' '}
-                <code style={{ color: theme.accent }}>{selected.storyName || selected.storyId}</code>.
+                <HintCode>{selected.storyName || selected.storyId}</HintCode>.
                 {selected.error && (
-                    <div style={{ color: theme.danger, marginTop: 12 }}>
+                    <HintErrorLine>
                         Last error: {selected.error}
-                    </div>
+                    </HintErrorLine>
                 )}
             </PendingSubmitHint>
         );
@@ -1679,7 +1631,7 @@ export const StoryContent: React.FC = React.memo(() => {
                         }
                         style={{ fontSize: theme.fontSize.sm, fontWeight: 600, padding: '3px 10px' }}
                     >
-                        <StopIcon />
+                        <StopIcon style={{ ...ICON_STYLE, fontSize: 12 }} />
                         {terminateState.isSubmitting ? 'Terminating…' : 'Terminate'}
                     </Button>
                 </ProgressBanner>
@@ -1693,31 +1645,31 @@ export const StoryContent: React.FC = React.memo(() => {
             {statChapters > 0 && (
                 <StatsBar data-testid="story-stats">
                     <span data-testid="stat-chapters">
-                        <Badge variant="neutral" style={{ fontSize: theme.fontSize.base, fontWeight: 500, padding: '4px 12px', gap: 8 }}>
+                        <StatBadge>
                             <span style={{ color: theme.textMuted, fontWeight: 500 }}>Chapters</span>
                             <span>{statChapters}</span>
-                        </Badge>
+                        </StatBadge>
                     </span>
                     <span data-testid="stat-words">
-                        <Badge variant="neutral" style={{ fontSize: theme.fontSize.base, fontWeight: 500, padding: '4px 12px', gap: 8 }}>
+                        <StatBadge>
                             <span style={{ color: theme.textMuted, fontWeight: 500 }}>Words</span>
                             <span>{statWords.toLocaleString('en-US')}</span>
-                        </Badge>
+                        </StatBadge>
                     </span>
                     <span data-testid="stat-tokens">
-                        <Badge variant="neutral" style={{ fontSize: theme.fontSize.base, fontWeight: 500, padding: '4px 12px', gap: 8 }}>
+                        <StatBadge>
                             <span style={{ color: theme.textMuted, fontWeight: 500 }}>Tokens (est.)</span>
                             <span>~{statTokens.toLocaleString('en-US')}</span>
-                        </Badge>
+                        </StatBadge>
                     </span>
                 </StatsBar>
             )}
 
             <ChapterListContainer data-testid="chapters-list">
                 {data.chapters.length === 0 && (
-                    <div style={{ color: theme.textFaint, fontStyle: 'italic', padding: '8px 0' }}>
+                    <EmptyChaptersHint>
                         {selected.isProcessing ? 'Waiting for the first chapter…' : 'No chapters yet.'}
-                    </div>
+                    </EmptyChaptersHint>
                 )}
                 {data.chapters.map((ch, i) => (
                     <Collapsible
@@ -1766,7 +1718,7 @@ export const StoryContent: React.FC = React.memo(() => {
                                             title="Rewrite chapter with custom context"
                                             data-testid={`chapter-${i}-rewrite`}
                                         >
-                                            <RewriteIcon />
+                                            <AddIcon style={ICON_STYLE} />
                                         </IconButton>
                                         {/* Delete revision button — sits next to the rewrite [+].
                                             Only rendered for expanded chapters (a pending chapter
@@ -1788,7 +1740,7 @@ export const StoryContent: React.FC = React.memo(() => {
                                                 title="Delete the selected revision of this chapter"
                                                 data-testid={`chapter-${i}-delete`}
                                             >
-                                                <TrashIcon />
+                                                <DeleteOutlinedIcon style={ICON_STYLE} />
                                             </IconButton>
                                         )}
                                     </>
@@ -1810,14 +1762,14 @@ export const StoryContent: React.FC = React.memo(() => {
                                             }
                                             data-testid={`chapter-${i}-reexpand`}
                                         >
-                                            <RefreshIcon />
+                                            <RefreshIcon style={ICON_STYLE} />
                                         </IconButton>
                                         <IconButton
                                             onClick={() => handleFork(ch.chapterIndex)}
                                             title="Fork from this chapter"
                                             data-testid={`chapter-${i}-fork`}
                                         >
-                                            <ForkIcon />
+                                            <ForkRightIcon style={ICON_STYLE} />
                                         </IconButton>
                                     </>
                                 }
@@ -1841,19 +1793,9 @@ export const StoryContent: React.FC = React.memo(() => {
             </ChapterListContainer>
 
             {selected.error && (
-                <div
-                    style={{
-                        color: theme.danger,
-                        fontSize: theme.fontSize.md,
-                        padding: '8px 12px',
-                        background: theme.dangerSoft,
-                        border: `1px solid ${theme.dangerBorder}`,
-                        borderRadius: theme.radiusMd
-                    }}
-                    data-testid="content-error"
-                >
+                <ContentErrorBanner data-testid="content-error">
                     Error: {selected.error}
-                </div>
+                </ContentErrorBanner>
             )}
 
             {/* Action bar — pinned bottom-right. Collapse-all closes every
@@ -1874,7 +1816,7 @@ export const StoryContent: React.FC = React.memo(() => {
                             data-testid="collapse-all-button"
                             title="Collapse all chapters"
                         >
-                            <CollapseAllIcon />
+                            <UnfoldLessIcon style={ICON_STYLE} />
                         </Button>
                     )}
                     {canResume && (
@@ -1889,7 +1831,7 @@ export const StoryContent: React.FC = React.memo(() => {
                                     : `Resume plotline generation (${data.chapters.length}/${resumeTarget} chapters)`
                             }
                         >
-                            <ResumeIcon />
+                            <PlayArrowIcon style={ICON_STYLE} />
                         </Button>
                     )}
                     {hasChapters && (
@@ -1899,7 +1841,7 @@ export const StoryContent: React.FC = React.memo(() => {
                             data-testid="extend-plotpoints-button"
                             title={`Append ${appendState.chapterCount} new chapters to this story`}
                         >
-                            <ExtendIcon />
+                            <EastIcon style={ICON_STYLE} />
                         </Button>
                     )}
                 </ActionBar>
@@ -1998,12 +1940,7 @@ export const StoryContent: React.FC = React.memo(() => {
                     )}
                 </Dialog.Body>
                 <Dialog.Footer>
-                    <label
-                        htmlFor="append-count"
-                        style={{ color: theme.textMuted, fontSize: theme.fontSize.md, fontWeight: 500, marginRight: 'auto' }}
-                    >
-                        Chapters
-                    </label>
+                    <FooterLabel htmlFor="append-count">Chapters</FooterLabel>
                     <NumberInput
                         id="append-count"
                         min={1}

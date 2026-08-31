@@ -36,18 +36,20 @@ export const DashboardShell = styled('div', {
 // Header row — pinned at the top, minimal. Contains the sidebar toggle icon
 // and an optional title. Flat Design: a solid surface block separated from the
 // body by a crisp hairline border (no gradient, blur, or shadow).
+// App chrome uses the VIOLET tint family (styles/theme.ts) so the chrome zones
+// read as a distinct hue layer next to the periwinkle tiles and sky cards.
 export const DashboardHeader = styled('div', {
     display: 'flex',
     flexDirection: 'row',
     alignItems: 'center',
     flex: '0 0 auto',
     padding: '8px 14px',
-    borderBottom: `1px solid ${theme.border}`,
+    borderBottom: `1px solid ${theme.violetBorder}`,
     gap: 10,
     minHeight: 48,
     // Flat solid surface — slightly raised from the dashboard bg via a solid
     // block rather than a gradient. No backdrop blur, no shadow.
-    backgroundColor: theme.surface1
+    backgroundColor: theme.violetSoft
 });
 
 // Middle row: sidebar + main content, side by side.
@@ -60,15 +62,17 @@ export const DashboardBody = styled('div', {
 
 // Sidebar panel — fixed width when open, zero when collapsed.
 // CSS transition on width gives a smooth slide animation.
-// Width is controlled via inline style (the vendored styled() helper doesn't
-// support function values — see src/styles/styled.tsx:15).
+// Width is controlled via inline style (a genuinely dynamic value that rides
+// the open/close transition — merged on top of the styledComponent class, see
+// src/styles/styled.tsx).
 //
 // Flat Design: a solid surface block + 1px right hairline. No shadow.
+// Sidebar panel fill = violet chrome (see the header note).
 const DashboardSidebarPanel = styled('div', {
     flex: '0 0 auto',
     overflow: 'hidden',
     transition: `width ${theme.transitionSlow}, min-width ${theme.transitionSlow}, max-width ${theme.transitionSlow}, border-color ${theme.transitionSlow}`,
-    backgroundColor: theme.surface1,
+    backgroundColor: theme.violetSoft,
     boxSizing: 'border-box' as const
 });
 
@@ -98,15 +102,17 @@ const SidebarOverlay = styled('div', {
 
 // Footer row — pinned at the bottom. Used by the story-input feature.
 // Flat Design: solid surface block + top hairline border separates it from the
-// content above. No gradient, no blur, no upward shadow.
+// content above. No gradient, no blur, no upward shadow. Violet chrome fill
+// (see the header note); padding kept tight (10px) so the collapsed 1-row
+// input bar hugs the window edge without dead space.
 export const DashboardFooter = styled('div', {
     display: 'flex',
     flexDirection: 'column',
     flex: '0 0 auto',
-    padding: 14,
-    borderTop: `1px solid ${theme.border}`,
+    padding: 10,
+    borderTop: `1px solid ${theme.violetBorder}`,
     gap: 8,
-    backgroundColor: theme.surface1
+    backgroundColor: theme.violetSoft
 });
 
 // Composed dashboard. Accepts slots for header controls, sidebar content,
@@ -146,10 +152,10 @@ export const Dashboard: React.FC<DashboardProps> = React.memo(
                     {headerControls}
                 </DashboardHeader>
                 <DashboardBody>
-                    {/* Sidebar width is dynamic — controlled via inline style since
-                        the vendored styled() helper doesn't support function values.
-                        Width 12.5rem when open / 0 when closed is part of the public test
-                        contract (App.test.tsx:64). */}
+                    {/* Sidebar width is dynamic — passed as a merged inline style
+                        on top of the styledComponent class. Width 12.5rem when
+                        open / 0 when closed is part of the public test contract
+                        (App.test.tsx:64). */}
                     <DashboardSidebarPanel
                         data-testid="sidebar-panel"
                         className="sg-scroll"

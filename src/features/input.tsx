@@ -14,14 +14,17 @@
 // a story. This replaces the previous "Add button → fill form → Generate" flow.
 //
 // Moved from the old src/components/sections/SectionStoryInput — the feature
-// owns the form's submit/PATCH business logic. The count field now uses the
-// modular NumberInput (components/Input.tsx).
+// owns the form's submit/PATCH business logic. The form fields are Material UI:
+// the storyline is a MUI TextField (multiline) and the count field uses the
+// modular NumberInput (components/Input.tsx, MUI TextField-backed); Generate is
+// the modular primary Button (components/Button.tsx, MUI Button-backed).
 
 import React from 'react';
+import { TextField } from '@mui/material';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
 import { createNewStory } from '../api';
-import { NumberInput } from '../components';
+import { Button, NumberInput } from '../components';
 
 // Footer wrapper — always rendered, shrinks when unfocused.
 const FooterColumn = styled('div', {
@@ -30,26 +33,36 @@ const FooterColumn = styled('div', {
     width: '100%'
 });
 
-// Multi-line textarea for the storyline.
-// When unfocused, collapses to a single-line bar (minHeight:36, one row).
-// When focused, expands to full multi-line editing area (minHeight:60).
-// transition provides a smooth visual cue for the size change.
-// Modern: focus ring (sg-input) + accent-tinted background, slightly larger
-// radius so the field reads as a primary input surface.
-const StorylineTextarea = styled('textarea', {
+// Multi-line MUI TextField for the storyline.
+// The wrapper div (in the render below) controls the focus-driven collapse:
+// when unfocused the field is a single-line bar (minHeight 36, one row);
+// when focused it expands to the full multi-line editing area (minHeight 200).
+// The flat field frame mirrors the modular fields in components/Input.tsx.
+// NOTE: sx numbers are SPACING-MAPPED in MUI (10 → 80px!) — every padding/
+// margin/gap here is an explicit px string to keep the flat frame exact.
+const STORYLINE_FIELD_SX = {
     width: '100%',
-    resize: 'vertical',
-    padding: 10,
-    borderRadius: theme.radiusMd,
-    border: `1px solid ${theme.borderStrong}`,
-    backgroundColor: theme.surface1,
-    color: theme.text,
-    fontFamily: theme.fontSans,
-    fontSize: theme.fontSize.body,
-    lineHeight: 1.5,
-    boxSizing: 'border-box',
-    transition: `min-height ${theme.transition}, border-color ${theme.transition}, background-color ${theme.transition}`
-});
+    '& .MuiOutlinedInput-root': {
+        // Zero the MUI multiline root padding — the field's inset is owned by
+        // the input rule below (MUI's multiline root adds 16.5px 14px ON TOP
+        // of the input padding, which doubled the visual padding).
+        padding: '0',
+        backgroundColor: theme.surface1,
+        color: theme.text,
+        borderRadius: `${theme.radiusMd}px`,
+        fontFamily: theme.fontSans,
+        fontSize: theme.fontSize.body
+    },
+    '& .MuiOutlinedInput-notchedOutline': {
+        borderColor: theme.borderStrong
+    },
+    // No `resize` — MUI multiline fields size themselves via `rows`, and the
+    // browser's resize grip renders as a light square that breaks the theme.
+    '& .MuiInputBase-input': {
+        padding: '10px 12px',
+        lineHeight: 1.5
+    }
+};
 
 // Horizontal control row: chapter-count input on the left, Generate button on right.
 // Hidden when the input area is not focused to reduce visual clutter.
@@ -61,20 +74,11 @@ const ControlRow = styled('div', {
     flexWrap: 'wrap'
 });
 
-// Primary action button — flat solid accent fill. Hover swaps to a brighter
-// solid via the `sg-primary` class hook (global.ts). Flat: no gradient, no
-// shadow, no translate-on-hover.
-const GenerateButton = styled('button', {
-    padding: '9px 20px',
-    borderRadius: theme.radiusMd,
-    border: 'none',
-    backgroundColor: theme.accent,
-    color: theme.highlight,
-    fontSize: theme.fontSize.body,
-    fontWeight: 600,
-    cursor: 'pointer',
-    flex: '0 0 auto',
-    transition: `background-color ${theme.transition}`
+// The "Chapters" label for the chapter-count field.
+const ChaptersLabel = styled('label', {
+    color: theme.textMuted,
+    fontSize: theme.fontSize.md,
+    fontWeight: 500
 });
 
 // Error message line under the form.
@@ -232,28 +236,41 @@ export const StoryInput: React.FC = React.memo(() => {
                 onBlur={handleFocusOut}
                 style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}
             >
-                {/* Wrapper div controls minHeight to avoid passing `style` to the
-                    styled StorylineTextarea — the vendored styled() helper applies
-                    styles via React.createElement(Tag, { style, ...rest }) so a
-                    consumer `style` prop overwrites the static styles entirely.
-                    When focused, minHeight = 10 rows (~200px). */}
+                {/* Wrapper div controls the focus-driven minHeight (a genuinely
+                    dynamic value). When focused, minHeight = 10 rows (~200px). */}
                 <div style={{ minHeight: isFocused ? 200 : 36, transition: `min-height ${theme.transition}` }}>
-                    <StorylineTextarea
-                        data-testid="storyline-input"
-                        className="sg-input"
+                    {/* MUI multiline TextField — data-testid lands on the native
+                        textarea via slotProps.htmlInput so the tests can focus/
+                        change it directly (getByTestId('storyline-input')).
+
+                        COLLAPSED = EMPTY: the collapsed single-line bar renders
+                        NOTHING but the placeholder — the selected story's
+                        storyline (auto-populated into `storyline` for the
+                        Generate prefills) is noise in a 1-row strip that can't
+                        show it. The value fills in the moment the field
+                        expands (focus flips isFocused), and any in-progress
+                        draft survives the collapse/expand cycle because only
+                        the DISPLAY is gated, never the state. */}
+                    <TextField
+                        variant="outlined"
+                        fullWidth
+                        multiline
+                        sx={STORYLINE_FIELD_SX}
                         rows={isFocused ? 10 : 1}
                         placeholder="Storyline — e.g. A sci-fi adventure about a crew discovering an ancient alien artifact on Mars."
-                        value={storyline}
+                        value={isFocused ? storyline : ''}
                         onChange={(e) => setStoryline(e.target.value)}
                         disabled={isSubmitting}
+                        slotProps={{ htmlInput: { 'data-testid': 'storyline-input', className: 'sg-input' } }}
                     />
                 </div>
-                {/* Controls only visible when the input area is in focus. */}
+                {/* Controls only visible when the input area is in focus:
+                    chapter-count on the LEFT, Generate pinned to the FAR
+                    RIGHT (marginLeft: auto), any validation error inline
+                    after the count field. */}
                 {isFocused && (
                     <ControlRow>
-                        <label htmlFor="chapter-count" style={{ color: theme.textMuted, fontSize: theme.fontSize.md, fontWeight: 500 }}>
-                            Chapters
-                        </label>
+                        <ChaptersLabel htmlFor="chapter-count">Chapters</ChaptersLabel>
                         <NumberInput
                             id="chapter-count"
                             min={1}
@@ -262,15 +279,20 @@ export const StoryInput: React.FC = React.memo(() => {
                             disabled={isSubmitting}
                             data-testid="chapter-count-input"
                         />
-                        <GenerateButton
+                        {error && <ErrorLine data-testid="input-error">{error}</ErrorLine>}
+                        {/* Generate — the modular MUI-backed primary Button
+                            (solid accent fill; the sg-primary hook drives the
+                            hover swap). marginLeft auto pushes it to the row's
+                            right edge. */}
+                        <Button
+                            variant="primary"
                             onClick={onSubmit}
                             disabled={isSubmitting}
                             data-testid="generate-button"
-                            className="sg-primary"
+                            style={{ marginLeft: 'auto' }}
                         >
                             {isSubmitting ? 'Generating…' : 'Generate'}
-                        </GenerateButton>
-                        {error && <ErrorLine data-testid="input-error">{error}</ErrorLine>}
+                        </Button>
                     </ControlRow>
                 )}
             </div>

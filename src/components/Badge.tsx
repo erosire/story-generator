@@ -2,6 +2,13 @@
 // per-feature pill implementations (JobCountBadge / Badge / BadgeActive /
 // StatChip / ChapterMeta were each styled locally with 999px pill radii).
 //
+// DELIBERATE CUSTOM COMPONENT (not MUI Chip): the interactive controls are all
+// Material UI (components/Button.tsx, Dialog.tsx, Input.tsx, Collapsible.tsx),
+// but this chip's signature is its 2px left STATUS RAIL — a display element
+// MUI's Chip cannot express without the exact same custom styling. Swapping to
+// <Chip> would trade the design language for a generic pill, so the chip stays
+// hand-rolled on a plain <span>.
+//
 // FLAT REWORK: badges are no longer pills. The flat chip is a SQUARE tag:
 //   - 2px corner radius (theme.radiusSm) — reads as a crisp block, not a bubble
 //   - a 2px solid accent EDGE on the left as the status marker — the flat
@@ -15,10 +22,11 @@
 // theme tokens.
 //
 // NOTE: the chip is a PLAIN <span> with a merged style object, NOT a styled()
-// piece — the vendored styled() (src/styles/styled.tsx:47) lets a consumer
-// `style` prop fully REPLACE the static style object, which would wipe the
-// frame (border-radius/padding/typography) whenever a caller passes an
-// override. Merging here keeps the frame intact under any override.
+// piece — the frame is deliberately constructed from plain React.CSSProperties
+// objects so a consumer `style` prop MERGES on top without ever risking the
+// frame (this predates the @presource/react-backed styled() in ../styles/
+// styled.tsx, which also merges, but the explicit merge keeps the variant →
+// edge/color math obvious).
 //
 // Cross-refs: src/styles/theme.ts (tokens), .sg-spinner ring (global.ts) can
 // still be rendered INSIDE via children (the processing chip does this).

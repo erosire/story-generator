@@ -58,6 +58,10 @@
 // feature (owns the sort/filter/refresh business logic + store access).
 
 import React from 'react';
+// Material UI close glyph, icon button, button base + text field — the tile
+// delete control, story tiles, and the real-time search field.
+import CloseIcon from '@mui/icons-material/Close';
+import { TextField, IconButton, ButtonBase } from '@mui/material';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
 import { fetchStoryList } from '../api';
@@ -101,25 +105,44 @@ const SectionLabel = styled('div', {
     letterSpacing: 1.2
 });
 
-// Real-time search input below the "Stories" header. Filters the tile list
+// Real-time search field below the "Stories" header. Filters the tile list
 // as the user types (see the SEARCH note in the file header: the filter never
-// mutates `records`). Two class hooks do the pseudo-selector work the vendored
-// styled() cannot express inline (see src/styles/styled.tsx):
+// mutates `records`). Built on the Material UI TextField with the flat field
+// frame; two class hooks carry the pseudo-selector styling on the native
+// input element (see src/styles/styled.tsx):
 //   - "sg-input"  — flat focus treatment (accent border swap, no glow)
 //   - "sg-search" — placeholder color (styles/global.ts)
-const SearchInput = styled('input', {
-    display: 'block',
-    boxSizing: 'border-box' as const,
-    width: 'calc(100% - 20px)',
-    margin: '0 10px 8px',
-    padding: '6px 10px',
-    borderRadius: theme.radiusSm,
-    border: `1px solid ${theme.border}`,
-    background: theme.surface1,
-    color: theme.text,
-    fontSize: theme.fontSize.sm,
-    fontFamily: 'inherit'
-});
+const SearchField: React.FC<React.ComponentProps<typeof TextField>> = ({ sx, ...rest }) => (
+    <TextField
+        variant="outlined"
+        fullWidth
+        sx={{
+            // Inset the field between the sidebar's edges.
+            margin: '0 10px 8px',
+            width: 'calc(100% - 20px)',
+            display: 'block',
+            // Zero MUI's multiline/outlined root padding — the input rule
+            // below owns the inset (otherwise they stack: 16.5px + 6px).
+            '& .MuiOutlinedInput-root': {
+                padding: '0',
+                backgroundColor: theme.surface1,
+                color: theme.text,
+                borderRadius: `${theme.radiusSm}px`,
+                fontFamily: 'inherit',
+                fontSize: theme.fontSize.sm
+            },
+            '& .MuiOutlinedInput-notchedOutline': {
+                borderColor: theme.border
+            },
+            '& .MuiInputBase-input': {
+                padding: '6px 10px',
+                lineHeight: 1.5
+            },
+            ...sx
+        }}
+        {...rest}
+    />
+);
 
 // Message shown when the search query matches nothing (distinct from the
 // "No stories yet" empty state, which only renders when records are empty).
@@ -153,30 +176,54 @@ const StoryEntry = styled('div', {
 // (global.ts) on unselected tiles only — the selected tile uses its own
 // accent treatment below.
 //
-// The element stays a <button> (with data-testid/aria-pressed) — that is part
-// of the public test contract (App.test.tsx finds tabs via
-// getByRole('button')). Only the presentation is tiled.
-const StoryItem = styled('button', {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    gap: 7,
-    width: '100%',
-    // Deep right padding keeps the title/badges from sliding under the "x"
-    // delete control overlaid in the tile's top-right corner.
-    padding: '11px 30px 11px 12px',
-    border: `1px solid ${theme.border}`,
-    borderRadius: theme.radiusLg,
-    backgroundColor: theme.surface2,
-    color: theme.text,
-    cursor: 'pointer',
-    textAlign: 'left' as const,
-    fontSize: theme.fontSize.md,
-    fontWeight: 500,
-    lineHeight: 1.35,
-    boxSizing: 'border-box' as const,
-    transition: `background-color ${theme.transition}, border-color ${theme.transition}, color ${theme.transition}`
-});
+// Built on the Material UI ButtonBase (the MUI primitive for custom toggles)
+// with the flat card frame in sx. The element stays a <button> (with
+// data-testid/aria-pressed) — that is part of the public test contract
+// (App.test.tsx finds tabs via getByRole('button')). Only the presentation is
+// tiled. NOTE: the sx base colors deliberately MATCH the .sg-story-* class
+// rules (global.ts) — the hooks carry the hover/pulse/rail treatments at
+// higher specificity, and matching base values make the cascade deterministic
+// regardless of Emotion insertion order.
+const TileButton: React.FC<React.ComponentProps<typeof ButtonBase>> = ({ sx, ...rest }) => (
+    <ButtonBase
+        type="button"
+        disableRipple
+        {...rest}
+        sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-start',
+            justifyContent: 'flex-start',
+            gap: '7px',
+            width: '100%',
+            textAlign: 'left',
+            cursor: 'pointer',
+            lineHeight: 1.35,
+            boxSizing: 'border-box',
+            transition: `background-color ${theme.transition}, border-color ${theme.transition}, color ${theme.transition}`,
+            ...sx
+        }}
+    />
+);
+
+// Unselected tile frame — surface2 card + hairline border.
+const StoryItem: React.FC<React.ComponentProps<typeof ButtonBase>> = ({ sx, ...rest }) => (
+    <TileButton
+        {...rest}
+        sx={{
+            // Deep right padding keeps the title/badges from sliding under the
+            // "x" delete control overlaid in the tile's top-right corner.
+            padding: '11px 30px 11px 12px',
+            border: `1px solid ${theme.border}`,
+            borderRadius: `${theme.radiusLg}px`,
+            backgroundColor: theme.surface2,
+            color: theme.text,
+            fontSize: theme.fontSize.md,
+            fontWeight: 500,
+            ...sx
+        }}
+    />
+);
 
 // Selected variant — modern "active card" treatment. Instead of the old solid
 // accent FILL, the selected tile is an accent-tinted translucent surface with
@@ -184,36 +231,30 @@ const StoryItem = styled('button', {
 // `sg-story-selected` class hook (global.ts ::before). Flat: no gradient, no
 // glow, no shadow — the card reads as the current pick purely through tint +
 // border + rail.
-//
-// Using a dedicated styled button (not StoryItem + inline override) keeps the
-// selected tile's typography, padding, and weight consistent with itself.
-const StoryItemSelected = styled('button', {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    gap: 7,
-    width: '100%',
-    // Deep right padding so title/badges never slide under the overlaid "x"
-    // delete control; slightly deeper left padding leaves room for the accent
-    // rail drawn inside the left border by .sg-story-selected::before.
-    padding: '11px 30px 11px 16px',
-    border: `1px solid ${theme.accent}`,
-    borderRadius: theme.radiusLg,
-    cursor: 'pointer',
-    textAlign: 'left' as const,
-    fontSize: theme.fontSize.md,
-    fontWeight: 600,
-    lineHeight: 1.35,
-    boxSizing: 'border-box' as const,
-    // Inline background is set to the accent-tinted surface so the tile
-    // renders correctly even if the global stylesheet hasn't been injected
-    // yet (eg. during SSR). The .sg-story-selected class sets the same
-    // background; both agree.
-    backgroundColor: theme.accentSoft,
-    color: theme.highlight,
-    // Flat: no shadow. The accent border + rail supply the visual emphasis.
-    transition: `background-color ${theme.transition}, border-color ${theme.transition}, color ${theme.transition}`
-});
+const StoryItemSelected: React.FC<React.ComponentProps<typeof ButtonBase>> = ({ sx, ...rest }) => (
+    <TileButton
+        {...rest}
+        sx={{
+            // Deep right padding so title/badges never slide under the
+            // overlaid "x" delete control; slightly deeper left padding leaves
+            // room for the accent rail drawn inside the left border by
+            // .sg-story-selected::before.
+            padding: '11px 30px 11px 16px',
+            border: `1px solid ${theme.accent}`,
+            borderRadius: `${theme.radiusLg}px`,
+            // The .sg-story-selected class sets the same surface/border/color;
+            // both agree (see the TileButton cascade note).
+            backgroundColor: theme.accentSoft,
+            borderColor: theme.accent,
+            color: theme.highlight,
+            position: 'relative',
+            overflow: 'hidden',
+            fontSize: theme.fontSize.md,
+            fontWeight: 600,
+            ...sx
+        }}
+    />
+);
 
 // Second row inside a tile — holds the status badges (chapter count,
 // processing indicator) as a horizontal chip cluster under the title.
@@ -236,27 +277,33 @@ const StoryTileMeta = styled('span', {
 // The "x" delete control: absolutely pinned to the top-right corner of a story
 // tile (StoryEntry is its positioning context). It is a SIBLING of the select
 // button inside the entry — not nested in it — so clicking the x deletes the
-// story without triggering its selection. Muted by default, reusing the
-// `sg-danger` class hook (global.ts) for destructive hover + disabled dimming.
-const StoryDeleteButton = styled('button', {
-    position: 'absolute',
-    top: 9,
-    right: 9,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 22,
-    minHeight: 22,
-    padding: 0,
-    border: 'none',
-    borderRadius: theme.radiusSm,
-    backgroundColor: 'transparent',
-    color: theme.textMuted,
-    cursor: 'pointer',
-    fontSize: '14px',
-    lineHeight: 1,
-    transition: `background-color ${theme.transition}, color ${theme.transition}, opacity ${theme.transition}`
-});
+// story without triggering its selection. Built on the Material UI IconButton
+// (22×22 square, muted by default), reusing the `sg-danger` class hook
+// (global.ts, specificity above the sx base) for destructive hover + disabled
+// dimming.
+const StoryDeleteButton: React.FC<React.ComponentProps<typeof IconButton>> = ({ sx, ...rest }) => (
+    <IconButton
+        disableRipple
+        {...rest}
+        sx={{
+            position: 'absolute',
+            top: '9px',
+            right: '9px',
+            width: 22,
+            height: 22,
+            minWidth: 0,
+            minHeight: 0,
+            padding: 0,
+            borderRadius: `${theme.radiusSm}px`,
+            backgroundColor: 'transparent',
+            color: theme.textMuted,
+            fontSize: '14px',
+            lineHeight: 1,
+            transition: `background-color ${theme.transition}, color ${theme.transition}, opacity ${theme.transition}`,
+            ...sx
+        }}
+    />
+);
 
 // Title text — first row of the tile. Spans the tile's full (padded) width
 // and truncates with an ellipsis if too long.
@@ -276,6 +323,21 @@ const EmptyMessage = styled('div', {
     fontSize: theme.fontSize.md,
     fontStyle: 'italic',
     lineHeight: 1.5
+});
+
+// Load-warning chip — shown if the bootstrap or auto-refresh failed. Flat
+// warning-tinted surface with an ellipsized single-line message.
+const LoadWarning = styled('div', {
+    fontSize: theme.fontSize.sm,
+    color: theme.warning,
+    background: theme.warningSoft,
+    border: `1px solid ${theme.warningBorder}`,
+    padding: '6px 10px',
+    margin: '10px 10px 0',
+    borderRadius: theme.radiusSm,
+    whiteSpace: 'nowrap' as const,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
 });
 
 export const StorySidebar: React.FC = React.memo(() => {
@@ -424,19 +486,20 @@ export const StorySidebar: React.FC = React.memo(() => {
                 )}
             </SectionLabel>
             {/* Real-time search — filters the tiles below as the user types.
-                Controlled input: value mirrors the local `search` state and
+                Controlled field: value mirrors the local `search` state and
                 onChange lowercases nothing (matching is case-insensitive at
                 compare time via searchQuery). type="search" gives the native
                 clear affordance in some browsers; aria-label keeps it usable
-                for screen readers since the input carries no visible label. */}
-            <SearchInput
-                data-testid="sidebar-search"
-                className="sg-input sg-search"
+                for screen readers since the field carries no visible label.
+                data-testid lands on the NATIVE input via slotProps.htmlInput
+                (the tests read/change it directly). */}
+            <SearchField
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search stories…"
                 aria-label="Search stories by title"
+                slotProps={{ htmlInput: { 'data-testid': 'sidebar-search', className: 'sg-input sg-search' } }}
             />
             {records.length === 0 && (
                 <EmptyMessage data-testid="sidebar-empty">
@@ -553,31 +616,19 @@ export const StorySidebar: React.FC = React.memo(() => {
                             title={`Delete story ${entry.title}`}
                             data-testid={`story-delete-${entry.storyId}`}
                         >
-                            ×
-                        </StoryDeleteButton>
+                        <CloseIcon style={{ fontSize: 14, display: 'block' }} />
+                    </StoryDeleteButton>
                     </StoryEntry>
                 );
             })}
             {/* Load warning — shown if the bootstrap or auto-refresh failed. */}
             {store.loadWarning && (
-                <div
+                <LoadWarning
                     data-testid="load-warning"
                     title={store.loadWarning}
-                    style={{
-                        fontSize: theme.fontSize.sm,
-                        color: theme.warning,
-                        background: theme.warningSoft,
-                        border: `1px solid ${theme.warningBorder}`,
-                        padding: '6px 10px',
-                        margin: '10px 10px 0',
-                        borderRadius: theme.radiusSm,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                    }}
                 >
                     ⚠ {store.loadWarning}
-                </div>
+                </LoadWarning>
             )}
         </SidebarContainer>
     );

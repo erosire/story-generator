@@ -1,11 +1,13 @@
 // Global stylesheet for the story generator dashboard.
 //
-// The vendored styled() helper (src/styles/styled.tsx:38) only applies a
-// static inline style object — it cannot express `:hover`, `:focus`, keyframe
-// animations, or any pseudo-selector. Modern UI requires those for tactile
-// hover/focus feedback. This stylesheet is injected once at boot via
-// main.tsx and uses a small set of class hooks that the styled components
-// attach (via the `className` prop, which styled() forwards through `...rest`).
+// The styled() factory (src/styles/styled.tsx, backed by @presource/react's
+// styledComponent) emits styles as Emotion CLASSES — it cannot express
+// `:hover`, `:focus`, keyframes, or any pseudo-selector by itself. This
+// stylesheet is injected once at boot via main.tsx and uses a small set of
+// class hooks that the styled components attach (via the `className` prop,
+// which forwards through to the DOM element). Pseudo-class rules here carry
+// higher specificity than the single-class Emotion rules, so hover/focus
+// states reliably override the base class styles.
 //
 // All colors reference the same tokens as src/styles/theme.ts so the visual
 // style stays consistent. Keep this file in sync with theme.ts if you retune
@@ -62,14 +64,14 @@ const sheet = `
 .sg-input:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Header client dropdown — themed entirely via class hooks so the hover/focus
-   states actually apply. (Inline "style" from styled() outranks every class
-   rule, so colors that lived inline made the sg-hover/sg-input states dead
-   code — they could never override the inline background/border.) The control
-   uses an OPAQUE dark surface + light text: some browsers/webviews ignore
-   the color-scheme hint, and a translucent background then composites over
-   the UA's white control base -> white control with unreadable text. Opaque
-   colors are immune to that. colorScheme:"dark" remains inline on the element
-   (StoryGeneratorApp ClientSelect) for the UA-drawn options popup.
+   states actually apply. (The dropdown's Emotion class deliberately carries
+   NO color/background/border — conflicting properties would fight these
+   .sg-select rules at equal specificity.) The control uses an OPAQUE dark
+   surface + light text: some browsers/webviews ignore the color-scheme hint,
+   and a translucent background then composites over the UA's white control
+   base -> white control with unreadable text. Opaque colors are immune to
+   that. colorScheme:"dark" remains INLINE on the element (feature/header.tsx
+   ClientSelect) for the UA-drawn options popup.
    NOTE: these rules sit AFTER .sg-input:focus above so, at equal specificity,
    the opaque focus treatment here wins for the select. */
 .sg-select {
@@ -191,10 +193,9 @@ const sheet = `
 /* Collapsible header — flat hover surface swap. */
 .sg-collapse-header:hover { background-color: ${theme.surface2}; }
 
-/* Sidebar search input — placeholder colored via the pseudo-selector that
-   inline styles cannot express (see src/styles/styled.tsx note). The focus
-   treatment is the shared .sg-input flat swap (accent border, no glow); this
-   rule only pins the placeholder to the dimmest text token. */
+/* Sidebar search input — placeholder colored via the pseudo-selector. The
+   focus treatment is the shared .sg-input flat swap (accent border, no glow);
+   this rule only pins the placeholder to the dimmest text token. */
 .sg-search::placeholder { color: ${theme.textFaint}; }
 
 /* Plotpoints toggle — flat hover, surface + text color swap. */
@@ -211,7 +212,7 @@ const sheet = `
     display: inline-block;
     width: 10px;
     height: 10px;
-    border: 2px solid rgba(129, 140, 248, 0.30);
+    border: 2px solid rgba(124, 140, 255, 0.30);
     border-top-color: ${theme.accent};
     border-radius: 50%;
     animation: sg-spin 700ms linear infinite;

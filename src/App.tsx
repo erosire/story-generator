@@ -19,21 +19,18 @@
 // Default open on desktop (≥768px), default closed on mobile (<768px).
 
 import React from 'react';
-import { styled, theme } from './styles';
+// FullScreen — the @react/headless viewport-locked layout primitive
+// (packages/react/headless/components/layout/screen.tsx): position:absolute,
+// 100%×100% pinned to top/left 0. The dashboard's own surface treatment
+// (background, overflow clipping) is merged on top via the style prop.
+import { FullScreen } from '@react/headless';
+// Material UI theming — every MUI component (buttons, text fields, dialogs)
+// resolves its internal styling (focus rings, disabled states, dialog paper)
+// against this token-mapped dark theme.
+import { ThemeProvider } from '@mui/material';
+import { muiTheme, styled, theme } from './styles';
 import { StoryStoreProvider, type StoryStore } from './context';
 import { BootstrapLayer, Dashboard, HeaderControls, StorySidebar, StoryContent, StoryInput } from './features';
-
-// Full-bleed container that forces the dashboard to fill the viewport.
-// Flat Design: a single solid near-black surface — no vignette, gradient, or
-// glow. Depth is created by solid surface blocks + crisp borders downstream.
-const FullScreen = styled('div', {
-    position: 'fixed',
-    inset: 0,
-    width: '100%',
-    height: '100%',
-    overflow: 'hidden',
-    backgroundColor: theme.bg
-});
 
 // Outer theme wrapper — sets the font + text color for the whole dashboard.
 // Background is transparent so the FullScreen surface shows through.
@@ -80,26 +77,32 @@ export const StoryGeneratorApp: React.FC<AppProps> = React.memo(
         const toggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
 
         return (
-            <StoryStoreProvider configOverrides={configOverrides} initialStore={initialStore}>
-                <BootstrapLayer />
-                <FullScreen>
-                    <DarkThemeWrapper>
-                        <Dashboard
-                            sidebarOpen={sidebarOpen}
-                            onOverlayClick={toggleSidebar}
-                            headerControls={
-                                <HeaderControls
-                                    sidebarOpen={sidebarOpen}
-                                    onToggleSidebar={toggleSidebar}
-                                />
-                            }
-                            sidebar={<StorySidebar />}
-                            content={<StoryContent />}
-                            footer={<StoryInput />}
-                        />
-                    </DarkThemeWrapper>
-                </FullScreen>
-            </StoryStoreProvider>
+            // MUI theme provider — wraps the whole dashboard so every Material
+            // component renders against the flat dark palette.
+            <ThemeProvider theme={muiTheme}>
+                <StoryStoreProvider configOverrides={configOverrides} initialStore={initialStore}>
+                    <BootstrapLayer />
+                    {/* @react/headless FullScreen + the dashboard's flat surface
+                        treatment merged on top (solid near-black, no scroll). */}
+                    <FullScreen style={{ backgroundColor: theme.bg, overflow: 'hidden' }}>
+                        <DarkThemeWrapper>
+                            <Dashboard
+                                sidebarOpen={sidebarOpen}
+                                onOverlayClick={toggleSidebar}
+                                headerControls={
+                                    <HeaderControls
+                                        sidebarOpen={sidebarOpen}
+                                        onToggleSidebar={toggleSidebar}
+                                    />
+                                }
+                                sidebar={<StorySidebar />}
+                                content={<StoryContent />}
+                                footer={<StoryInput />}
+                            />
+                        </DarkThemeWrapper>
+                    </FullScreen>
+                </StoryStoreProvider>
+            </ThemeProvider>
         );
     }
 );

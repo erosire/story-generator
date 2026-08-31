@@ -33,10 +33,12 @@ describe('Badge', () => {
     it('neutral variant draws the border-strong left rail on the default surface', () => {
         render(<Badge data-testid="chip">3</Badge>);
         const chip = screen.getByTestId('chip') as HTMLSpanElement;
-        expect(chip.style.borderLeft).toBe(`2px solid ${rgb(255, 255, 255, 0.28)}`);
-        expect(chip.style.background).toBe(rgb(255, 255, 255, 0.07));
+        // theme.borderStrong rgba(148, 163, 255, 0.34) — blue-tinted hairline.
+        expect(chip.style.borderLeft).toBe(`2px solid ${rgb(148, 163, 255, 0.34)}`);
+        // theme.surface2 rgba(130, 150, 255, 0.095) — blue-tinted lift.
+        expect(chip.style.background).toBe(rgb(130, 150, 255, 0.095));
         // Neutral chips are metadata — dimmed textMuted, not full text.
-        expect(chip.style.color).toBe(rgb(200, 205, 216));
+        expect(chip.style.color).toBe(rgb(201, 209, 242));
     });
 
     it('accent variant uses the accent rail + bright text', () => {
@@ -46,8 +48,9 @@ describe('Badge', () => {
             </Badge>
         );
         const chip = screen.getByTestId('chip') as HTMLSpanElement;
-        expect(chip.style.borderLeft).toBe(`2px solid ${rgb(129, 140, 248)}`);
-        expect(chip.style.color).toBe(rgb(240, 242, 245));
+        // theme.accent #7c8cff — the electric periwinkle.
+        expect(chip.style.borderLeft).toBe(`2px solid ${rgb(124, 140, 255)}`);
+        expect(chip.style.color).toBe(rgb(240, 243, 255));
     });
 
     it('danger and warning variants use their semantic rail colors', () => {
@@ -58,8 +61,8 @@ describe('Badge', () => {
             </>
         );
         expect(container).toBeDefined();
-        expect((screen.getByTestId('danger-chip') as HTMLSpanElement).style.borderLeft).toBe(`2px solid ${rgb(248, 113, 113)}`);
-        expect((screen.getByTestId('warning-chip') as HTMLSpanElement).style.borderLeft).toBe(`2px solid ${rgb(251, 191, 36)}`);
+        expect((screen.getByTestId('danger-chip') as HTMLSpanElement).style.borderLeft).toBe(`2px solid ${rgb(255, 117, 131)}`);
+        expect((screen.getByTestId('warning-chip') as HTMLSpanElement).style.borderLeft).toBe(`2px solid ${rgb(255, 197, 85)}`);
     });
 
     it('elevated swaps to the surface3 fill', () => {
@@ -68,8 +71,8 @@ describe('Badge', () => {
                 12ch
             </Badge>
         );
-        // surface3 = rgba(255,255,255,0.10) — jsdom serializes the alpha 0.1.
-        expect((screen.getByTestId('chip') as HTMLSpanElement).style.background).toBe(rgb(255, 255, 255, 0.1));
+        // surface3 = rgba(130,150,255,0.15) — the blue-tinted top elevation.
+        expect((screen.getByTestId('chip') as HTMLSpanElement).style.background).toBe(rgb(130, 150, 255, 0.15));
     });
 
     it('passes through title and standard span attributes', () => {

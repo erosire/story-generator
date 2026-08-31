@@ -6,9 +6,10 @@
 // background.
 //
 // This mirrors the approach in packages/react/material/components/output/OutputMarkdown.tsx
-// (react-markdown + remark-gfm with component overrides) but without MUI
-// dependencies — uses plain styled divs since this distribution package
-// only declares react/react-dom in its deps.
+// (react-markdown + remark-gfm with component overrides) but stays purpose-built:
+// it renders the raw markdown body only (no card chrome / copy / fork actions)
+// and styles everything from the dashboard's own theme tokens via the
+// @presource/react-backed styled() factory (../styles/styled.tsx).
 //
 // Usage:
 //   <MarkdownContent>{data.plotlines}</MarkdownContent>

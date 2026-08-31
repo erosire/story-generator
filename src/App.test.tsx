@@ -109,14 +109,15 @@ describe('StoryGeneratorApp', () => {
         // control base when color-scheme is ignored → white-on-grey bug).
         injectGlobalStyles();
         const sheet = document.querySelector('style[data-sg-styles]')?.textContent ?? '';
-        // Base rule: opaque dialog surface + light text.
+        // Base rule: opaque dialog surface + light text (theme.ts tokens:
+        // surfaceDialog #141c36, text #f0f3ff).
         expect(sheet).toContain('.sg-select {');
-        expect(sheet).toMatch(/\.sg-select\s*{[^}]*background-color:\s*#151b29/);
-        expect(sheet).toMatch(/\.sg-select\s*{[^}]*color:\s*#f0f2f5/);
+        expect(sheet).toMatch(/\.sg-select\s*{[^}]*background-color:\s*#141c36/);
+        expect(sheet).toMatch(/\.sg-select\s*{[^}]*color:\s*#f0f3ff/);
         // Option popup entries: same opaque dark surface + light text (Firefox
         // and embedded webviews paint the popup from the <option> elements).
-        expect(sheet).toMatch(/\.sg-select option\s*{[^}]*background-color:\s*#151b29/);
-        expect(sheet).toMatch(/\.sg-select option\s*{[^}]*color:\s*#f0f2f5/);
+        expect(sheet).toMatch(/\.sg-select option\s*{[^}]*background-color:\s*#141c36/);
+        expect(sheet).toMatch(/\.sg-select option\s*{[^}]*color:\s*#f0f3ff/);
     });
 
     it('offers the server-listed clients in the top-right dropdown and posts the chosen clientId on Generate', async () => {
@@ -396,8 +397,10 @@ describe('StoryGeneratorApp', () => {
         expect(dialog.getAttribute('aria-modal')).toBe('true');
         expect(dialog.getAttribute('aria-labelledby')).toBe('rename-dialog-title');
         expect(input.value).toBe('Original title');
-        expect(input.className).toBe('sg-dialog-input');
-        expect(confirm.className).toBe('sg-dialog-confirm');
+        // MUI TextField/Button merge their own classes with the hook classes —
+        // the contract is that the hooks are present, not exclusive.
+        expect(input.className).toContain('sg-dialog-input');
+        expect(confirm.className).toContain('sg-dialog-confirm');
         expect(confirm.disabled).toBe(false);
 
         // Whitespace-only input is not a valid title and disables confirmation.

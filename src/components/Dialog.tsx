@@ -1,26 +1,19 @@
-// Standard-pattern dialog component — the modular replacement for the four
-// hand-rolled dialog implementations that previously lived inline in the
-// features (rename in the old StoryGeneratorApp header; rewrite / append /
-// delete-revision / remove-chapter in the old SectionStoryContent).
+// Standard-pattern dialog component — built on the Material UI Dialog.
 //
-// STANDARD PATTERN (the rework): every dialog is composed of exactly three
-// regions, top to bottom, the way every mainstream design system (MUI, Radix,
-// Apple HIG, Windows Fluent) structures a dialog:
+// STANDARD PATTERN: every dialog is composed of exactly three regions, top to
+// bottom, the way every mainstream design system (MUI included) structures a
+// dialog:
 //
 //   ┌──────────────────────────────┐
-//   │ Dialog.Header  (title)       │  ← hairline divider under it
+//   │ Dialog.Header  (title)       │  ← MUI DialogTitle, hairline divider under it
 //   ├──────────────────────────────┤
-//   │ Dialog.Body    (children)    │  ← the ONLY region that scrolls
+//   │ Dialog.Body    (children)    │  ← MUI DialogContent; the ONLY scrolling region
 //   ├──────────────────────────────┤
-//   │ Dialog.Footer  (actions)     │  ← right-aligned; hairline above
+//   │ Dialog.Footer  (actions)     │  ← MUI DialogActions; right-aligned; hairline above
 //   └──────────────────────────────┘
 //
-// The previous implementations each re-invented this differently (no footer
-// divider, actions inline with the body, no header band), which is why they
-// read as ad hoc.
-//
-// Composition API — <Dialog> renders overlay + frame + header, and exposes
-// the standard regions/buttons as static sub-components:
+// Composition API — <Dialog> renders the MUI Dialog (scrim + focus trap +
+// paper) and exposes the standard regions/buttons as static sub-components:
 //
 //   <Dialog open title="Remove chapter" testId="remove-chapter-dialog"
 //           onClose={cancel}>
@@ -36,119 +29,129 @@
 //
 // Test contract (App.test.tsx) preserved by construction:
 //   - frame: data-testid={testId}, role="dialog", aria-modal="true",
-//     aria-labelledby = `${testId}-title` (rename-dialog:395-397,
-//     delete-dialog / remove-chapter-dialog).
-//   - title element: id + data-testid = `${testId}-title`, textContent exactly
-//     the title (delete-dialog-title:2042, remove-chapter-dialog-title:2236 —
-//     so the title band must contain ONLY the title text, no duplicated
-//     screen-reader copy).
-//   - ConfirmButton default class is EXACTLY 'sg-dialog-confirm'
-//     (rename-confirm:400 asserts toBe, not toContain).
+//     aria-labelledby = `${testId}-title` — all rendered by MUI's Paper slot
+//     (slotProps.paper), which is the element carrying MUI's dialog role.
+//   - title element: id + data-testid = `${testId}-title` (MUI DialogTitle),
+//     textContent exactly the title.
+//   - overlay: the MUI container slot (the full-viewport flex scrim) carries
+//     data-testid `${testId}-overlay`. MUI closes on backdrop click only when
+//     the mousedown AND click both start on the scrim (its nested-click guard),
+//     so tests drive it with mouseDown + click.
+//   - Escape: MUI's Modal keydown handler (bubbling from the frame) fires
+//     onClose with reason 'escapeKeyDown'.
 //
-// Accessibility: Escape closes (standard), overlay click closes — both
-// guarded by dismissable=false while a submit is in flight (the old dialogs
-// each implemented this guard ad hoc; now it is one prop).
+// dismissable=false (a submit in flight) suppresses BOTH close reasons in the
+// onClose guard — MUI has no per-reason disable props, so the guard is the
+// single choke point.
 //
-// NOTE on styling: the buttons/frames that need per-variant values are plain
-// components with MERGED style objects, NOT styled() pieces — the vendored
-// styled() (src/styles/styled.tsx:47) applies a consumer `style` prop by
-// fully replacing the static style object, so a variant override passed via
-// style would wipe the base styles. Purely static frames are safe with
-// styled(); anything dynamic merges manually here.
+// MOUNT GATE: `if (!open) return null` BEFORE rendering MUI's Dialog (which
+// then always sees open=true). This keeps the hand-rolled version's
+// SYNCHRONOUS unmount semantics — MUI runs an exit transition when its own
+// open prop flips, which would keep the frame mounted for the transition
+// duration and break the tests' immediate queryByTestId(null) assertions.
 
 import React from 'react';
-import { styled, theme } from '../styles';
+import {
+    Dialog as MaterialDialog,
+    DialogTitle,
+    DialogContent,
+    DialogActions,
+    Button as MaterialButton
+} from '@mui/material';
+import { theme } from '../styles';
 
-// ── Static frame pieces (styled() is safe: no consumer overrides) ──────
+// ── Frame styling (sx on the MUI slots) ────────────────────────────────
 
-// Overlay scrim — dark translucent, flex-centers the dialog, padding keeps
-// the dialog off narrow viewport edges. Standardized on overlayDeeper for
-// ALL dialogs (the old content-area scrim was lighter — unifying scrims is
-// part of the standard-pattern rework).
-const DialogOverlayFrame = styled('div', {
-    position: 'fixed',
-    inset: 0,
+// Scrim — dark translucent, flex-centers the dialog. Standardized on
+// overlayDeeper for ALL dialogs (the old content-area scrim was lighter —
+// unifying scrims is part of the standard-pattern rework). NOTE: sx numbers
+// are spacing-mapped (2 → 16px) — explicit px strings keep the values exact.
+const SCRIM_SX = {
     backgroundColor: theme.overlayDeeper,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-    boxSizing: 'border-box' as const,
-    zIndex: 1000,
-    animation: 'sg-dialog-fade-in 140ms ease both'
-});
+    padding: '16px'
+};
 
 // Dialog frame — opaque elevated surface. FLAT: square corners (radiusMd=3px),
 // crisp strong border, the one sanctioned elevation shadow. maxHeight keeps
-// long bodies inside the viewport; the BODY is the scrolling region.
-const DialogFrame = styled('div', {
+// long bodies inside the viewport; the BODY (DialogContent) is the scrolling
+// region, so the paper itself clips.
+const PAPER_SX = {
     width: '100%',
     maxWidth: 480,
     maxHeight: '85vh',
-    boxSizing: 'border-box' as const,
     display: 'flex',
     flexDirection: 'column',
     backgroundColor: theme.surfaceDialog,
     border: `1px solid ${theme.borderStrong}`,
-    borderRadius: theme.radiusMd,
+    borderRadius: `${theme.radiusMd}px`,
+    // The flat design keeps exactly one drop shadow — the dialog's.
     boxShadow: theme.shadowDialogLg,
+    backgroundImage: 'none',
     overflow: 'hidden'
-});
+};
 
-// Header band — title row with a hairline divider underneath. Standard
-// dialogs ALWAYS give the title its own band; it anchors the task.
-const DialogHeaderFrame = styled('div', {
-    display: 'flex',
-    alignItems: 'center',
+// Title band — the standard dialogs ALWAYS give the title its own band with a
+// hairline divider underneath; it anchors the task.
+const TITLE_SX = {
     padding: '14px 18px',
+    flex: '0 0 auto',
     borderBottom: `1px solid ${theme.border}`,
-    flex: '0 0 auto'
-});
-
-// Title text — the element carrying id + data-testid `${testId}-title`.
-// Contains ONLY the title children (exact-textContent test contract).
-const DialogTitleText = styled('h3', {
-    margin: 0,
     fontSize: theme.fontSize.lg,
     fontWeight: 700,
     lineHeight: 1.3,
     color: theme.text,
     letterSpacing: 0.1
-});
+};
 
-// Body band — the ONLY scrolling region (overflowY:auto) so long content
-// (textareas, chapter lists) never breaks the frame.
-const DialogBodyFrame = styled('div', {
+// Body band — the ONLY scrolling region so long content (textareas, chapter
+// lists) never breaks the frame.
+const BODY_SX = {
     padding: '16px 18px',
     overflowY: 'auto',
     display: 'flex',
     flexDirection: 'column',
-    gap: 12,
+    gap: '12px',
     flex: '1 1 auto'
-});
+};
 
 // Footer band — actions right-aligned with a hairline divider above (the
-// standard footer affordance the old dialogs were missing).
-const DialogFooterFrame = styled('div', {
-    display: 'flex',
+// standard footer affordance).
+const FOOTER_SX = {
     justifyContent: 'flex-end',
     alignItems: 'center',
-    gap: 10,
+    gap: '10px',
     padding: '12px 18px',
     borderTop: `1px solid ${theme.border}`,
     flex: '0 0 auto'
-});
+};
 
-// ── Button bases (merged manually — see file header note) ──────────────
+// ── Sub-components ─────────────────────────────────────────────────────
 
-// Shared dimensions for both dialog buttons so the footer height stays
-// stable between enabled/disabled and cancel/confirm swaps.
+// Body band — scrolling content region. All feature-specific form fields /
+// copy / inline errors live here as children.
+const DialogBody: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
+    <DialogContent sx={BODY_SX}>{children}</DialogContent>
+);
+
+// Footer band — action buttons right-aligned. Children are usually
+// Dialog.CancelButton / Dialog.ConfirmButton (plus small labeled controls
+// like the append dialog's chapter-count field).
+const DialogFooter: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
+    <DialogActions sx={FOOTER_SX}>{children}</DialogActions>
+);
+
+// Shared button frame — keeps the footer height stable between enabled/
+// disabled and cancel/confirm swaps. These stay INLINE (not sx) so the exact
+// flat fills survive MUI's variant classes and remain assertable via
+// el.style (Dialog.test / the visual flat contract).
 const DIALOG_BUTTON_BASE: React.CSSProperties = {
     minHeight: 36,
     padding: '8px 16px',
     fontFamily: theme.fontSans,
     fontSize: theme.fontSize.md,
     borderRadius: theme.radiusSm,
+    textTransform: 'none',
+    boxShadow: 'none',
     cursor: 'pointer',
     transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
 };
@@ -160,7 +163,8 @@ const DIALOG_CANCEL_STYLE: React.CSSProperties = {
     fontWeight: 600,
     border: `1px solid ${theme.border}`,
     backgroundColor: theme.surface1,
-    color: theme.textMuted
+    color: theme.textMuted,
+    minWidth: 0
 };
 
 // Confirm — solid accent fill (flat). tone="danger" swaps to the destructive
@@ -170,7 +174,8 @@ const DIALOG_CONFIRM_STYLE: React.CSSProperties = {
     fontWeight: 700,
     border: `1px solid ${theme.accent}`,
     backgroundColor: theme.accent,
-    color: theme.highlight
+    color: theme.highlight,
+    minWidth: 0
 };
 
 const DIALOG_CONFIRM_DANGER_STYLE: React.CSSProperties = {
@@ -181,70 +186,53 @@ const DIALOG_CONFIRM_DANGER_STYLE: React.CSSProperties = {
 
 export type DialogConfirmTone = 'accent' | 'danger';
 
-// ── Sub-components ─────────────────────────────────────────────────────
-
-// Header band (rendered by <Dialog> itself; exposed for completeness).
-const DialogHeader: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
-    <DialogHeaderFrame>
-        <DialogTitleText>{children}</DialogTitleText>
-    </DialogHeaderFrame>
-);
-
-// Body band — scrolling content region. All feature-specific form fields /
-// copy / inline errors live here as children.
-const DialogBody: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
-    <DialogBodyFrame>{children}</DialogBodyFrame>
-);
-
-// Footer band — action buttons right-aligned. Children are usually
-// Dialog.CancelButton / Dialog.ConfirmButton (plus small labeled controls
-// like the append dialog's chapter-count input).
-const DialogFooter: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
-    <DialogFooterFrame>{children}</DialogFooterFrame>
-);
-
-// Cancel button — the standard low-emphasis escape. className is EXACTLY
-// 'sg-hover' unless the caller appends more (no trailing-space padding).
-const DialogCancelButton: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>> = ({
+// Cancel button — the standard low-emphasis escape. className contains the
+// 'sg-hover' hook (plus any caller extras).
+const DialogCancelButton: React.FC<React.ComponentProps<typeof MaterialButton>> = ({
     className,
     style,
     children,
     ...rest
 }) => (
-    <button
+    <MaterialButton
         type="button"
+        disableElevation
         {...rest}
         className={className ? `sg-hover ${className}` : 'sg-hover'}
         style={{ ...DIALOG_CANCEL_STYLE, ...style }}
+        sx={{ textTransform: 'none' }}
     >
         {children}
-    </button>
+    </MaterialButton>
 );
 
-// Confirm button — the standard high-emphasis action. Default className is
-// EXACTLY 'sg-dialog-confirm' (App.test.tsx:400 asserts toBe); the danger
-// tone appends 'sg-dialog-confirm-danger' whose hover rule lives in
-// styles/global.ts.
+// Confirm button — the standard high-emphasis action. Default className
+// contains 'sg-dialog-confirm' (App.test asserts it); the danger tone appends
+// 'sg-dialog-confirm-danger' whose hover rule lives in styles/global.ts.
 const DialogConfirmButton: React.FC<
-    React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: DialogConfirmTone }
-> = ({ tone = 'accent', className, style, children, ...rest }) => (
-    <button
-        type="button"
-        {...rest}
-        className={
-            tone === 'danger'
-                ? className
-                    ? `sg-dialog-confirm sg-dialog-confirm-danger ${className}`
-                    : 'sg-dialog-confirm sg-dialog-confirm-danger'
-                : className
-                  ? `sg-dialog-confirm ${className}`
-                  : 'sg-dialog-confirm'
-        }
-        style={{ ...(tone === 'danger' ? DIALOG_CONFIRM_DANGER_STYLE : DIALOG_CONFIRM_STYLE), ...style }}
-    >
-        {children}
-    </button>
-);
+    React.ComponentProps<typeof MaterialButton> & { tone?: DialogConfirmTone }
+> = ({ tone = 'accent', className, style, children, ...rest }) => {
+    const classes =
+        tone === 'danger'
+            ? className
+                ? `sg-dialog-confirm sg-dialog-confirm-danger ${className}`
+                : 'sg-dialog-confirm sg-dialog-confirm-danger'
+            : className
+              ? `sg-dialog-confirm ${className}`
+              : 'sg-dialog-confirm';
+    return (
+        <MaterialButton
+            type="button"
+            disableElevation
+            {...rest}
+            className={classes}
+            style={{ ...(tone === 'danger' ? DIALOG_CONFIRM_DANGER_STYLE : DIALOG_CONFIRM_STYLE), ...style }}
+            sx={{ textTransform: 'none' }}
+        >
+            {children}
+        </MaterialButton>
+    );
+};
 
 // ── Dialog ─────────────────────────────────────────────────────────────
 
@@ -255,7 +243,7 @@ export type DialogProps = {
     // Title band content (plain text or a node). Renders in the header as the
     // ONLY child of the title element (exact-textContent contract).
     title: React.ReactNode;
-    // Closes on overlay click + Escape. Set false while a submit is in
+    // Closes on scrim click + Escape. Set false while a submit is in
     // flight — a dialog must not vanish mid-request (each old dialog guarded
     // this ad hoc; now it is one prop).
     dismissable?: boolean;
@@ -268,22 +256,24 @@ export type DialogProps = {
 };
 
 export const Dialog: React.FC<DialogProps> & {
-    Header: typeof DialogHeader;
     Body: typeof DialogBody;
     Footer: typeof DialogFooter;
     CancelButton: typeof DialogCancelButton;
     ConfirmButton: typeof DialogConfirmButton;
 } = ({ open, title, dismissable = true, onClose, testId, children }) => {
-    // Escape closes — the standard keyboard affordance the old dialogs were
-    // missing entirely. Bound on the frame (fires only while mounted) and
-    // suppressed when !dismissable (mid-submit).
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Escape' && dismissable) {
-            e.stopPropagation();
+    // MUI fires onClose(event, reason) for 'backdropClick' (scrim) and
+    // 'escapeKeyDown'. When dismissable=false (a submit is in flight) both
+    // reasons are suppressed — the dialog must not vanish mid-request.
+    const handleClose = React.useCallback(
+        (_event: unknown, reason: 'backdropClick' | 'escapeKeyDown') => {
+            if (!dismissable) return;
             onClose?.();
-        }
-    };
+        },
+        [dismissable, onClose]
+    );
 
+    // Mount gate — see the header note. Unmount is synchronous, exactly like
+    // the previous hand-rolled implementation.
     if (!open) return null;
 
     // Derived id: frame aria-labelledby + title id + title data-testid all
@@ -291,34 +281,37 @@ export const Dialog: React.FC<DialogProps> & {
     const titleId = testId ? `${testId}-title` : undefined;
 
     return (
-        <DialogOverlayFrame
-            role="presentation"
-            data-testid={testId ? `${testId}-overlay` : undefined}
-            onClick={() => {
-                if (dismissable) onClose?.();
-            }}
+        <MaterialDialog
+            open
+            onClose={handleClose}
+            // The aria-labelled relationship lives on the element carrying
+            // MUI's role="dialog" (the paper slot) — passed as the Dialog prop
+            // so MUI merges it into its own paper additionalProps.
+            aria-labelledby={titleId}
+            // The container slot is the full-viewport flex scrim — the element
+            // users perceive as "the overlay". data-testid is the overlay test
+            // contract; MUI's nested-click guard (mousedown + click must both
+            // start here) decides whether a click closes the dialog.
+            // (SlotProps typings don't model data-* attributes — cast.)
+            slotProps={
+                {
+                    container: { 'data-testid': testId ? `${testId}-overlay` : undefined, sx: SCRIM_SX },
+                    paper: { 'data-testid': testId, sx: PAPER_SX }
+                } as any
+            }
         >
-            <DialogFrame
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby={titleId}
-                data-testid={testId}
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={handleKeyDown}
-            >
-                <DialogHeaderFrame>
-                    <DialogTitleText id={titleId} data-testid={titleId}>
-                        {title}
-                    </DialogTitleText>
-                </DialogHeaderFrame>
-                {children}
-            </DialogFrame>
-        </DialogOverlayFrame>
+            {/* Title band — id + data-testid `${testId}-title` (the
+                aria-labelledby target). Contains ONLY the title children
+                (exact-textContent contract). */}
+            <DialogTitle id={titleId} data-testid={titleId} sx={TITLE_SX}>
+                {title}
+            </DialogTitle>
+            {children}
+        </MaterialDialog>
     );
 };
 
 // Attach the standard regions — the composition API.
-Dialog.Header = DialogHeader;
 Dialog.Body = DialogBody;
 Dialog.Footer = DialogFooter;
 Dialog.CancelButton = DialogCancelButton;
