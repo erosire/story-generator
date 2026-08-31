@@ -1,4 +1,4 @@
-// Content section: progressively fetches story data via the GET endpoint and
+// Content FEATURE: progressively fetches story data via the GET endpoint and
 // renders chapters for the currently selected story.
 //
 // The API returns a unified chapters array where each chapter includes its
@@ -15,9 +15,7 @@
 //      persisted to the localStorage records cache) — chapters appear as soon
 //      as plotpoint.json is written, then expand one by one.
 //   3. The loop terminates when chapters.length >= chapterRequested, a hard error
-//      occurs, or the user selects a different story (cancellation). After
-//      termination a timer re-arms the effect after pollIntervalMs so the
-//      opened story keeps re-checking the server for updates at interval.
+//      occurs, or the user selects a different story (cancellation).
 //
 // Edge cases:
 //   - chapterRequested == 0 means the story was added locally but never submitted
@@ -28,17 +26,39 @@
 //   - On unmount or selection change, shouldStop becomes true so the loop exits
 //     without dispatching further setState (avoids "state on unmounted component").
 //
-// Visual: empty/pending/in-progress + chapter cards share a consistent accent
-// design language — see src/styles/theme.ts.
+// DIALOG REWORK: all four content-area dialogs (rewrite context, append
+// chapters, delete-revision confirm, remove-chapter confirm) now compose the
+// modular standard-pattern <Dialog> (components/Dialog.tsx): header/body/
+// footer bands, hairline dividers, right-aligned actions. The five previous
+// ad hoc overlay/box implementations (RewriteOverlay/RewriteDialog,
+// AppendOverlay/AppendDialog, DeleteDialog + shared RewriteDialogTitle) are
+// gone. Test contract preserved by construction:
+//   - rewrite: rewrite-context-input / rewrite-cancel / rewrite-submit
+//   - append:  append-dialog (frame), append-notes-input, append-count-input,
+//              append-button, append-error, copy "This story has N chapters."
+//   - delete:  delete-dialog + delete-dialog-title ("Delete Chapter N —
+//              Revision R of M"), delete-cancel, delete-confirm, delete-error
+//   - remove:  remove-chapter-dialog + remove-chapter-dialog-title
+//              ("Remove Chapter N: Title"), remove-chapter-cancel,
+//              remove-chapter-confirm, remove-chapter-error
+//
+// BADGE REWORK: StatChip / ChapterMeta / PlotpointsButton /
+// RemoveChapterButton / TerminateButton are FLAT now — square radiusSm
+// corners (no 999px pills). Stat chips + revision-meta chips use the modular
+// <Badge>; the two danger controls keep their danger-tinted frames with
+// square corners via the modular <Button variant="danger">.
+//
+// Moved from the old src/components/sections/SectionStoryContent.tsx — this
+// feature owns all chapter-action business logic (poll loops, re-expand,
+// fork, rewrite, delete, remove, append, resume, terminate).
 
 import React from 'react';
 import { objectEach } from '@presource/core';
-import { styled, theme } from '../../styles';
-import { useStoryStore } from '../../context';
-import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter, abortStoryJob } from '../../api';
-import { Collapsible } from '../Collapsible';
-import { MarkdownContent } from '../MarkdownContent';
-import { getExpandedChapters, setExpandedChapters } from '../../context/store';
+import { styled, theme } from '../styles';
+import { useStoryStore } from '../context';
+import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter, abortStoryJob } from '../api';
+import { Badge, Button, Collapsible, Dialog, IconButton, Input, NumberInput, Textarea, MarkdownContent } from '../components';
+import { getExpandedChapters, setExpandedChapters } from '../context/store';
 
 // Empty-state placeholder shown when no story is selected. Modern: monospace
 // "drawing" glyph + elevated typography for a calm centered hero state.
@@ -87,24 +107,6 @@ const ChapterCard = styled('div', {
     border: `1px solid ${theme.border}`
 });
 
-// Plotpoints toggle button — right-aligned, button-like appearance.
-const PlotpointsButton = styled('button', {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    marginLeft: 'auto',
-    padding: '4px 12px',
-    fontSize: theme.fontSize.base,
-    fontWeight: 500,
-    color: theme.textMuted,
-    background: theme.surface1,
-    border: `1px solid ${theme.border}`,
-    borderRadius: 999,
-    cursor: 'pointer',
-    marginBottom: 10,
-    transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}`
-});
-
 // Plotpoints list — shown/hidden by the toggle button.
 const PlotpointsList = styled('div', {
     marginBottom: 10
@@ -121,25 +123,6 @@ const RemoveChapterRow = styled('div', {
     marginBottom: 10
 });
 
-// Danger-outline pill for removing the ENTIRE chapter (plotpoints + every
-// revision + the chapter slot itself, later chapters renumbered). Visual
-// sibling of PlotpointsButton (same pill geometry) but in the danger palette
-// so the destructive nature reads at a glance next to the neutral toggle.
-const RemoveChapterButton = styled('button', {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '4px 12px',
-    fontSize: theme.fontSize.base,
-    fontWeight: 500,
-    color: theme.danger,
-    background: theme.dangerSoft,
-    border: `1px solid ${theme.dangerBorder}`,
-    borderRadius: 999,
-    cursor: 'pointer',
-    transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
-});
-
 // Info message shown when a chapter has not been expanded yet.
 const PendingExpansion = styled('div', {
     color: theme.textDim,
@@ -148,240 +131,24 @@ const PendingExpansion = styled('div', {
     padding: '8px 0'
 });
 
-// Modal overlay for the rewrite dialogue.
-const RewriteOverlay = styled('div', {
-    position: 'fixed' as const,
-    inset: 0,
-    backgroundColor: theme.overlayDialog,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000
-});
-
-// Modal dialogue box for rewrite context input.
-const RewriteDialog = styled('div', {
-    background: theme.surfaceDialogAlt,
-    border: `1px solid ${theme.border}`,
-    borderRadius: theme.radiusLg,
-    padding: 24,
-    width: '90%',
-    maxWidth: 520,
-    boxShadow: theme.shadowDialog
-});
-
-const RewriteDialogTitle = styled('h3', {
-    margin: '0 0 12px 0',
-    fontSize: theme.fontSize.lg,
-    fontWeight: 600,
-    color: theme.text
-});
-
-const RewriteTextarea = styled('textarea', {
-    width: '100%',
-    minHeight: 120,
-    padding: '10px 12px',
-    fontSize: theme.fontSize.base,
-    color: theme.text,
-    backgroundColor: theme.surface1,
-    border: `1px solid ${theme.border}`,
-    borderRadius: theme.radiusMd,
-    resize: 'vertical' as const,
-    outline: 'none',
-    fontFamily: 'inherit',
-    lineHeight: 1.5,
-    boxSizing: 'border-box' as const
-});
-
-const RewriteDialogActions = styled('div', {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: 8,
-    marginTop: 16
-});
-
-// ── Append-chapters dialog ──────────────────────────────────────────
-// Deliberately mirrors the footer generation box (SectionStoryInput): a
-// multi-line notes textarea + a control row (chapters label, numeric count
-// input, primary accent action button). The overlay/box match the rewrite
-// dialog's modal treatment so both content-area dialogs look alike. Opaque
-// surface (theme.surfaceDialog) so the form stays grounded above the dim.
-const AppendOverlay = styled('div', {
-    position: 'fixed' as const,
-    inset: 0,
-    backgroundColor: theme.overlayDialog,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000
-});
-
-const AppendDialog = styled('div', {
-    background: theme.surfaceDialog,
-    border: `1px solid ${theme.border}`,
-    borderRadius: theme.radiusLg,
-    padding: 24,
-    width: '90%',
-    maxWidth: 520,
-    boxShadow: theme.shadowDialog
-});
-
-const AppendDialogTitle = styled('h3', {
-    margin: '0 0 12px 0',
-    fontSize: theme.fontSize.lg,
-    fontWeight: 600,
-    color: theme.text
-});
-
-// Mirrors the footer's StorylineTextarea (SectionStoryInput:34-47) at a
-// fixed dialog height (5 rows) — the footer grows on focus, the dialog does not.
-const AppendNotesTextarea = styled('textarea', {
-    width: '100%',
-    resize: 'vertical' as const,
-    padding: 10,
-    maxHeight: 200,
-    borderRadius: theme.radiusMd,
-    border: `1px solid ${theme.borderStrong}`,
-    backgroundColor: theme.surface1,
-    color: theme.text,
-    fontFamily: theme.fontSans,
-    fontSize: theme.fontSize.body,
-    lineHeight: 1.5,
-    boxSizing: 'border-box' as const,
-    transition: `min-height ${theme.transition}, border-color ${theme.transition}, background-color ${theme.transition}`
-});
-
-// Control row: chapters label + count input on the left, Cancel + Append on the
-// right — same layout as the footer's ControlRow with the actions grouped right.
-const AppendControlRow = styled('div', {
-    display: 'flex',
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    marginTop: 12
-});
-
-// Mirrors the footer's ChapterCountInput (SectionStoryInput:61-72).
-const AppendCountInput = styled('input', {
-    width: 80,
-    padding: '7px 10px',
-    borderRadius: theme.radiusMd,
-    border: `1px solid ${theme.borderStrong}`,
-    backgroundColor: theme.surface1,
-    color: theme.text,
-    fontFamily: theme.fontSans,
-    fontSize: theme.fontSize.body,
-    boxSizing: 'border-box',
-    transition: `border-color ${theme.transition}, background-color ${theme.transition}`
-});
-
-// Primary action — mirrors the footer's GenerateButton (fill accent, flat).
-// The `sg-primary` class hook adds the brighter hover (styles/global.ts).
-const AppendButton = styled('button', {
-    padding: '9px 20px',
-    borderRadius: theme.radiusMd,
-    border: 'none',
-    backgroundColor: theme.accent,
-    color: theme.highlight,
-    fontSize: theme.fontSize.body,
-    fontWeight: 600,
-    cursor: 'pointer',
-    flex: '0 0 auto',
-    marginLeft: 'auto',
-    transition: `background-color ${theme.transition}`
-});
-
-// Error line under the control row — mirrors the footer's ErrorLine.
-const AppendError = styled('div', {
+// Inline error line inside dialogs (append/delete/remove) — the server's
+// exact message, kept visible while the dialog stays open.
+const DialogErrorLine = styled('div', {
     color: theme.danger,
     fontSize: theme.fontSize.md,
     padding: '8px 12px',
-    marginTop: 12,
     background: theme.dangerSoft,
     border: `1px solid ${theme.dangerBorder}`,
     borderRadius: theme.radiusMd
 });
 
-// ── Delete-chapter confirmation dialog ──────────────────────────────────
-// Modal box for the destructive confirm step. Opaque surface (same grounding
-// as the append dialog) since this dialog guards a destructive action — the
-// overlay + layout reuse the rewrite dialog's components (RewriteOverlay /
-// RewriteDialogTitle / RewriteDialogActions) so all content-area dialogs
-// share one visual treatment.
-const DeleteDialog = styled('div', {
-    background: theme.surfaceDialog,
-    border: `1px solid ${theme.border}`,
-    borderRadius: theme.radiusLg,
-    padding: 24,
-    width: '90%',
-    maxWidth: 520,
-    boxShadow: theme.shadowDialog
+// Standard dialog body copy (append/rewrite explanation, delete warnings).
+const DialogCopy = styled('p', {
+    margin: 0,
+    fontSize: theme.fontSize.sm,
+    color: theme.textMuted,
+    lineHeight: 1.5
 });
-
-// Primary confirm action — danger fill so the destructive nature reads at a
-// glance, in contrast to the accent-filled rewrite/append primaries.
-const DeleteConfirmButton = styled('button', {
-    padding: '9px 20px',
-    borderRadius: theme.radiusMd,
-    border: 'none',
-    backgroundColor: theme.danger,
-    color: theme.highlight,
-    fontSize: theme.fontSize.body,
-    fontWeight: 600,
-    cursor: 'pointer',
-    flex: '0 0 auto',
-    transition: `background-color ${theme.transition}, opacity ${theme.transition}`
-});
-
-// Chapter action icon button — compact square button for per-chapter actions
-// (re-expand, fork). Uses a fixed-size square with centered icon glyph.
-// Disabled state dims and blocks interaction.
-const ChapterActionButton: React.FC<{
-    disabled?: boolean;
-    onClick?: () => void;
-    'data-testid'?: string;
-    title?: string;
-    children: React.ReactNode;
-}> = ({ disabled, onClick, children, ...rest }) => (
-    <button
-        onClick={onClick}
-        disabled={disabled}
-        data-testid={rest['data-testid']}
-        title={rest['title']}
-        style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 30,
-            height: 30,
-            padding: 0,
-            color: disabled ? theme.textFaint : theme.textMuted,
-            background: 'transparent',
-            border: `1px solid ${disabled ? 'transparent' : theme.border}`,
-            borderRadius: theme.radiusMd,
-            cursor: disabled ? 'not-allowed' : 'pointer',
-            opacity: disabled ? 0.4 : 1,
-            transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
-        }}
-        onMouseEnter={(e) => {
-            if (!disabled) {
-                e.currentTarget.style.background = theme.surface3;
-                e.currentTarget.style.color = theme.accent;
-                e.currentTarget.style.borderColor = theme.accent;
-            }
-        }}
-        onMouseLeave={(e) => {
-            if (!disabled) {
-                e.currentTarget.style.background = 'transparent';
-                e.currentTarget.style.color = theme.textMuted;
-                e.currentTarget.style.borderColor = theme.border;
-            }
-        }}
-    >
-        {children}
-    </button>
-);
 
 // Inline SVG refresh icon — circular arrow used for the re-expand action.
 // Keeps the package icon-free (matches the dashboard convention of inline glyphs).
@@ -560,24 +327,6 @@ const ActionBar = styled('div', {
     pointerEvents: 'none' as const
 });
 
-// Action button — flat outlined style consistent with the dashboard design
-// language. Secondary surface + hairline border, accent fill on hover.
-const ActionButton = styled('button', {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '8px 16px',
-    fontSize: theme.fontSize.body,
-    fontWeight: 600,
-    borderRadius: theme.radiusMd,
-    border: `1px solid ${theme.border}`,
-    backgroundColor: theme.surface2,
-    color: theme.text,
-    cursor: 'pointer',
-    pointerEvents: 'auto' as const,
-    transition: `background-color ${theme.transition}, border-color ${theme.transition}, color ${theme.transition}`
-});
-
 // In-progress status banner — flat solid accent-tinted surface + accent border
 // so the user notices generation is running without the connotation of red.
 // Hosts the chapter progress count AND the Terminate control (terminateDisabled
@@ -597,26 +346,6 @@ const ProgressBanner = styled('div', {
     width: 'fit-content'
 });
 
-// Terminate control inside the ProgressBanner — danger-outline pill (same
-// geometry family as RemoveChapterButton) so the destructive nature reads at
-// a glance against the accent-tinted banner without screaming for attention.
-const TerminateButton = styled('button', {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '3px 10px',
-    fontSize: theme.fontSize.sm,
-    fontWeight: 600,
-    color: theme.danger,
-    background: theme.dangerSoft,
-    border: `1px solid ${theme.dangerBorder}`,
-    borderRadius: 999,
-    cursor: 'pointer',
-    flex: '0 0 auto',
-    marginLeft: 6,
-    transition: `background-color ${theme.transition}, color ${theme.transition}, border-color ${theme.transition}, opacity ${theme.transition}`
-});
-
 // ── Story stats bar ─────────────────────────────────────────────────────
 // Rendered between the processing banner and the chapter list: a compact row
 // of summary chips for the story as a whole — total chapters, total word
@@ -631,28 +360,6 @@ const StatsBar = styled('div', {
     gap: 8
 });
 
-// One summary chip — pill geometry matching ChapterMeta (surface3 + hairline
-// border) so the stats read as part of the same design language as the
-// per-chapter meta chips below them.
-const StatChip = styled('div', {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '4px 12px',
-    background: theme.surface2,
-    border: `1px solid ${theme.border}`,
-    borderRadius: 999,
-    fontSize: theme.fontSize.base,
-    color: theme.text,
-    fontWeight: 500
-});
-
-// Muted label part inside a StatChip ("Chapters", "Words", "Tokens (est.)").
-const StatLabel = styled('span', {
-    color: theme.textMuted,
-    fontWeight: 500
-});
-
 // Small component that manages the plotpoints toggle state.
 // When the plotpoints are SHOWN (open), the delete-chapter control is revealed
 // underneath the list (see onDeleteChapter) — the requirement is that the
@@ -662,24 +369,29 @@ const PlotpointsWrapper: React.FC<{
     defaultOpen: boolean;
     testId: string;
     // Provided only when the chapter can be removed; renders the danger
-    // "Delete Chapter" pill under the plotpoints list while open.
+    // "Delete Chapter" control under the plotpoints list while open.
     onDeleteChapter?: () => void;
-    // Disables the delete pill while a removal request is in flight.
+    // Disables the delete control while a removal request is in flight.
     deleteDisabled?: boolean;
 }> = ({ plotpoints, defaultOpen, testId, onDeleteChapter, deleteDisabled }) => {
     const [open, setOpen] = React.useState(defaultOpen);
 
     return (
         <div data-testid={testId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-            <PlotpointsButton
+            {/* FLAT REWORK: square outline Button (radiusSm via the modular
+                Button's base frame) — was the 999px PlotpointsButton pill.
+                The sg-plot-toggle class hook keeps its hover treatment. */}
+            <Button
+                variant="outline"
                 onClick={() => setOpen((v) => !v)}
                 aria-expanded={open}
                 data-testid={`${testId}-toggle`}
                 className="sg-plot-toggle"
+                style={{ marginBottom: 10, fontSize: theme.fontSize.base, fontWeight: 500 }}
             >
                 {open ? 'Hide' : 'Show'} Plot Points
                 <span style={{ fontSize: theme.fontSize.sm, color: theme.textFaint }}>({plotpoints.length})</span>
-            </PlotpointsButton>
+            </Button>
             {open && (
                 <PlotpointsList data-testid={`${testId}-body`} className="sg-fade-in">
                     <ul
@@ -698,53 +410,39 @@ const PlotpointsWrapper: React.FC<{
                 </PlotpointsList>
             )}
             {/* Delete-chapter control — revealed together with the plotpoints
-                list. Clicking opens the confirmation dialog (SectionStoryContent's
-                removeState); the PATCH fires only on explicit confirm. */}
+                list. Clicking opens the confirmation dialog (removeState);
+                the PATCH fires only on explicit confirm. FLAT: modular danger
+                Button (square corners). */}
             {open && onDeleteChapter && (
                 <RemoveChapterRow>
-                    <RemoveChapterButton
+                    <Button
+                        variant="danger"
                         onClick={onDeleteChapter}
                         disabled={deleteDisabled}
                         data-testid={`${testId}-delete-chapter`}
                         title="Remove this chapter, its plotpoints, and all its revisions (later chapters renumber)"
-                        className="sg-danger"
                     >
                         <TrashIcon />
                         Delete Chapter
-                    </RemoveChapterButton>
+                    </Button>
                 </RemoveChapterRow>
             )}
         </div>
     );
 };
 
-// Revision count chip rendered in the chapter header. Shows the number of
-// revision attempts for the chapter, replacing the previous word count + time display.
+// FLAT REWORK: revision-count chip in the chapter header — now the modular
+// <Badge> (square chip + rail). Was the 999px ChapterMeta pill.
 const ChapterMeta: React.FC<{ chapter: any }> = ({ chapter }) => (
-    <span
-        style={{
-            fontSize: theme.fontSize.base,
-            color: theme.textMuted,
-            background: theme.surface3,
-            padding: '3px 8px',
-            borderRadius: 999,
-            display: 'inline-flex',
-            gap: 8,
-            alignItems: 'center',
-            fontWeight: 500,
-            border: `1px solid ${theme.border}`
-        }}
-    >
+    <Badge variant="neutral">
         {chapter.expanded ? (
-            <>
-                <span>
-                    {chapter.revisions?.length ?? 0} revision{(chapter.revisions?.length ?? 0) !== 1 ? 's' : ''}
-                </span>
-            </>
+            <span>
+                {chapter.revisions?.length ?? 0} revision{(chapter.revisions?.length ?? 0) !== 1 ? 's' : ''}
+            </span>
         ) : (
             <span style={{ color: theme.accent2 }}>Pending</span>
         )}
-    </span>
+    </Badge>
 );
 
 // Sticky per-chapter bar: revision dropdown on the left + per-chapter action
@@ -857,7 +555,7 @@ const ChapterStickyBar: React.FC<{
     );
 };
 
-export const SectionStoryContent: React.FC = React.memo(() => {
+export const StoryContent: React.FC = React.memo(() => {
     const { store, setStore, touchStory } = useStoryStore();
     const { selected } = store;
 
@@ -932,31 +630,6 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             return next;
         });
     }, [selected?.storyId]);
-
-    // Patch a single record's fields by id. We use functional updates so the
-    // updater always targets the latest records array.
-    const patchRecord = React.useCallback(
-        (id: number, patch: (entry: { data: any; isProcessing: boolean; error: string }) => void) => {
-            setStore((prev) => ({
-                ...prev,
-                records: prev.records.map((e) => {
-                    if (e.id !== id) return e;
-                    const next = { ...e, data: e.data ? { ...e.data } : null, error: e.error };
-                    patch(next as any);
-                    return next;
-                }),
-                selected:
-                    prev.selected?.id === id
-                        ? (() => {
-                              const updated = prev.records.map((e) => (e.id === id ? { ...e } : e));
-                              const found = updated.find((e) => e.id === id);
-                              return found ?? prev.selected;
-                          })()
-                        : prev.selected
-            }));
-        },
-        [setStore]
-    );
 
     // ── Re-expand chapter state ──────────────────────────────────────────
     // Tracks which chapter (by display index + previous revision count) is
@@ -1313,7 +986,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
     }, [selected, store.config.baseUrl, deleteState.chapterIndex, deleteState.revisionIndex, setStore, touchStory]);
 
     // ── Remove entire chapter state ──────────────────────────────────────
-    // The "Delete Chapter" pill lives INSIDE the plotpoints area (revealed by
+    // The "Delete Chapter" control lives INSIDE the plotpoints area (revealed by
     // the Hide/Show Plot Points toggle — see PlotpointsWrapper) and removes
     // the chapter OUTRIGHT: plotpoints, every revision, and the chapter slot
     // itself. The server renumbers the chapters after it, so all chapter
@@ -1805,7 +1478,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             // bumped total) and what the server recorded (interrupted create).
             const resumeTarget = Math.max(selected.chapterRequested, data?.meta?.chapterCount ?? 0);
             // clientId from the top-right header dropdown selects the LLM
-            // client for the resumed calls (per-request only, never stored).
+            // client for the resumed calls (per-request only).
             const result = await resumeStoryPlotpoints(
                 store.config.baseUrl,
                 selected.storyId,
@@ -1815,9 +1488,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
 
             // Align the entry with the server's target and switch the
             // processing indicators back on. The already-running poll loop
-            // (it re-arms at interval even after hard errors — see the
-            // polling effect's scheduleRefresh) streams the regenerated
-            // chapters in as plotpoint.json is rewritten chapter by chapter.
+            // streams the regenerated chapters in as plotpoint.json is
+            // rewritten chapter by chapter.
             // Resume is a user action — bump the ordering timestamp.
             touchStory(selected.storyId);
             setStore((prev) => ({
@@ -1984,7 +1656,9 @@ export const SectionStoryContent: React.FC = React.memo(() => {
         <ContentColumn data-testid="content-story" className="sg-scroll">
             {/* In-progress banner: spinner chip + chapter progress count +
                 the Terminate control (also shown for jobs this session did
-                NOT start — serverProcessing from the server's registry). */}
+                NOT start — serverProcessing from the server's registry).
+                FLAT REWORK: Terminate is the modular danger Button (square
+                corners, was the 999px TerminateButton pill). */}
             {(selected.isProcessing || selected.serverProcessing) && (
                 <ProgressBanner data-testid="progress-banner">
                     <span className="sg-spinner" />
@@ -1993,7 +1667,8 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                     ) : (
                         <span>Background job running…</span>
                     )}
-                    <TerminateButton
+                    <Button
+                        variant="danger"
                         onClick={handleTerminateJob}
                         disabled={terminateState.isSubmitting}
                         data-testid="terminate-job-button"
@@ -2002,31 +1677,39 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 ? 'Terminating…'
                                 : 'Terminate the background job for this story (generated content is kept)'
                         }
-                        className="sg-danger"
+                        style={{ fontSize: theme.fontSize.sm, fontWeight: 600, padding: '3px 10px' }}
                     >
                         <StopIcon />
                         {terminateState.isSubmitting ? 'Terminating…' : 'Terminate'}
-                    </TerminateButton>
+                    </Button>
                 </ProgressBanner>
             )}
 
             {/* Story stats — total chapters, total words of the currently-viewed
                 revisions, and the estimated token cost of those words. Shown
-                only once chapters exist (an empty story has nothing to sum). */}
+                only once chapters exist (an empty story has nothing to sum).
+                FLAT REWORK: the modular <Badge> chips (square + rail) replace
+                the 999px StatChip pills; the label/value pair stays inside. */}
             {statChapters > 0 && (
                 <StatsBar data-testid="story-stats">
-                    <StatChip data-testid="stat-chapters">
-                        <StatLabel>Chapters</StatLabel>
-                        <span>{statChapters}</span>
-                    </StatChip>
-                    <StatChip data-testid="stat-words">
-                        <StatLabel>Words</StatLabel>
-                        <span>{statWords.toLocaleString('en-US')}</span>
-                    </StatChip>
-                    <StatChip data-testid="stat-tokens">
-                        <StatLabel>Tokens (est.)</StatLabel>
-                        <span>~{statTokens.toLocaleString('en-US')}</span>
-                    </StatChip>
+                    <span data-testid="stat-chapters">
+                        <Badge variant="neutral" style={{ fontSize: theme.fontSize.base, fontWeight: 500, padding: '4px 12px', gap: 8 }}>
+                            <span style={{ color: theme.textMuted, fontWeight: 500 }}>Chapters</span>
+                            <span>{statChapters}</span>
+                        </Badge>
+                    </span>
+                    <span data-testid="stat-words">
+                        <Badge variant="neutral" style={{ fontSize: theme.fontSize.base, fontWeight: 500, padding: '4px 12px', gap: 8 }}>
+                            <span style={{ color: theme.textMuted, fontWeight: 500 }}>Words</span>
+                            <span>{statWords.toLocaleString('en-US')}</span>
+                        </Badge>
+                    </span>
+                    <span data-testid="stat-tokens">
+                        <Badge variant="neutral" style={{ fontSize: theme.fontSize.base, fontWeight: 500, padding: '4px 12px', gap: 8 }}>
+                            <span style={{ color: theme.textMuted, fontWeight: 500 }}>Tokens (est.)</span>
+                            <span>~{statTokens.toLocaleString('en-US')}</span>
+                        </Badge>
+                    </span>
                 </StatsBar>
             )}
 
@@ -2076,7 +1759,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                 onSelect={(idx) => setActiveRevisions((prev) => ({ ...prev, [i]: idx }))}
                                 dropdownActions={
                                     <>
-                                        <ChapterActionButton
+                                        <IconButton
                                             onClick={() =>
                                                 openRewriteDialogue(ch.chapterIndex, ch.revisions?.length, activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1)
                                             }
@@ -2084,7 +1767,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                             data-testid={`chapter-${i}-rewrite`}
                                         >
                                             <RewriteIcon />
-                                        </ChapterActionButton>
+                                        </IconButton>
                                         {/* Delete revision button — sits next to the rewrite [+].
                                             Only rendered for expanded chapters (a pending chapter
                                             has no revisions to delete). Targets the revision
@@ -2094,7 +1777,7 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                             is destructive and easy to hit accidentally next to
                                             the other chapter icons. */}
                                         {!!ch.expanded && (
-                                            <ChapterActionButton
+                                            <IconButton
                                                 onClick={() =>
                                                     openDeleteDialogue(
                                                         ch.chapterIndex,
@@ -2106,13 +1789,13 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                                 data-testid={`chapter-${i}-delete`}
                                             >
                                                 <TrashIcon />
-                                            </ChapterActionButton>
+                                            </IconButton>
                                         )}
                                     </>
                                 }
                                 actions={
                                     <>
-                                        <ChapterActionButton
+                                        <IconButton
                                             onClick={() =>
                                                 handleReExpand(ch.chapterIndex, ch.revisions?.length)
                                             }
@@ -2128,14 +1811,14 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                             data-testid={`chapter-${i}-reexpand`}
                                         >
                                             <RefreshIcon />
-                                        </ChapterActionButton>
-                                        <ChapterActionButton
+                                        </IconButton>
+                                        <IconButton
                                             onClick={() => handleFork(ch.chapterIndex)}
                                             title="Fork from this chapter"
                                             data-testid={`chapter-${i}-fork`}
                                         >
                                             <ForkIcon />
-                                        </ChapterActionButton>
+                                        </IconButton>
                                     </>
                                 }
                                 testId={`chapter-${i}-revisions`}
@@ -2185,17 +1868,18 @@ export const SectionStoryContent: React.FC = React.memo(() => {
             {(hasChapters || canResume) && (
                 <ActionBar data-testid="content-action-bar">
                     {hasChapters && (
-                        <ActionButton
+                        <Button
+                            variant="outline"
                             onClick={handleCollapseAll}
                             data-testid="collapse-all-button"
                             title="Collapse all chapters"
-                            className="sg-hover"
                         >
                             <CollapseAllIcon />
-                        </ActionButton>
+                        </Button>
                     )}
                     {canResume && (
-                        <ActionButton
+                        <Button
+                            variant="outline"
                             onClick={handleResume}
                             disabled={resumeState.isSubmitting}
                             data-testid="resume-generation-button"
@@ -2204,282 +1888,228 @@ export const SectionStoryContent: React.FC = React.memo(() => {
                                     ? 'Resuming generation…'
                                     : `Resume plotline generation (${data.chapters.length}/${resumeTarget} chapters)`
                             }
-                            className="sg-hover"
                         >
                             <ResumeIcon />
-                        </ActionButton>
+                        </Button>
                     )}
                     {hasChapters && (
-                        <ActionButton
+                        <Button
+                            variant="outline"
                             onClick={openAppendDialogue}
                             data-testid="extend-plotpoints-button"
                             title={`Append ${appendState.chapterCount} new chapters to this story`}
-                            className="sg-hover"
                         >
                             <ExtendIcon />
-                        </ActionButton>
+                        </Button>
                     )}
                 </ActionBar>
             )}
 
-            {/* Rewrite dialogue modal — shown when rewriteState.isOpen is true */}
-            {rewriteState.isOpen && (
-                <RewriteOverlay onClick={closeRewriteDialogue}>
-                    <RewriteDialog onClick={(e) => e.stopPropagation()}>
-                        <RewriteDialogTitle>
-                            Rewrite Chapter {rewriteState.chapterIndex + 1}
-                        </RewriteDialogTitle>
-                        <p
-                            style={{
-                                margin: '0 0 12px 0',
-                                fontSize: theme.fontSize.sm,
-                                color: theme.textMuted,
-                                lineHeight: 1.5
-                            }}
-                        >
-                            Provide instructions for how this chapter should be rewritten.
-                            The full story summary will be used as context.
-                        </p>
-                        <RewriteTextarea
-                            value={rewriteContextInput}
-                            onChange={(e) => setRewriteContextInput(e.target.value)}
-                            placeholder="e.g. Make the scene more dramatic, add more tension, slow down the pacing..."
-                            autoFocus
-                            onFocus={(e) => {
-                                const len = e.target.value.length;
-                                e.target.setSelectionRange(len, len);
-                            }}
-                            data-testid="rewrite-context-input"
-                            className="sg-input"
-                        />
-                        <RewriteDialogActions>
-                            <ActionButton
-                                onClick={closeRewriteDialogue}
-                                data-testid="rewrite-cancel"
-                                style={{ pointerEvents: 'auto' }}
-                            >
-                                Cancel
-                            </ActionButton>
-                            <ActionButton
-                                onClick={() =>
-                                    handleRewrite(
-                                        rewriteState.chapterIndex,
-                                        rewriteContextInput,
-                                        rewriteState.previousRevisionCount,
-                                        rewriteState.rewriteRevisionIndex
-                                    )
-                                }
-                                disabled={!rewriteContextInput.trim()}
-                                data-testid="rewrite-submit"
-                                style={{
-                                    pointerEvents: 'auto',
-                                    backgroundColor: rewriteContextInput.trim() ? theme.accent : undefined,
-                                    color: rewriteContextInput.trim() ? theme.highlight : undefined,
-                                    borderColor: rewriteContextInput.trim() ? theme.accent : undefined,
-                                    opacity: rewriteContextInput.trim() ? 1 : 0.5
-                                }}
-                            >
-                                Rewrite
-                            </ActionButton>
-                        </RewriteDialogActions>
-                    </RewriteDialog>
-                </RewriteOverlay>
-            )}
+            {/* ── Rewrite dialog — STANDARD PATTERN ─────────────────────────
+                <Dialog> header/body/footer. The textarea keeps its autofocus
+                + caret-to-end behaviour (restores the prefill edit UX). */}
+            <Dialog
+                open={rewriteState.isOpen}
+                title={`Rewrite Chapter ${rewriteState.chapterIndex + 1}`}
+                onClose={closeRewriteDialogue}
+                testId="rewrite-dialog"
+            >
+                <Dialog.Body>
+                    <DialogCopy>
+                        Provide instructions for how this chapter should be rewritten.
+                        The full story summary will be used as context.
+                    </DialogCopy>
+                    <Textarea
+                        value={rewriteContextInput}
+                        onChange={(e) => setRewriteContextInput(e.target.value)}
+                        placeholder="e.g. Make the scene more dramatic, add more tension, slow down the pacing..."
+                        autoFocus
+                        onFocus={(e) => {
+                            const len = e.target.value.length;
+                            e.target.setSelectionRange(len, len);
+                        }}
+                        data-testid="rewrite-context-input"
+                        style={{ minHeight: 120, fontSize: theme.fontSize.base }}
+                    />
+                </Dialog.Body>
+                <Dialog.Footer>
+                    <Dialog.CancelButton onClick={closeRewriteDialogue} data-testid="rewrite-cancel">
+                        Cancel
+                    </Dialog.CancelButton>
+                    <Dialog.ConfirmButton
+                        onClick={() =>
+                            handleRewrite(
+                                rewriteState.chapterIndex,
+                                rewriteContextInput,
+                                rewriteState.previousRevisionCount,
+                                rewriteState.rewriteRevisionIndex
+                            )
+                        }
+                        disabled={!rewriteContextInput.trim()}
+                        data-testid="rewrite-submit"
+                    >
+                        Rewrite
+                    </Dialog.ConfirmButton>
+                </Dialog.Footer>
+            </Dialog>
 
-            {/* Append-chapters dialog — the "[->]" action. Mirrors the footer
-                generation box: a notes textarea (optional plotline guidance
-                for the appended chapters) + chapter count + a primary action.
-                Submitting POSTs { append: { chapterCount, notes? } } to this
-                SAME storyId (appendStoryPlotpoints) — the server appends
-                plotpoints-only chapters after the current list and the new
-                chapters appear via the restarted poll loop. */}
-            {appendState.isOpen && (
-                <AppendOverlay onClick={closeAppendDialogue}>
-                    <AppendDialog
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="append-dialog-title"
-                        data-testid="append-dialog"
-                        onClick={(e) => e.stopPropagation()}
+            {/* ── Append-chapters dialog — STANDARD PATTERN ──────────────────
+                Mirrors the footer generation box: a notes textarea (optional
+                plotline guidance for the appended chapters) + chapter count +
+                a primary action. Submitting POSTs { append: { chapterCount,
+                notes? } } to this SAME storyId (appendStoryPlotpoints) — the
+                server appends plotpoints-only chapters after the current
+                list and the new chapters appear via the restarted poll loop.
+                dismissable=false while submitting (Dialog prop) reproduces
+                the old mid-flight close guard. */}
+            <Dialog
+                open={appendState.isOpen}
+                title={`Append Chapters to ${selected.storyName || selected.storyId}`}
+                dismissable={!appendState.isSubmitting}
+                onClose={closeAppendDialogue}
+                testId="append-dialog"
+            >
+                <Dialog.Body>
+                    <DialogCopy>
+                        This story has {appendBaseCount} chapter{appendBaseCount === 1 ? '' : 's'}. Appending
+                        adds new plotpoint chapters after the current list ({appendBaseCount} + new = total) — chapters are not auto-expanded.
+                    </DialogCopy>
+                    <Textarea
+                        rows={5}
+                        value={appendState.notes}
+                        onChange={(e) =>
+                            setAppendState((prev) => (prev.isSubmitting ? prev : { ...prev, notes: e.target.value, error: '' }))
+                        }
+                        placeholder="Optional — plotpoints or guidance for the new chapters, e.g. 'the crew splits into two groups, each chasing a different lead…'"
+                        disabled={appendState.isSubmitting}
+                        data-testid="append-notes-input"
+                        style={{ maxHeight: 200 }}
+                    />
+                    {/* No Cancel button in this dialog — the user is here to
+                        append chapters; closing the dialog (overlay click)
+                        is sufficient to abort. The control row lives in the
+                        footer: chapters label + count + the primary Append. */}
+                    {/* Inline error INSIDE the primary body (above the footer)
+                        — matches the delete/remove dialogs' placement. Was a
+                        second <Dialog.Body> AFTER <Dialog.Footer>, which the
+                        Dialog frame renders fine but is a pattern smell. */}
+                    {appendState.error && (
+                        <DialogErrorLine data-testid="append-error">{appendState.error}</DialogErrorLine>
+                    )}
+                </Dialog.Body>
+                <Dialog.Footer>
+                    <label
+                        htmlFor="append-count"
+                        style={{ color: theme.textMuted, fontSize: theme.fontSize.md, fontWeight: 500, marginRight: 'auto' }}
                     >
-                        <AppendDialogTitle id="append-dialog-title">
-                            Append Chapters to {selected.storyName || selected.storyId}
-                        </AppendDialogTitle>
-                        <p
-                            style={{
-                                margin: '0 0 12px 0',
-                                fontSize: theme.fontSize.sm,
-                                color: theme.textMuted,
-                                lineHeight: 1.5
-                            }}
-                        >
-                            This story has {appendBaseCount} chapter{appendBaseCount === 1 ? '' : 's'}. Appending
-                            adds new plotpoint chapters after the current list (
-                            {appendBaseCount} + new = total) — chapters are not auto-expanded.
-                        </p>
-                        <AppendNotesTextarea
-                            rows={5}
-                            className="sg-input"
-                            value={appendState.notes}
-                            onChange={(e) =>
-                                setAppendState((prev) => (prev.isSubmitting ? prev : { ...prev, notes: e.target.value, error: '' }))
-                            }
-                            placeholder="Optional — plotpoints or guidance for the new chapters, e.g. 'the crew splits into two groups, each chasing a different lead…'"
-                            disabled={appendState.isSubmitting}
-                            data-testid="append-notes-input"
-                        />
-                        <AppendControlRow>
-                            <label
-                                htmlFor="append-count"
-                                style={{ color: theme.textMuted, fontSize: theme.fontSize.md, fontWeight: 500 }}
-                            >
-                                Chapters
-                            </label>
-                            <AppendCountInput
-                                id="append-count"
-                                type="number"
-                                min={1}
-                                max={99}
-                                className="sg-input"
-                                value={appendState.chapterCount}
-                                onChange={(e) =>
-                                    setAppendState((prev) =>
-                                        prev.isSubmitting ? prev : { ...prev, chapterCount: Number(e.target.value), error: '' }
-                                    )
-                                }
-                                disabled={appendState.isSubmitting}
-                                data-testid="append-count-input"
-                            />
-                            {/* No Cancel button in this dialog — the user is
-                                here to append chapters; closing the dialog
-                                (overlay click) is sufficient to abort. */}
-                            {/* Append — the footer's Generate analogue: submits
-                                the append POST for this story in place. */}
-                            <AppendButton
-                                onClick={handleAppend}
-                                disabled={appendState.isSubmitting}
-                                className="sg-primary"
-                                data-testid="append-button"
-                            >
-                                {appendState.isSubmitting ? 'Appending…' : 'Append'}
-                            </AppendButton>
-                        </AppendControlRow>
-                        {appendState.error && (
-                            <AppendError data-testid="append-error">{appendState.error}</AppendError>
-                        )}
-                    </AppendDialog>
-                </AppendOverlay>
-            )}
+                        Chapters
+                    </label>
+                    <NumberInput
+                        id="append-count"
+                        min={1}
+                        max={99}
+                        value={appendState.chapterCount}
+                        onChange={(e) =>
+                            setAppendState((prev) =>
+                                prev.isSubmitting ? prev : { ...prev, chapterCount: Number(e.target.value), error: '' }
+                            )
+                        }
+                        disabled={appendState.isSubmitting}
+                        data-testid="append-count-input"
+                    />
+                    {/* Append — the footer's Generate analogue: submits the
+                        append POST for this story in place. className must
+                        stay EXACTLY 'sg-primary' (Button variant supplies it;
+                        App.test asserts via behavior, the class hook drives
+                        the hover fill). */}
+                    <Button
+                        variant="primary"
+                        onClick={handleAppend}
+                        disabled={appendState.isSubmitting}
+                        data-testid="append-button"
+                    >
+                        {appendState.isSubmitting ? 'Appending…' : 'Append'}
+                    </Button>
+                </Dialog.Footer>
+            </Dialog>
 
-            {/* Delete-revision confirmation dialog — shown when deleteState.isOpen
-                is true. Guards the destructive action behind an explicit confirm:
-                clicking the trash can only opens this; the PATCH fires on Delete.
-                Overlay click / Cancel abort (no request sent). */}
-            {deleteState.isOpen && (
-                <RewriteOverlay onClick={closeDeleteDialogue}>
-                    <DeleteDialog
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="delete-dialog-title"
-                        data-testid="delete-dialog"
-                        onClick={(e) => e.stopPropagation()}
+            {/* ── Delete-revision confirmation — STANDARD PATTERN ───────────
+                Shown when deleteState.isOpen. Guards the destructive action
+                behind an explicit confirm: clicking the trash can only opens
+                this; the PATCH fires on Delete. Overlay click / Cancel abort
+                (no request sent). Title text is the exact test contract
+                ("Delete Chapter N — Revision R of M"). */}
+            <Dialog
+                open={deleteState.isOpen}
+                title={`Delete Chapter ${deleteState.chapterIndex + 1} — Revision ${deleteState.revisionIndex + 1} of ${deleteState.revisionCount}`}
+                dismissable={!deleteState.isDeleting}
+                onClose={closeDeleteDialogue}
+                testId="delete-dialog"
+            >
+                <Dialog.Body>
+                    <DialogCopy>
+                        {/* Only the selected revision is removed; the chapter's
+                            other revisions survive. Deleting the last revision is
+                            what returns the chapter to plotlines only. */}
+                        {deleteState.revisionCount > 1
+                            ? `This removes revision ${deleteState.revisionIndex + 1} of ${deleteState.revisionCount} from Chapter ${deleteState.chapterIndex + 1}. The chapter's other revisions are kept. This cannot be undone.`
+                            : `This removes the chapter's only revision — the chapter returns to plotlines only and can be expanded again. This cannot be undone.`}
+                    </DialogCopy>
+                    {deleteState.error && (
+                        <DialogErrorLine data-testid="delete-error">{deleteState.error}</DialogErrorLine>
+                    )}
+                </Dialog.Body>
+                <Dialog.Footer>
+                    <Dialog.CancelButton onClick={closeDeleteDialogue} disabled={deleteState.isDeleting} data-testid="delete-cancel">
+                        Cancel
+                    </Dialog.CancelButton>
+                    <Dialog.ConfirmButton
+                        tone="danger"
+                        onClick={handleDeleteChapter}
+                        disabled={deleteState.isDeleting}
+                        data-testid="delete-confirm"
                     >
-                        <RewriteDialogTitle id="delete-dialog-title" data-testid="delete-dialog-title">
-                            Delete Chapter {deleteState.chapterIndex + 1} — Revision {deleteState.revisionIndex + 1} of {deleteState.revisionCount}
-                        </RewriteDialogTitle>
-                        <p
-                            style={{
-                                margin: '0 0 12px 0',
-                                fontSize: theme.fontSize.sm,
-                                color: theme.textMuted,
-                                lineHeight: 1.5
-                            }}
-                        >
-                            {/* Only the selected revision is removed; the chapter's
-                                other revisions survive. Deleting the last revision is
-                                what returns the chapter to plotlines only. */}
-                            {deleteState.revisionCount > 1
-                                ? `This removes revision ${deleteState.revisionIndex + 1} of ${deleteState.revisionCount} from Chapter ${deleteState.chapterIndex + 1}. The chapter's other revisions are kept. This cannot be undone.`
-                                : `This removes the chapter's only revision — the chapter returns to plotlines only and can be expanded again. This cannot be undone.`}
-                        </p>
-                        <RewriteDialogActions>
-                            <ActionButton
-                                onClick={closeDeleteDialogue}
-                                disabled={deleteState.isDeleting}
-                                data-testid="delete-cancel"
-                                style={{ pointerEvents: 'auto' }}
-                            >
-                                Cancel
-                            </ActionButton>
-                            <DeleteConfirmButton
-                                onClick={handleDeleteChapter}
-                                disabled={deleteState.isDeleting}
-                                data-testid="delete-confirm"
-                                style={{ pointerEvents: 'auto', opacity: deleteState.isDeleting ? 0.6 : 1 }}
-                            >
-                                {deleteState.isDeleting ? 'Deleting…' : 'Delete'}
-                            </DeleteConfirmButton>
-                        </RewriteDialogActions>
-                        {deleteState.error && (
-                            <AppendError data-testid="delete-error">{deleteState.error}</AppendError>
-                        )}
-                    </DeleteDialog>
-                </RewriteOverlay>
-            )}
-            {/* Remove-entire-chapter confirmation dialog — opened by the
-                "Delete Chapter" pill inside the plotpoints area. Unlike the
-                delete-revision dialog above (which keeps the chapter), this
-                removes the chapter outright: plotpoints, every revision, and
-                the slot itself; later chapters renumber. Overlay click /
-                Cancel abort (no request sent). */}
-            {removeState.isOpen && (
-                <RewriteOverlay onClick={closeRemoveDialogue}>
-                    <DeleteDialog
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="remove-chapter-dialog-title"
-                        data-testid="remove-chapter-dialog"
-                        onClick={(e) => e.stopPropagation()}
+                        {deleteState.isDeleting ? 'Deleting…' : 'Delete'}
+                    </Dialog.ConfirmButton>
+                </Dialog.Footer>
+            </Dialog>
+
+            {/* ── Remove-entire-chapter confirmation — STANDARD PATTERN ──────
+                Opened by the "Delete Chapter" control inside the plotpoints
+                area. Unlike the delete-revision dialog above (which keeps the
+                chapter), this removes the chapter outright: plotpoints, every
+                revision, and the slot itself; later chapters renumber. Overlay
+                click / Cancel abort (no request sent). */}
+            <Dialog
+                open={removeState.isOpen}
+                title={`Remove Chapter ${removeState.chapterIndex + 1}${removeState.title ? `: ${removeState.title}` : ''}`}
+                dismissable={!removeState.isRemoving}
+                onClose={closeRemoveDialogue}
+                testId="remove-chapter-dialog"
+            >
+                <Dialog.Body>
+                    <DialogCopy>
+                        This permanently removes the chapter — its plotpoints and every revision of its expanded
+                        content. Chapters after it are renumbered to fill the gap. This cannot be undone.
+                    </DialogCopy>
+                    {removeState.error && (
+                        <DialogErrorLine data-testid="remove-chapter-error">{removeState.error}</DialogErrorLine>
+                    )}
+                </Dialog.Body>
+                <Dialog.Footer>
+                    <Dialog.CancelButton onClick={closeRemoveDialogue} disabled={removeState.isRemoving} data-testid="remove-chapter-cancel">
+                        Cancel
+                    </Dialog.CancelButton>
+                    <Dialog.ConfirmButton
+                        tone="danger"
+                        onClick={handleRemoveChapter}
+                        disabled={removeState.isRemoving}
+                        data-testid="remove-chapter-confirm"
                     >
-                        <RewriteDialogTitle id="remove-chapter-dialog-title" data-testid="remove-chapter-dialog-title">
-                            Remove Chapter {removeState.chapterIndex + 1}
-                            {removeState.title ? `: ${removeState.title}` : ''}
-                        </RewriteDialogTitle>
-                        <p
-                            style={{
-                                margin: '0 0 12px 0',
-                                fontSize: theme.fontSize.sm,
-                                color: theme.textMuted,
-                                lineHeight: 1.5
-                            }}
-                        >
-                            This permanently removes the chapter — its plotpoints and every revision of its expanded
-                            content. Chapters after it are renumbered to fill the gap. This cannot be undone.
-                        </p>
-                        <RewriteDialogActions>
-                            <ActionButton
-                                onClick={closeRemoveDialogue}
-                                disabled={removeState.isRemoving}
-                                data-testid="remove-chapter-cancel"
-                                style={{ pointerEvents: 'auto' }}
-                            >
-                                Cancel
-                            </ActionButton>
-                            <DeleteConfirmButton
-                                onClick={handleRemoveChapter}
-                                disabled={removeState.isRemoving}
-                                data-testid="remove-chapter-confirm"
-                                style={{ pointerEvents: 'auto', opacity: removeState.isRemoving ? 0.6 : 1 }}
-                            >
-                                {removeState.isRemoving ? 'Removing…' : 'Remove Chapter'}
-                            </DeleteConfirmButton>
-                        </RewriteDialogActions>
-                        {removeState.error && (
-                            <AppendError data-testid="remove-chapter-error">{removeState.error}</AppendError>
-                        )}
-                    </DeleteDialog>
-                </RewriteOverlay>
-            )}
+                        {removeState.isRemoving ? 'Removing…' : 'Remove Chapter'}
+                    </Dialog.ConfirmButton>
+                </Dialog.Footer>
+            </Dialog>
         </ContentColumn>
     );
 });

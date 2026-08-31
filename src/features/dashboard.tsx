@@ -16,9 +16,10 @@
 // The sidebar (left column) is collapsible — toggled by a button in the header.
 // When collapsed, the main content area fills the full width.
 //
-// The visual treatment is a modern deep-dark dashboard: a glassy header bar
-// with a hairline border + subtle gradient under-glow, an elevated footer with
-// soft shadow above, and a translucent sidebar that floats over the background.
+// This is the layout FEATURE (owns the responsive sidebar/overlay behaviour),
+// moved from the old src/components/StoryGeneratorDashboard. Pure layout: it
+// takes slots (headerControls / sidebar / content / footer) and knows nothing
+// about the store.
 
 import React from 'react';
 import { styled, theme } from '../styles';
@@ -95,7 +96,7 @@ const SidebarOverlay = styled('div', {
     animation: 'sg-fade-in 160ms ease both'
 });
 
-// Footer row — pinned at the bottom. Used by SectionStoryInput.
+// Footer row — pinned at the bottom. Used by the story-input feature.
 // Flat Design: solid surface block + top hairline border separates it from the
 // content above. No gradient, no blur, no upward shadow.
 export const DashboardFooter = styled('div', {
@@ -110,7 +111,7 @@ export const DashboardFooter = styled('div', {
 
 // Composed dashboard. Accepts slots for header controls, sidebar content,
 // main content, and footer.
-export type StoryGeneratorDashboardProps = {
+export type DashboardProps = {
     headerControls: React.ReactNode;
     sidebar: React.ReactNode;
     content: React.ReactNode;
@@ -119,7 +120,7 @@ export type StoryGeneratorDashboardProps = {
     onOverlayClick?: () => void;
 };
 
-export const StoryGeneratorDashboard: React.FC<StoryGeneratorDashboardProps> = React.memo(
+export const Dashboard: React.FC<DashboardProps> = React.memo(
     ({ headerControls, sidebar, content, footer, sidebarOpen, onOverlayClick }) => {
         // Track whether the viewport is mobile (<768px). The overlay only appears
         // on mobile where the sidebar overlaps content — on desktop the sidebar

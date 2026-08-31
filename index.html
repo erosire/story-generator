@@ -21,7 +21,9 @@
             *::-webkit-scrollbar-thumb {
                 background: rgba(255, 255, 255, 0.045);
                 border: 2px solid transparent;
-                border-radius: 8px;
+                /* Flat: square scrollbar thumb (matches theme.radiusSm=2 in
+                   src/styles/theme.ts and the .sg-scroll rule in global.ts). */
+                border-radius: 2px;
                 background-clip: padding-box;
             }
         </style>

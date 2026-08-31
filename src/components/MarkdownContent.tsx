@@ -100,7 +100,7 @@ const InlineCode: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
             fontSize: '0.88em',
             background: theme.accentSoft,
             padding: '2px 6px',
-            borderRadius: 4,
+            borderRadius: theme.radiusSm,
             // accentChipText/accentChipBorder — the near-white accent-hue
             // family tokens (see theme.ts), shared with the sidebar badges.
             color: theme.accentChipText,
@@ -168,7 +168,9 @@ const Blockquote: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
             borderLeft: `3px solid ${theme.accent}`,
             color: theme.textMuted,
             background: theme.accentSoft,
-            borderRadius: '0 6px 6px 0',
+            // Flat: square trailing corners — the accent LEFT border is the
+            // visual device; rounding the right edge would soften it.
+            borderRadius: `0 ${theme.radiusSm}px ${theme.radiusSm}px 0`,
             padding: '6px 12px'
         }}
     >

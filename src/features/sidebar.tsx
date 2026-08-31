@@ -1,4 +1,4 @@
-// Sidebar section: vertical list of all stories in order.
+// Sidebar FEATURE: vertical list of all stories in order.
 //
 // Replaces the previous horizontal tab bar. Each tile shows the story title,
 // a chapter-count badge, a processing indicator, and an "x" delete control
@@ -26,14 +26,15 @@
 // sessions/devices and the server's live background-job flags.
 //
 // Auto-refresh behavior:
-//   - On mount, fetches the collection once (via BootstrapLayer) to seed the store.
+//   - On mount, fetches the collection once (via the bootstrap feature) to
+//     seed the store.
 //   - A useEffect runs every REFRESH_INTERVAL_MS (30s) — or ACTIVE_REFRESH_INTERVAL_MS
 //     (5s) while any story is processing — to re-fetch the collection and merge
 //     new entries while preserving the current selection, any locally-cached
 //     chapter data, and any cache-only stories that are missing from the server
 //     response (they stay visible — deleting them purges the local cache without
 //     a server call). See mergeServerStoryList.
-//   - Errors surface as a non-blocking loadWarning (same as BootstrapLayer).
+//   - Errors surface as a non-blocking loadWarning (same as the bootstrap).
 //
 // Background-processing animation:
 //   A tile animates while its story has a background thread in flight. Two
@@ -44,22 +45,24 @@
 //   itself is two flat-design pieces: an .sg-spinner ring inside the ⏳ badge
 //   chip, and a .sg-story-processing surface pulse on the tile (styles/global.ts).
 //
-// Visual: elevated translucent sidebar with modern story TILES. Each tile is
-// a card-like button (elevated solid surface, hairline border, radius-lg
-// corners) with the story title on the first row and status badges on a
-// second row. Hover swaps to a brighter surface + crisper border via the
-// sg-story-item class hook; the selected tile reads as an elevated "active
-// card" (accent-tinted translucent surface, crisp accent border, brighter
-// accent rail) via the sg-story-selected class hook. Badges are rounded
-// status chips; the processing badge text is still the literal ⏳ so the
-// test that asserts `not.toContain('⏳')` after polling completes keeps
-// working (App.test.tsx:625).
+// BADGE REWORK (flat redesign): the tile status chips + the header job-count
+// chip now use the modular <Badge> component — flat SQUARE chips (radiusSm)
+// with a 2px status rail on the left edge replacing the old 999px pill
+// (components/Badge.tsx). Neutral chips mark counts; accent chips mark
+// activity (processing / job count) so the "active" family still reads
+// brighter on the selected tile. The processing badge text is still the
+//   literal ⏳ so the test that asserts `not.toContain('⏳')` after polling
+//   completes keeps working (App.test.tsx:625).
+//
+// Moved from the old src/components/sections/SectionStoryTabs.tsx — this is a
+// feature (owns the sort/filter/refresh business logic + store access).
 
 import React from 'react';
-import { styled, theme } from '../../styles';
-import { useStoryStore } from '../../context';
-import { fetchStoryList } from '../../api';
-import { mergeServerStoryList } from '../../context/store';
+import { styled, theme } from '../styles';
+import { useStoryStore } from '../context';
+import { fetchStoryList } from '../api';
+import { mergeServerStoryList } from '../context/store';
+import { Badge } from '../components';
 
 // How often to auto-refresh the story list from the server when the dashboard
 // looks idle (30 seconds).
@@ -85,7 +88,7 @@ const SidebarContainer = styled('div', {
 });
 
 // Section label at the top of the sidebar. Flex row so the live job-count
-// chip (JobCountBadge) sits inline after the "Stories" text.
+// chip sits inline after the "Stories" text.
 const SectionLabel = styled('div', {
     display: 'flex',
     flexDirection: 'row',
@@ -96,36 +99,6 @@ const SectionLabel = styled('div', {
     color: theme.textDim,
     textTransform: 'uppercase' as const,
     letterSpacing: 1.2
-});
-
-// Live background-thread count chip inside the "Stories" header — rendered
-// only while jobs are in flight. Same pill treatment as the tile status
-// badges (Badge/BadgeActive family: pill radius, hairline border, accent
-// tint) so the header chip and tile chips read as one visual family. Resets
-// the label's uppercase/letter-spacing so the count text stays legible.
-const JobCountBadge = styled('span', {
-    flex: '0 0 auto',
-    display: 'inline-flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    height: 18,
-    boxSizing: 'border-box' as const,
-    overflow: 'hidden',
-    marginLeft: 8,
-    padding: '0 7px',
-    borderRadius: 999,
-    fontSize: theme.fontSize.xs,
-    lineHeight: 1,
-    fontWeight: 600,
-    // accentChip* tokens — same near-white accent-hue chip family as the
-    // selected-tile badges (BadgeActive) so the header chip and tile chips
-    // read as one visual family.
-    color: theme.accentChipText,
-    background: theme.accentChipFill,
-    border: `1px solid ${theme.accentChipBorder}`,
-    textTransform: 'none' as const,
-    letterSpacing: 0
 });
 
 // Real-time search input below the "Stories" header. Filters the tile list
@@ -181,7 +154,7 @@ const StoryEntry = styled('div', {
 // accent treatment below.
 //
 // The element stays a <button> (with data-testid/aria-pressed) — that is part
-// of the public test contract (App.test.tsx:410-412 finds tabs via
+// of the public test contract (App.test.tsx finds tabs via
 // getByRole('button')). Only the presentation is tiled.
 const StoryItem = styled('button', {
     display: 'flex',
@@ -296,59 +269,6 @@ const StoryTitle = styled('span', {
     whiteSpace: 'nowrap' as const
 });
 
-// Badge for chapter count or processing status. Modern: pill-shaped surface
-// with hairline border so badges read as status chips on the unselected tile.
-// The chip height is pinned to exactly 20px (matching the StoryTileMeta row)
-// via display:inline-flex + fixed height: the ⏳ processing glyph renders in
-// a system emoji font whose intrinsic size is larger than the 10px chip font
-// and would otherwise stretch the chip (and the tile) taller — odd one out.
-const Badge = styled('span', {
-    flex: '0 0 auto',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    // gap spaces the animated spinner ring from the ⏳ glyph inside the
-    // processing chip (single-child chips are unaffected).
-    gap: 4,
-    height: 20,
-    boxSizing: 'border-box' as const,
-    overflow: 'hidden',
-    fontSize: theme.fontSize.xs,
-    lineHeight: 1,
-    fontWeight: 600,
-    color: theme.textMuted,
-    background: theme.surface3,
-    border: `1px solid ${theme.border}`,
-    padding: '0 7px',
-    borderRadius: 999
-});
-
-// Selected-tile badge — accent-tinted chip that stays legible on the
-// accent-tinted "active card" surface instead of blending into it like the
-// default Badge. Same pinned 20px chip height as Badge (see above).
-const BadgeActive = styled('span', {
-    flex: '0 0 auto',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    // gap spaces the animated spinner ring from the ⏳ glyph inside the
-    // processing chip (single-child chips are unaffected).
-    gap: 4,
-    height: 20,
-    boxSizing: 'border-box' as const,
-    overflow: 'hidden',
-    fontSize: theme.fontSize.xs,
-    lineHeight: 1,
-    fontWeight: 700,
-    // accentChip* tokens — near-white accent-hue chip family (theme.ts),
-    // shared with the header job-count chip and inline-code highlight.
-    color: theme.accentChipText,
-    background: theme.accentChipFill,
-    border: `1px solid ${theme.accentChipBorder}`,
-    padding: '0 7px',
-    borderRadius: 999
-});
-
 // Empty-state message when no stories exist.
 const EmptyMessage = styled('div', {
     padding: '20px 14px',
@@ -358,7 +278,7 @@ const EmptyMessage = styled('div', {
     lineHeight: 1.5
 });
 
-export const SectionStoryTabs: React.FC = React.memo(() => {
+export const StorySidebar: React.FC = React.memo(() => {
     const { store, setStore, deleteStory } = useStoryStore();
     const { records, selected } = store;
 
@@ -392,7 +312,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
             if (!searchQuery) return true;
             // Match against the title the tile RENDERS (StoryTitle text).
             // entry.title falls back to storyName or the storyId prefix by
-            // construction (mergeServerStoryList / SectionStoryInput), so it
+            // construction (mergeServerStoryList / the input feature), so it
             // is always a non-empty string.
             return entry.title.toLowerCase().includes(searchQuery);
         });
@@ -486,17 +406,21 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
             {/* Header label + live background-thread count. The chip renders only
                 while inProgressCount > 0 — an idle server shows the bare label.
                 data-testid="sidebar-job-count" is the test contract; textContent
-                is exactly "<n> running" (the spinner ring contributes no text). */}
+                is exactly "<n> running" (the spinner ring contributes no text).
+                FLAT REWORK: modular accent-rail Badge instead of the pill. */}
             <SectionLabel>
                 Stories
                 {inProgressCount > 0 && (
-                    <JobCountBadge
-                        data-testid="sidebar-job-count"
-                        title={`${inProgressCount} background job${inProgressCount === 1 ? '' : 's'} in progress`}
-                    >
-                        <span className="sg-spinner" aria-hidden="true" />
-                        {inProgressCount} running
-                    </JobCountBadge>
+                    <span data-testid="sidebar-job-count">
+                        <Badge
+                            variant="accent"
+                            title={`${inProgressCount} background job${inProgressCount === 1 ? '' : 's'} in progress`}
+                            style={{ marginLeft: 8 }}
+                        >
+                            <span className="sg-spinner" aria-hidden="true" />
+                            {inProgressCount} running
+                        </Badge>
+                    </span>
                 )}
             </SectionLabel>
             {/* Real-time search — filters the tiles below as the user types.
@@ -530,8 +454,8 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
             )}
             {/* Sort so the LAST ACTIONED story is on top. The sort key is the
                 user-action timestamp (entry.lastActionedAt, bumped ONLY by
-                explicit user actions via touchStory — see StoryEntry) falling
-                back to createdDate for stories never actioned in this browser
+                explicit user actions via touchStory) falling back to
+                createdDate for stories never actioned in this browser
                 (legacy cache entries, freshly synced server stories). Within
                 each group ISO 8601 strings sort correctly as strings in
                 descending order. Background work (generation writes, poll
@@ -580,18 +504,28 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                 // — an empty row keeps every tile at the same two-row height,
                 // so toggling badges (processing start/stop, chapters loading)
                 // never resizes a tile mid-list.
+                //
+                // FLAT REWORK: the modular <Badge> chips — square corners +
+                // 2px status rail (components/Badge.tsx) — replace the old
+                // Badge/BadgeActive pills. Neutral rail for counts; accent
+                // rail for activity so the selected tile's chips still read
+                // brighter against its accent surface.
                 return (
                     <StoryEntry key={entry.id}>
                         {isSelected ? (
                             <StoryItemSelected {...itemProps} className={`sg-story-selected${processingClass}`}>
                                 <StoryTitle>{entry.title}</StoryTitle>
                                 <StoryTileMeta>
-                                    {chapterBadge && <BadgeActive>{chapterBadge}</BadgeActive>}
+                                    {chapterBadge && (
+                                        <Badge variant="accent" elevated>
+                                            {chapterBadge}
+                                        </Badge>
+                                    )}
                                     {processingBadge && (
-                                        <BadgeActive>
+                                        <Badge variant="accent" elevated>
                                             {isProcessing && <span className="sg-spinner" aria-hidden="true" />}
                                             {processingBadge}
-                                        </BadgeActive>
+                                        </Badge>
                                     )}
                                 </StoryTileMeta>
                             </StoryItemSelected>
@@ -599,9 +533,9 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                             <StoryItem {...itemProps} className={`sg-story-item${processingClass}`}>
                                 <StoryTitle>{entry.title}</StoryTitle>
                                 <StoryTileMeta>
-                                    {chapterBadge && <Badge>{chapterBadge}</Badge>}
+                                    {chapterBadge && <Badge variant="neutral">{chapterBadge}</Badge>}
                                     {processingBadge && (
-                                        <Badge>
+                                        <Badge variant="neutral">
                                             {isProcessing && <span className="sg-spinner" aria-hidden="true" />}
                                             {processingBadge}
                                         </Badge>
@@ -624,7 +558,7 @@ export const SectionStoryTabs: React.FC = React.memo(() => {
                     </StoryEntry>
                 );
             })}
-            {/* Load warning — shown if BootstrapLayer or auto-refresh failed. */}
+            {/* Load warning — shown if the bootstrap or auto-refresh failed. */}
             {store.loadWarning && (
                 <div
                     data-testid="load-warning"

@@ -114,6 +114,14 @@ const sheet = `
     cursor: not-allowed;
 }
 
+/* Destructive confirmation (delete-revision / remove-chapter dialogs) — the
+   danger-tone ConfirmButton. Flat: hover swaps to the brighter danger solid;
+   disabled dims. Shares the base .sg-dialog-confirm disabled rule above. */
+.sg-dialog-confirm.sg-dialog-confirm-danger:hover:not(:disabled) {
+    background-color: ${theme.danger};
+    border-color: ${theme.danger};
+}
+
 /* The header title is interactive only when a story is selected. */
 .sg-title-action { cursor: pointer; }
 
@@ -223,13 +231,15 @@ const sheet = `
     to   { opacity: 1; }
 }
 
-/* Scrollbar styling — flat thin dark-native scrollbars. */
+/* Scrollbar styling — flat thin dark-native scrollbars. Square corners to
+   match the flat radius system (a rounded thumb on an otherwise square UI
+   reads as an accident). */
 .sg-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
 .sg-scroll::-webkit-scrollbar-track { background: transparent; }
 .sg-scroll::-webkit-scrollbar-thumb {
     background: ${theme.surface2};
     border: 2px solid transparent;
-    border-radius: 8px;
+    border-radius: ${theme.radiusSm}px;
     background-clip: padding-box;
 }
 .sg-scroll::-webkit-scrollbar-thumb:hover { background: ${theme.surface3}; background-clip: padding-box; }

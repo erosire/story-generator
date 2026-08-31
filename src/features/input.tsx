@@ -1,4 +1,4 @@
-// Footer section: storyline + chapterRequested input form.
+// Input FEATURE: the footer storyline + chapterRequested form.
 //
 // On submit it creates a new story entry locally (generating a fresh storyId),
 // adds it to the store, selects it, and POSTs to /v1/storyboard/generations/:storyId
@@ -6,17 +6,22 @@
 // see generation-create-new-story.ts:219).
 //
 // After a successful POST the form is cleared and collapsed so the user can
-// immediately start the next story. The new story tab appears in SectionStoryTabs
-// and the content section starts polling for generation progress.
+// immediately start the next story. The new story tab appears in the sidebar
+// and the content feature starts polling for generation progress.
 //
 // The input area is always visible (no selected story required) — the user types
 // a storyline, optionally adjusts the chapter count, and clicks Generate to create
 // a story. This replaces the previous "Add button → fill form → Generate" flow.
+//
+// Moved from the old src/components/sections/SectionStoryInput — the feature
+// owns the form's submit/PATCH business logic. The count field now uses the
+// modular NumberInput (components/Input.tsx).
 
 import React from 'react';
-import { styled, theme } from '../../styles';
-import { useStoryStore } from '../../context';
-import { createNewStory } from '../../api';
+import { styled, theme } from '../styles';
+import { useStoryStore } from '../context';
+import { createNewStory } from '../api';
+import { NumberInput } from '../components';
 
 // Footer wrapper — always rendered, shrinks when unfocused.
 const FooterColumn = styled('div', {
@@ -56,21 +61,6 @@ const ControlRow = styled('div', {
     flexWrap: 'wrap'
 });
 
-// Small numeric input for chapter count. width:80px gives room for 3-4 digits
-// without crowding the action button.
-const ChapterCountInput = styled('input', {
-    width: 80,
-    padding: '7px 10px',
-    borderRadius: theme.radiusMd,
-    border: `1px solid ${theme.borderStrong}`,
-    backgroundColor: theme.surface1,
-    color: theme.text,
-    fontFamily: theme.fontSans,
-    fontSize: theme.fontSize.body,
-    boxSizing: 'border-box',
-    transition: `border-color ${theme.transition}, background-color ${theme.transition}`
-});
-
 // Primary action button — flat solid accent fill. Hover swaps to a brighter
 // solid via the `sg-primary` class hook (global.ts). Flat: no gradient, no
 // shadow, no translate-on-hover.
@@ -97,7 +87,7 @@ const ErrorLine = styled('div', {
     borderRadius: theme.radiusMd
 });
 
-export const SectionStoryInput: React.FC = React.memo(() => {
+export const StoryInput: React.FC = React.memo(() => {
     const { store, setStore } = useStoryStore();
     const { selected } = store;
 
@@ -118,14 +108,14 @@ export const SectionStoryInput: React.FC = React.memo(() => {
 
     // NOTE: the previous pendingStoryline hand-off (content "[->] Extend"
     // button → footer input) was replaced by the in-place append dialog in
-    // SectionStoryContent (appendStoryPlotpoints) — extending a story no
+    // the content feature (appendStoryPlotpoints) — extending a story no
     // longer creates a new story through this footer form.
 
     // Populate the form with the selected story's storyline and chapterRequested
     // so the user can hit "Generate" to create a new story with the same prompt.
     // Falls back to empty storyline / default 3 chapters when nothing is selected.
     // For remote stories, storyline comes from the per-story GET endpoint's
-    // meta.storyline (populated by polling in SectionStoryContent). The
+    // meta.storyline (populated by polling in the content feature). The
     // dependency on data?.meta?.storyline ensures the input updates when
     // polling first resolves the storyline — subsequent polls with the same
     // string won't re-trigger, so user edits are preserved.
@@ -264,15 +254,13 @@ export const SectionStoryInput: React.FC = React.memo(() => {
                         <label htmlFor="chapter-count" style={{ color: theme.textMuted, fontSize: theme.fontSize.md, fontWeight: 500 }}>
                             Chapters
                         </label>
-                        <ChapterCountInput
+                        <NumberInput
                             id="chapter-count"
-                            type="number"
                             min={1}
                             value={chapterCount}
                             onChange={(e) => setChapterCount(Number(e.target.value))}
                             disabled={isSubmitting}
                             data-testid="chapter-count-input"
-                            className="sg-input"
                         />
                         <GenerateButton
                             onClick={onSubmit}

@@ -33,7 +33,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { StoryGeneratorApp } from './components';
+import { StoryGeneratorApp } from './App';
 import { cancelPendingStorageWrites } from './context/store';
 import { injectGlobalStyles } from './styles/global';
 
@@ -1912,6 +1912,104 @@ describe('StoryGeneratorApp', () => {
             expect(screen.getByTestId('content-error').textContent).toBe(
                 "Error: Story 'resume-story-1' plotline generation is already complete (2/2 chapters)"
             );
+        });
+    });
+
+    // ── Collapse-all regression (user-reported: "collapse all button is broken") ──
+    // Two layers must both hold for the button to work in a REAL browser:
+    //
+    //   1. BEHAVIOR — clicking collapse-all empties the expandedChapters set
+    //      (features/content.tsx handleCollapseAll), which flows through the
+    //      controlled <Collapsible open={...}> and unmounts every
+    //      chapter-*-body. Also verifies the click marks the story
+    //      "interacted" (userInteractedRef) so auto-expand doesn't re-open
+    //      the latest chapter right after, and persists [] to the per-story
+    //      localStorage key so a reload keeps everything collapsed.
+    //
+    //   2. POINTER EVENTS — the ActionBar frame (features/content.tsx) sets
+    //      pointerEvents:'none' so its full-width strip lets chapter content
+    //      receive clicks through the empty region; every Button inside must
+    //      restore pointerEvents:'auto' (the old ActionButton frame had it —
+    //      git dc50a4a SectionStoryContent). jsdom does NOT enforce
+    //      pointer-events, so a dropped prop means all 270 tests stay green
+    //      while the button is DEAD in real browsers. Asserting the inline
+    //      style is the only way this suite can guard that class of loss.
+    it('collapse-all empties every chapter body, blocks auto-expand, and its buttons stay pointer-enabled', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedResumeStory(fetchMock, {
+            chapters: [
+                { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: ['plot1'], expanded: false, canReExpand: false },
+                { chapterNumber: '2', chapterIndex: 1, title: 'Ch2', plotpoints: ['plot2'], expanded: false, canReExpand: false },
+                { chapterNumber: '3', chapterIndex: 2, title: 'Ch3', plotpoints: ['plot3'], expanded: false, canReExpand: false }
+            ],
+            meta: { storyline: 'Collapse story', chapterCount: 3, createdAt: '2026-08-01T12:00:00Z', status: 'completed' },
+            chapterRequested: 3
+        });
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // Auto-expand opens the latest chapter (chapter 2) while polling
+        // streams data — wait for it so collapse-all has something to clear.
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-2-body')).toBeDefined();
+        });
+
+        // POINTER-EVENTS GUARD: the bar is click-through (frame none), so
+        // every action Button must carry pointerEvents:'auto' inline. This is
+        // the exact prop the modular Button rework dropped (old ActionButton
+        // frame had it) — the collapse-all/resume/extend dead-button bug.
+        expect(screen.getByTestId('collapse-all-button').style.pointerEvents).toBe('auto');
+        expect(screen.getByTestId('extend-plotpoints-button').style.pointerEvents).toBe('auto');
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('collapse-all-button'));
+        });
+
+        // Every chapter body unmounts — the whole point of the action.
+        await waitFor(() => {
+            expect(screen.queryByTestId('chapter-0-body')).toBeNull();
+            expect(screen.queryByTestId('chapter-1-body')).toBeNull();
+            expect(screen.queryByTestId('chapter-2-body')).toBeNull();
+        });
+        // Headers stay rendered (collapsed, not deleted) — assert the exact
+        // aria state, not just presence.
+        expect(screen.getByTestId('chapter-0-toggle').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.getByTestId('chapter-1-toggle').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.getByTestId('chapter-2-toggle').getAttribute('aria-expanded')).toBe('false');
+
+        // Auto-expand must NOT re-open the latest chapter after the user
+        // collapsed all — the interaction marks the story "interacted"
+        // (userInteractedRef) and the effect stays disabled for this story.
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 3 * POLL_INTERVAL_MS));
+        });
+        expect(screen.queryByTestId('chapter-2-body')).toBeNull();
+
+        // The collapsed state persists to the per-story localStorage key so
+        // a reload keeps everything collapsed (store.tsx setExpandedChapters).
+        await waitFor(() => {
+            expect(localStorage.getItem('storyGenerator:expanded:resume-story-1')).toBe('[]');
+        });
+
+        // Re-opening one chapter afterwards still works (controlled mode
+        // round-trips through handleChapterToggle)…
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('chapter-1-toggle'));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-1-body')).toBeDefined();
+        });
+        // …and collapse-all clears it again — the set math is repeatable.
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('collapse-all-button'));
+        });
+        await waitFor(() => {
+            expect(screen.queryByTestId('chapter-1-body')).toBeNull();
         });
     });
 

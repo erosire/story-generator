@@ -19,7 +19,8 @@
 //      by the dashboard header / sidebar so the user can see the backend is
 //      unreachable).
 //
-// Renders null — purely a side-effect component.
+// Renders null — purely a side-effect component. This is a FEATURE (owns the
+// bootstrap business logic), moved from the old src/components/BootstrapLayer.
 
 import React from 'react';
 import { useStoryStore } from '../context';

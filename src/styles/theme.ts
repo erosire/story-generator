@@ -97,10 +97,21 @@ export const theme = {
     warningBorder: 'rgba(251, 191, 36, 0.25)',
     success: '#6ee7b7',
 
-    // Radii.
-    radiusSm: 6,
-    radiusMd: 8,
-    radiusLg: 12,
+    // Radii. FLAT DESIGN: sharp, near-square corners — depth comes from
+    // solid color blocks + hairline borders, not rounded softness. radiusSm
+    // is the default for chips/inputs/small controls (a 2px corner just
+    // takes the harsh pixel-edge off without reading as "round"), radiusMd
+    // for cards/panels/dialogs, and radiusLg only for the largest floating
+    // surfaces. Keep these SMALL — a flat UI reads flat because its boxes
+    // look like boxes.
+    //
+    // The former radiusPill token (999px full-round chips) was REMOVED in
+    // the flat badge rework: every status chip is now a square Badge with a
+    // 2px status rail on its left edge (src/components/Badge.tsx) instead of
+    // a pill. Do not reintroduce a pill radius without a token.
+    radiusSm: 2,
+    radiusMd: 3,
+    radiusLg: 4,
 
     // Soft elevation. Modern Flat Design avoids heavy shadows — depth is
     // communicated by solid background blocks + crisp borders, so we keep
