@@ -3,7 +3,7 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <meta name="theme-color" content="#0b0f17" />
+        <meta name="theme-color" content="#0a0f1f" />
         <meta name="description" content="Story Generator — an AI-driven storyboard dashboard." />
         <title>Story Generator</title>
         <style>
@@ -12,20 +12,24 @@
             html, body, #root { height: 100%; margin: 0; }
             html { font-size: 20px; }
             body {
-                background-color: #0b0f17;
-                color: #e6e8ee;
+                background-color: #0a0f1f;
+                color: #f0f3ff;
                 font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
             }
             *::-webkit-scrollbar { width: 10px; height: 10px; }
             *::-webkit-scrollbar-track { background: transparent; }
             *::-webkit-scrollbar-thumb {
-                background: rgba(255, 255, 255, 0.045);
+                /* Blue-tinted thumb — matches theme.surface2 (styles/theme.ts)
+                   and the .sg-scroll rule in global.ts. */
+                background: rgba(130, 150, 255, 0.10);
                 border: 2px solid transparent;
-                border-radius: 8px;
+                /* Flat: square scrollbar thumb (matches theme.radiusSm=2). */
+                border-radius: 2px;
                 background-clip: padding-box;
             }
         </style>
-      <script type="module" crossorigin src="./assets/index-BEtObdse.js"></script>
+      <script type="module" crossorigin src="./assets/index-8o_0rgQK.js"></script>
+      <link rel="modulepreload" crossorigin href="./assets/chunk-DECur_0Z.js">
     </head>
     <body>
         <div id="root"></div>
