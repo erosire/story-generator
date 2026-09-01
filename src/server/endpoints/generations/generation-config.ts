@@ -10,8 +10,7 @@
 // Conversation Priming
 // ---------------------------------------------------------------------------
 
-import { MAKORA_CLIENT } from '@runtime/secret/private/makora';
-import { GLM53FLASH_CLIENT, KIMI3_CLIENT, NVIDIA_CLIENT, QWEN3_8_CLIENT } from '@runtime/secret/private';
+import { QWEN3_8_CLIENT } from '@runtime/secret/private';
 import { TELNYX_CLIENT } from '@runtime/secret/private/telnyx';
 // Type-only import: every selectable client is a SimpleClient instance
 // (simpleClient() in @agentic/harness), used to widen CLIENTS for the
@@ -184,17 +183,16 @@ export const useApiMethod: 'structure' | 'format' = 'structure';
 
 // List of possible clients
 export const CLIENTS = {
-    Nvidia: NVIDIA_CLIENT.clone({ model: 'moonshotai/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
-    KIMIK3: KIMI3_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
+    KIMIK3: TELNYX_CLIENT.clone({ model: 'moonshotai/Kimi-K3', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Modal: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
-    GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
+    // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // Uses QWEN3_8_SAMPLING_PARAMS (top_k: 0) because the ninfer backend
     // rejects the SGLang-style top_k: -1 sentinel; all other values unchanged.
     Qwen27B: QWEN3_8_CLIENT.clone({ sampling: QWEN3_8_SAMPLING_PARAMS }),
-    Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.3-Flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    DeepSeek: MAKORA_CLIENT.clone({ model: 'deepseek-ai/DeepSeek-V4-Flash', sampling: DEFAULT_SAMPLING_PARAMS }),
+    GLM53: TELNYX_CLIENT.clone({ model: 'telnyx/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    // Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.3-Flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS }),
-    Telnyx: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
+    GLMFLASH: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
 /**
