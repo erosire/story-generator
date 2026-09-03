@@ -183,7 +183,7 @@ export const useApiMethod: 'structure' | 'format' = 'structure';
 
 // List of possible clients
 export const CLIENTS = {
-    KIMIK3: TELNYX_CLIENT.clone({ model: 'moonshotai/Kimi-K3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    KIMIK3: TELNYX_CLIENT.clone({ model: 'telnyx/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Modal: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // Uses QWEN3_8_SAMPLING_PARAMS (top_k: 0) because the ninfer backend
