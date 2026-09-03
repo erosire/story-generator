@@ -592,9 +592,7 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // directly instead of the underload gateway (DATABASE_PORT 5000): the
     // gateway would only 307-redirect /v1/storyboard/* to 5252 anyway.
     // Override via config in production by wrapping with a different provider value.
-        // https: the underload service enforces TLS for LAN peers (loopback
-        // http remains exempt, but this default dials the LAN address).
-        baseUrl: `https://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,
+        baseUrl: `http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,
     // Poll every 10s. The generation-create-new-story handler writes plotpoint.md
     // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
     // so 10s gives a smooth progressive reveal without hammering the server.
@@ -761,3 +759,4 @@ export function useStoryStore(): StoryStoreContextValue {
     }
     return ctx;
 }
+
