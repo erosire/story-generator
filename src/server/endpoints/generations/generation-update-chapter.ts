@@ -37,6 +37,7 @@ import { asHandlerMethod } from '@underload/service';
 import { DATABASE_BASE_DIR, MIN_WORDS_PER_CHAPTER, parseClientId, TARGET_WORD_COUNT_PROMPT } from './generation-config';
 import {
     buildExpandRequest,
+    buildExpansionContext,
     createStoryClient,
     decrementPlotpointChapterCompleted,
     expandChapter,
@@ -669,37 +670,91 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     }
 
     // ── Re-expansion path ─────────────────────────────────────────────────
-    const chapterPayload = readChapterPayload(chapterDir, expandIdx);
-
-    if (!chapterPayload) {
+    // ANY chapter with a plotline entry in plotpoint.json is expandable — even
+    // when its chapter-XXX.json payload is MISSING (legacy / interrupted
+    // stories: the old flow 404'd here) and even when the PRECEDING chapters
+    // have not been expanded yet. The LLM context is rebuilt dynamically via
+    // buildExpansionContext (story-utils.ts): preceding chapters that HAVE
+    // been expanded contribute their latest revision prose (within the
+    // PREVIOUS_EXPANDED_CHAPTERS rolling window); preceding chapters that have
+    // NOT been expanded contribute their PLOTPOINT summaries instead —
+    // expansion never requires the predecessors' prose.
+    const plotChapters = readPlotpointData(databaseDir);
+    if (!plotChapters || expandIdx >= plotChapters.length) {
         return {
             status: 404,
             response: { error: `Chapter ${expandIdx} not found for story '${storyId}'` }
         };
     }
 
-    // Extract the stored context and request from the chapter payload
-    const payloadContext = (chapterPayload as any).context;
-    const plotpoints = (chapterPayload as any).plotpoints as string[];
-    const chapterNumber = (chapterPayload as any).chapterNumber as string;
-    const chapterTitle = (chapterPayload as any).title as string;
+    // The stored payload (when present) only supplies identity + the stored
+    // request prompt — never the expansion context (see buildExpansionContext).
+    const chapterPayload = readChapterPayload(chapterDir, expandIdx);
+    const payloadAny = chapterPayload as any;
+    const plotChapter = plotChapters[expandIdx] as any;
 
-    if (!payloadContext || !Array.isArray(payloadContext.appending)) {
-        return {
-            status: 500,
-            response: {
-                error: `Chapter ${expandIdx} payload is missing context.appending. Cannot re-expand without the original conversation context.`
-            }
-        };
-    }
+    // Chapter identity: the stored payload's metadata wins (it may carry a
+    // title from a past expansion); the plotline entry is the fallback for
+    // payload-less chapters.
+    const chapterNumber =
+        typeof payloadAny?.chapterNumber === 'string' && payloadAny.chapterNumber.length > 0
+            ? payloadAny.chapterNumber
+            : typeof plotChapter?.number === 'string' && plotChapter.number.length > 0
+              ? plotChapter.number
+              : String(expandIdx + 1);
+    const chapterTitle =
+        typeof payloadAny?.title === 'string' && payloadAny.title.length > 0
+            ? payloadAny.title
+            : typeof plotChapter?.title === 'string' && plotChapter.title.length > 0
+              ? plotChapter.title
+              : `Chapter ${expandIdx + 1}`;
+    const plotpoints: string[] = Array.isArray(payloadAny?.plotpoints)
+        ? payloadAny.plotpoints
+        : Array.isArray(plotChapter?.plotpoints)
+          ? plotChapter.plotpoints
+          : [];
 
-    if (!payloadContext.request || typeof payloadContext.request !== 'string') {
-        return {
-            status: 500,
-            response: {
-                error: `Chapter ${expandIdx} payload is missing context.request. Cannot re-expand without the original request prompt.`
-            }
-        };
+    // Rebuild the LLM context from the story's CURRENT state — expanded prose
+    // for recently expanded predecessors, plotpoint summaries otherwise. The
+    // stored payload context (when present) is deliberately NOT used: it is a
+    // snapshot that goes stale the moment a predecessor is expanded after it
+    // was written.
+    const contextAppending = buildExpansionContext({ databaseDir, chapterDir, targetIndex: expandIdx });
+
+    // Request prompt: the stored request is preferred (rewriteChapter preserves
+    // the ORIGINAL expand prompt in context.request so a later re-expand stays
+    // plotpoint-driven); a fresh plotpoint-driven prompt is the fallback for
+    // payload-less chapters.
+    const storedRequest = payloadAny?.context?.request;
+    const request =
+        typeof storedRequest === 'string' && storedRequest.length > 0
+            ? storedRequest
+            : buildExpandRequest(chapterNumber, chapterTitle);
+
+    // Total chapter target for the chain loop: the larger of the recorded
+    // chapterCount and the actual plotline length (covers stories whose
+    // metadata chapterCount drifted from their chapter list).
+    const chainChapterCount = Math.max(storyMeta.chapterCount, plotChapters.length);
+
+    // Payload-less chapter: write a skeleton FIRST so the rebuilt context +
+    // request are persisted (and the GET handler flips canReExpand) even if
+    // the background expansion fails. Existing payloads are NEVER overwritten
+    // here — they may carry revisions[] a blind skeleton write would wipe.
+    if (!chapterPayload) {
+        writeChapterPayload({
+            chapterDir,
+            chapterIndex: expandIdx,
+            storyId,
+            storyline: storyMeta.storyline,
+            chapterCount: chainChapterCount,
+            chapterNumber,
+            plotpoints,
+            contextAppending,
+            request
+        });
+        console.log(
+            `[PATCH] Chapter ${expandIdx} had no payload — skeleton written from plotpoint.json for story '${storyId}'`
+        );
     }
 
     // Guard: check if story folder still exists (user may have deleted during
@@ -725,13 +780,13 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     reExpandChapter({
         storyId,
         storyline: storyMeta.storyline,
-        chapterCount: storyMeta.chapterCount,
+        chapterCount: chainChapterCount,
         chapterIndex: expandIdx,
         chapterNumber,
         chapterTitle,
-        plotpoints: Array.isArray(plotpoints) ? plotpoints : [],
-        appending: payloadContext.appending,
-        request: payloadContext.request,
+        plotpoints,
+        appending: contextAppending,
+        request,
         assertStoryExists,
         databaseDir,
         chapterDir,
@@ -760,11 +815,15 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
  * Background task: re-expand a chapter and all subsequent pending chapters.
  *
  * Starting from the requested chapterIndex, this function expands each chapter
- * using the stored LLM context. After expanding chapter N, it propagates the
- * updated context to chapter N+1 and checks whether N+1 is "pending" (has no
- * expanded content). If so, it continues expanding N+1, then N+2, and so on,
- * until either there are no more chapters or the next chapter is already
- * expanded.
+ * using the LLM context supplied by the caller — for the PATCH expand path the
+ * handler passes a FRESHLY REBUILT context (buildExpansionContext in
+ * story-utils.ts: preceding chapters contribute their latest expanded prose
+ * when available, their plotpoint summaries otherwise, so a chapter can be
+ * expanded even when its predecessors are still pending). After expanding
+ * chapter N, it propagates the updated context to chapter N+1 and checks
+ * whether N+1 is "pending" (has no expanded content). If so, it continues
+ * expanding N+1, then N+2, and so on, until either there are no more chapters
+ * or the next chapter is already expanded.
  *
  * This ensures that re-expanding an early chapter automatically brings all
  * downstream pending chapters up-to-date in a single background task.

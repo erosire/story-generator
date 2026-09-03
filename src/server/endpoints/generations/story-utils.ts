@@ -15,6 +15,7 @@ import {
     EXPAND_TIMEOUT_MS,
     MAX_EXPAND_ATTEMPTS,
     OPENING_USER_MESSAGE,
+    PREVIOUS_EXPANDED_CHAPTERS,
     resolveClient,
     TARGET_WORD_COUNT_PROMPT,
     useApiMethod
@@ -596,6 +597,90 @@ export const readPlotpointData = (
     } catch {
         return null;
     }
+};
+
+/**
+ * Build the expansion context (appending[]) for expanding the chapter at
+ * `targetIndex` DYNAMICALLY from the story's current on-disk state.
+ *
+ * This is what makes "expand ANY chapter" work — including when the PRECEDING
+ * chapters have not been expanded yet (generation-update-chapter.ts PATCH
+ * expandChapterIndex). Per chapter i, the context entry is resolved as:
+ *
+ *   - i < targetIndex AND i within the rolling window
+ *     (targetIndex - PREVIOUS_EXPANDED_CHAPTERS .. targetIndex - 1):
+ *     the chapter's latest expanded revision prose when it HAS been expanded
+ *     (`## title\n\ncontent`, read from chapter-XXX.json revisions[]), so the
+ *     LLM continues from what actually happened; when it has NOT been
+ *     expanded (no payload, empty/corrupted revisions[]) the chapter's
+ *     PLOTPOINT SUMMARY is used instead — expansion of a chapter never
+ *     requires its predecessors to be expanded first.
+ *   - everything else (older chapters, the target chapter itself, and all
+ *     following chapters): the plotpoint summary — the same entry shape
+ *     buildAppendingFromChapters / the plotline-only skeletons use.
+ *
+ * Index alignment: one entry per plotpoint.json chapter slot (appending[i] ↔
+ * chapter i), unlike buildAppendingFromChapters which SKIPS plotpoint-less
+ * chapters and can misalign. A chapter without plotpoints contributes its
+ * header line only, keeping every later entry at its chapter's position (the
+ * removeChapter branch in generation-update-chapter.ts splices appending by
+ * chapter index and relies on this alignment).
+ *
+ * Chapters missing from plotpoint.json (corrupted/absent file) yield [] —
+ * callers fall back to whatever stored context they have.
+ */
+export const buildExpansionContext = (opts: {
+    databaseDir: string;
+    chapterDir: string;
+    targetIndex: number;
+}): string[] => {
+    const { databaseDir, chapterDir, targetIndex } = opts;
+    const chapters = readPlotpointData(databaseDir);
+    if (!chapters) {
+        return [];
+    }
+
+    const appending: string[] = [];
+    for (let i = 0; i < chapters.length; i++) {
+        const { number, title, plotpoints } = chapters[i];
+        // Plotpoint summary — the fallback entry for every chapter without
+        // expanded prose (and for chapters outside the rolling window).
+        const header = `> ${typeof number === 'string' && number.length > 0 ? number : i + 1}: ${
+            typeof title === 'string' && title.length > 0 ? title : `Chapter ${i + 1}`
+        }`;
+        let entry =
+            Array.isArray(plotpoints) && plotpoints.length > 0
+                ? [header, '\n\n', plotpoints.map((plot) => `- ${plot}`).join('\n')].join('\n\n')
+                : header;
+
+        // Preceding chapter inside the rolling window: substitute the latest
+        // expanded revision prose when the chapter HAS been expanded. The
+        // revisions scan is content-based (non-empty string), mirroring the
+        // "expanded" rule in generation-get-story-data.ts — streaming entries
+        // with empty content never qualify.
+        if (i < targetIndex && i >= targetIndex - PREVIOUS_EXPANDED_CHAPTERS) {
+            const payload = readChapterPayload(chapterDir, i);
+            const revisions: Array<{ content?: unknown }> = Array.isArray((payload as any)?.revisions)
+                ? (payload as any).revisions
+                : [];
+            for (let r = revisions.length - 1; r >= 0; r--) {
+                const rev = revisions[r];
+                if (rev && typeof rev.content === 'string' && rev.content.length > 0) {
+                    const payloadTitle = (payload as any).title;
+                    const chapterTitle =
+                        typeof payloadTitle === 'string' && payloadTitle.length > 0
+                            ? payloadTitle
+                            : `Chapter ${i + 1}`;
+                    entry = `## ${chapterTitle}\n\n${rev.content}`;
+                    break;
+                }
+            }
+        }
+
+        appending.push(entry);
+    }
+
+    return appending;
 };
 
 /**

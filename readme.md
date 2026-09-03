@@ -146,7 +146,7 @@ Returns the story's chapters with plotpoints and expansion status.
 **Expanded vs pending chapters:**
 - `expanded: true` — chapter has full content in `revisions[]`
 - `expanded: false` — only plotpoints available, awaiting LLM expansion
-- `canReExpand: true` — chapter-XXX.json payload exists (LLM context available for re-expansion)
+- `canReExpand: true` — chapter-XXX.json payload exists (stored LLM context from past expansions; informational — any chapter in the plotline is expandable)
 
 ### `PATCH /v1/storyboard/generations/:storyId`
 
@@ -157,7 +157,7 @@ Update story metadata, re-expand a chapter, rewrite a chapter, delete a revision
 { "storyName": "My Renamed Story" }
 ```
 
-**Re-expand chapter at index 2** (chains to subsequent pending chapters):
+**Expand any chapter at index 2** (chains to subsequent pending chapters — the preceding chapters do NOT need to be expanded first: each expanded preceding chapter contributes its latest revision prose to the LLM context, each pending one contributes its plotpoints instead):
 ```json
 { "expandChapterIndex": 2 }
 ```
@@ -224,7 +224,7 @@ All server code lives in `src/server/endpoints/generations/`.
 1. **POST** creates `temporary/database/storyboard/{storyId}/` with `plotpoint.json` (placeholder) and `chapter/` directory
 2. **Background `generateStory()`** (direct creates, plotline-only) calls the LLM for the plot outline → writes `plotpoint.json` with `chapters` array + `status: "completed"` → writes a skeleton `chapter-XXX.json` payload per chapter (stored LLM context, `revisions: []`). Fork mode additionally expands chapters from the fork point: writes `chapter-XXX.md` + full `chapter-XXX.json` files
 3. **GET** reads `plotpoint.json` (for metadata/plotpoints) + `chapter/*.json` (for expansion data) → returns unified chapter array
-4. **PATCH** reads stored LLM context from `chapter-XXX.json` → expands (single chapter + chain to pending chapters) or rewrites via background task
+4. **PATCH** expands any chapter with a plotline entry — the LLM context is rebuilt dynamically (`buildExpansionContext` in story-utils.ts): expanded preceding chapters contribute their latest revision prose (within the rolling window), pending ones contribute their plotpoint summaries; a chapter without a `chapter-XXX.json` payload gets a skeleton written from plotpoint.json first. Rewrite still uses the stored chapter context
 5. **DELETE** removes the entire `temporary/database/storyboard/{storyId}/` directory
 
 ### Progressive Plotline Generation + Chapter Retry

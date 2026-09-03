@@ -219,8 +219,13 @@ paths:
         (rewriteChapter + rewriteContext), deletes a chapter's expanded
         content (deleteChapterIndex), or removes a chapter entirely
         (removeChapterIndex). When storyName is provided, the story's
-        plotpoint.json is updated immediately. expandChapterIndex re-expands
-        the chapter and chains to subsequent pending chapters. rewriteChapter
+        plotpoint.json is updated immediately. expandChapterIndex expands ANY
+        chapter that exists in the plotline — even when its chapter-XXX.json
+        payload is missing or the PRECEDING chapters have not been expanded
+        yet: the LLM context is rebuilt dynamically, using each expanded
+        preceding chapter's latest revision prose (within the rolling window)
+        and each pending preceding chapter's PLOTPOINT summary instead — and
+        then chains to subsequent pending chapters. rewriteChapter
         uses the full story summary + user instructions to rewrite only the
         targeted chapter (no chain). deleteChapterIndex synchronously deletes
         ONE revision from the chapter — the revision at
@@ -307,7 +312,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Chapter payload is missing required context for re-expansion
+          description: Chapter payload is missing required context for rewrite
           content:
             application/json:
               schema:
@@ -466,10 +471,13 @@ components:
         canReExpand:
           type: boolean
           description: >-
-            Whether this chapter can be re-expanded via PATCH. True when the
-            chapter-XXX.json payload file exists, which stores the LLM
-            conversation context needed for re-expansion. A chapter may have
-            expanded=true but canReExpand=false if the .json payload is missing.
+            Whether the chapter-XXX.json payload file exists (it stores the
+            stored LLM context from past expansions). Informational only —
+            ANY chapter in the plotline can be expanded via PATCH
+            expandChapterIndex: when the payload is missing the server
+            rebuilds the context from the plotline (plotpoint summaries, with
+            expanded prose substituted for preceding chapters that have been
+            expanded).
           example: true
         content:
           type: string
@@ -706,8 +714,14 @@ components:
           type: integer
           minimum: 0
           description: >-
-            Zero-based index of the chapter to re-expand. Must correspond to
-            an existing chapter that has a chapter-XXX.json payload. Chains to
+            Zero-based index of the chapter to expand. Must correspond to an
+            existing chapter in the plotline (plotpoint.json) — a missing
+            chapter-XXX.json payload is fine (a skeleton is written from the
+            plotline first). Any chapter is expandable even when its preceding
+            chapters have not been expanded: the LLM context is rebuilt
+            dynamically, using each expanded preceding chapter's latest
+            revision prose (within the rolling window) and each pending
+            preceding chapter's plotpoint summary instead. Chains to
             subsequent pending chapters. Mutually exclusive with rewriteChapter.
           example: 2
         rewriteChapter:

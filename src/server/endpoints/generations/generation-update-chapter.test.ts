@@ -51,6 +51,7 @@ vi.mock('./generation-config', () => {
         MIN_WORDS_PER_CHAPTER: 3000,
         TARGET_WORD_COUNT_PROMPT: '15,000 words',
         MIN_PLOTPOINTS_PER_CHAPTER: 10,
+        PREVIOUS_EXPANDED_CHAPTERS: 4,
         REFUSAL_PATTERNS: ['I cannot fulfill', 'I will not'],
         DATABASE_BASE_DIR: 'storyboard',
         CLIENT: mockClient,
@@ -85,6 +86,11 @@ vi.mock('@runtime/data/prompts', () => ({
 import { CLIENT, EXPAND_TIMEOUT_MS } from './generation-config';
 import { generationUpdateChapter } from './generation-update-chapter';
 import { DATABASE_BASE_DIR } from './generation-config';
+// buildExpandRequest / buildAppendingFromChapters are the real (non-mocked,
+// prompt-only) helpers from story-utils — used to build exact expected
+// context.request / plotpoint-summary values so the assertions stay in
+// lockstep with production (same pattern as generation-create-new-story.test.ts).
+import { buildAppendingFromChapters, buildExpandRequest } from './story-utils';
 import { acquireStoryJob, isStoryAborted, releaseStoryJob, trackStoryJob } from './generation-job-registry';
 
 // Use an isolated temp directory as the project root so tests never pollute the
@@ -215,14 +221,17 @@ describe('generationUpdateChapter', () => {
         expect(result.response.error).toContain('plotpoint.json');
     });
 
-    it('should return 404 when chapter does not exist', async () => {
+    it('should return 404 when chapter index is beyond the plotline (chapter does not exist)', async () => {
         const storyId = `test-update-no-chapter-${Date.now()}`;
         createdStoryIds.push(storyId);
 
         const storyboardDir = getStoryboardDir(storyId);
         fs.mkdirSync(storyboardDir, { recursive: true });
 
-        // Write plotpoint.json but no chapter files
+        // Write plotpoint.json with two chapters but request index 5 — beyond
+        // the plotline. (An index INSIDE the plotline without a chapter-XXX.json
+        // payload is expandable since the plotpoint-fallback change — see the
+        // "should expand a chapter that has no payload" test below.)
         fs.writeFileSync(
             path.join(storyboardDir, 'plotpoint.json'),
             JSON.stringify({
@@ -238,16 +247,16 @@ describe('generationUpdateChapter', () => {
             'utf-8'
         );
 
-        const parameters = createMockParameters(storyId, { expandChapterIndex: 0 });
+        const parameters = createMockParameters(storyId, { expandChapterIndex: 5 });
 
         const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
         expect(result.status).toBe(404);
         expect(result.response).toHaveProperty('error');
-        expect(result.response.error).toContain('Chapter 0');
+        expect(result.response.error).toContain('Chapter 5');
     });
 
-    it('should return 500 when chapter payload is missing context', async () => {
+    it('should rebuild the context from plotpoints when the chapter payload has no stored context', async () => {
         const storyId = `test-update-no-context-${Date.now()}`;
         createdStoryIds.push(storyId);
 
@@ -270,7 +279,9 @@ describe('generationUpdateChapter', () => {
             'utf-8'
         );
 
-        // Write chapter-001.json WITHOUT context
+        // Write chapter-001.json WITHOUT context. The old flow 500'd here —
+        // since the plotpoint-fallback change the context is REBUILT from the
+        // plotline instead, so the chapter is expandable.
         fs.writeFileSync(
             path.join(chapterDir, 'chapter-001.json'),
             JSON.stringify({
@@ -288,9 +299,164 @@ describe('generationUpdateChapter', () => {
 
         const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
 
-        expect(result.status).toBe(500);
-        expect(result.response).toHaveProperty('error');
-        expect(result.response.error).toContain('context.appending');
+        expect(result.status).toBe(200);
+        expect(result.response.chapterNumber).toBe('1');
+        expect(result.response.title).toBe('Chapter One');
+
+        // Wait for the background re-expansion to complete
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        // The chapter was expanded and its payload now carries the REBUILT
+        // context: the chapter's own plotpoint summary + a fresh plotpoint
+        // request (the payload had no stored request to preserve).
+        const updatedPayload = JSON.parse(
+            fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8')
+        );
+        expect(updatedPayload.revisions.length).toBeGreaterThan(0);
+        // Exact plotpoint-summary shape via the real helper (lockstep with
+        // the skeletons the plotline-only create flow writes).
+        expect(updatedPayload.context.appending).toEqual(
+            buildAppendingFromChapters([{ number: '1', title: 'Chapter One', plotpoints: ['Plot point A'] }])
+        );
+        expect(updatedPayload.context.request).toBe(buildExpandRequest('1', 'Chapter One'));
+    });
+
+    it('should expand a chapter that has no payload at all using plotpoint context (preceding chapter pending)', async () => {
+        const storyId = `test-update-no-payload-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const storyboardDir = getStoryboardDir(storyId);
+        fs.mkdirSync(storyboardDir, { recursive: true });
+
+        // Plotline only — NO chapter-XXX.json payloads exist (e.g. a legacy or
+        // interrupted story). Chapter 2 (index 1) is expanded directly while
+        // chapter 1 (index 0) has never been expanded: its PLOTPOINT summary
+        // must be used as the preceding context instead of requiring prose.
+        fs.writeFileSync(
+            path.join(storyboardDir, 'plotpoint.json'),
+            JSON.stringify({
+                storyId,
+                storyline: 'A sci-fi adventure.',
+                chapterCount: 2,
+                chapters: [
+                    { number: '1', title: 'The Beginning', plotpoints: ['Opening scene', 'Character intro'] },
+                    { number: '2', title: 'The Middle', plotpoints: ['Conflict rises', 'Allies gather'] }
+                ],
+                createdAt: '2026-07-01T10:00:00.000Z'
+            }),
+            'utf-8'
+        );
+
+        const parameters = createMockParameters(storyId, { expandChapterIndex: 1 });
+
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
+
+        expect(result.status).toBe(200);
+        expect(result.response.expandChapterIndex).toBe(1);
+        // Identity falls back to the plotline entry (no payload metadata).
+        expect(result.response.chapterNumber).toBe('2');
+        expect(result.response.title).toBe('The Middle');
+        expect(result.response.message).toContain('re-expansion started');
+
+        // Wait for the background re-expansion to complete
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        // chapter-002.json was created and expanded.
+        const chapter2Payload = JSON.parse(
+            fs.readFileSync(path.join(storyboardDir, 'chapter', 'chapter-002.json'), 'utf-8')
+        );
+        expect(chapter2Payload.chapterNumber).toBe('2');
+        expect(chapter2Payload.chapterIndex).toBe(1);
+        expect(chapter2Payload.title).toBe('Re-Expanded Chapter');
+        expect(Array.isArray(chapter2Payload.revisions)).toBe(true);
+        expect(chapter2Payload.revisions.length).toBeGreaterThan(0);
+
+        // The rebuilt context: appending[0] is chapter 1's PLOTPOINT summary
+        // (it was never expanded — prose is NOT required), appending[1] is the
+        // target chapter's own summary. Exact production summary shape via the
+        // real helper.
+        expect(chapter2Payload.context.appending).toEqual(
+            buildAppendingFromChapters([
+                { number: '1', title: 'The Beginning', plotpoints: ['Opening scene', 'Character intro'] },
+                { number: '2', title: 'The Middle', plotpoints: ['Conflict rises', 'Allies gather'] }
+            ])
+        );
+        // No stored request existed — the fresh plotpoint-driven prompt is used.
+        expect(chapter2Payload.context.request).toBe(buildExpandRequest('2', 'The Middle'));
+
+        // The pending preceding chapter was NOT touched — no payload, no files.
+        expect(fs.existsSync(path.join(storyboardDir, 'chapter', 'chapter-001.json'))).toBe(false);
+        expect(fs.existsSync(path.join(storyboardDir, 'chapter', 'chapter-001.md'))).toBe(false);
+    });
+
+    it('should use the preceding chapter\'s expanded prose in the rebuilt context when it has been expanded', async () => {
+        const storyId = `test-update-prose-context-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const storyboardDir = getStoryboardDir(storyId);
+        const chapterDir = path.join(storyboardDir, 'chapter');
+        fs.mkdirSync(chapterDir, { recursive: true });
+
+        fs.writeFileSync(
+            path.join(storyboardDir, 'plotpoint.json'),
+            JSON.stringify({
+                storyId,
+                storyline: 'A sci-fi adventure.',
+                chapterCount: 2,
+                chapters: [
+                    { number: '1', title: 'The Beginning', plotpoints: ['Opening scene', 'Character intro'] },
+                    { number: '2', title: 'The Middle', plotpoints: ['Conflict rises', 'Allies gather'] }
+                ],
+                createdAt: '2026-07-01T10:00:00.000Z'
+            }),
+            'utf-8'
+        );
+
+        // Chapter 1 IS expanded (has a finalized revision) — even though its
+        // payload carries NO context (the old flow would have refused to
+        // re-expand it; the rebuild only needs revisions[] + title).
+        fs.writeFileSync(
+            path.join(chapterDir, 'chapter-001.json'),
+            JSON.stringify({
+                storyId,
+                chapterNumber: '1',
+                chapterIndex: 0,
+                title: 'The Beginning',
+                plotpoints: ['Opening scene', 'Character intro'],
+                revisions: [{ content: 'Expanded prose body of chapter one.', wordCount: 5, generationTimeMs: 45000 }]
+            }),
+            'utf-8'
+        );
+
+        const parameters = createMockParameters(storyId, { expandChapterIndex: 1 });
+
+        const result = await generationUpdateChapter(mockContext, parameters, { root: projectRoot });
+
+        expect(result.status).toBe(200);
+
+        // Wait for the background re-expansion to complete
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        const chapter2Payload = JSON.parse(
+            fs.readFileSync(path.join(chapterDir, 'chapter-002.json'), 'utf-8')
+        );
+        expect(chapter2Payload.revisions.length).toBeGreaterThan(0);
+        // appending[0] holds the preceding chapter's EXPANDED PROSE (not its
+        // plotpoint summary) because chapter 1 has been expanded; appending[1]
+        // stays the target chapter's own plotpoint summary (exact production
+        // summary shape via the real helper).
+        expect(chapter2Payload.context.appending).toEqual([
+            '## The Beginning\n\nExpanded prose body of chapter one.',
+            ...buildAppendingFromChapters([
+                { number: '2', title: 'The Middle', plotpoints: ['Conflict rises', 'Allies gather'] }
+            ])
+        ]);
+
+        // The preceding chapter's payload was not modified by this expansion.
+        const chapter1Payload = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+        expect(chapter1Payload.revisions).toEqual([
+            { content: 'Expanded prose body of chapter one.', wordCount: 5, generationTimeMs: 45000 }
+        ]);
     });
 
     it('should accept a valid request and return 200 with chapter info', async () => {
