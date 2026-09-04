@@ -3089,4 +3089,117 @@ describe('StoryGeneratorApp', () => {
         );
         expect(storyGets).toEqual([]);
     });
+
+    // Caching-bug contract: a FINISHED story that was cached earlier must be
+    // re-checked against the server EVERY time its tile is clicked — even
+    // when it is not generating and its cached payload is not flagged
+    // dataStale. The click forces a one-shot per-story GET; when the server
+    // content differs, the cached copy is replaced (recached), and the
+    // refreshed payload lands back in localStorage.
+    it('re-checks the server and recaches a cached finished story when its tile is clicked', async () => {
+        // Seed the cache the way a previous session left it: the story
+        // finished, was viewed at T1, and the timestamps AGREE with the
+        // server — so no staleness flag exists and the cached copy would be
+        // served as-is without the click-time re-check.
+        const cachedStory = {
+            id: 23,
+            storyId: 'click-story-1',
+            storyName: 'Click Tale',
+            title: 'Click Tale',
+            storyline: 'a storyline',
+            chapterRequested: 1,
+            chapterCompleted: 1,
+            createdDate: '2026-08-12T09:00:00.000Z',
+            lastUpdatedAt: '2026-08-12T10:00:00.000Z',
+            status: 'completed' as const,
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Cached Chapter',
+                        plotpoints: ['cached plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: '## Cached Chapter\n\nclick cached body', wordCount: 3, generationTimeMs: 500 }]
+                    }
+                ],
+                meta: { storyline: 'a storyline', chapterCount: 1, createdAt: '2026-08-12T09:00:00Z', lastUpdatedAt: '2026-08-12T10:00:00.000Z' }
+            },
+            isRemote: false
+        };
+        seedRecordsCache([cachedStory]);
+
+        const fetchMock = globalThis.fetch as any;
+        // The per-story GET answers the REWRITTEN content (T2) — the server
+        // moved on after the cached fetch, but the list timestamps below still
+        // AGREE with the cache, so ONLY the click can trigger the re-check.
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'click-story-1', storyName: 'Click Tale', chapterRequested: 1, chapterCompleted: 1, createdDate: '2026-08-12T09:00:00.000Z', lastUpdatedDate: '2026-08-12T10:00:00.000Z', status: 'completed' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'Clicked Chapter Title',
+                                plotpoints: ['fresh plot'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [{ content: '## Clicked Chapter Title\n\nfresh clicked body', wordCount: 3, generationTimeMs: 600 }]
+                            }
+                        ],
+                        meta: { storyline: 'a storyline', chapterCount: 1, createdAt: '2026-08-12T09:00:00Z', lastUpdatedAt: '2026-08-12T11:00:00.000Z' }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Cache-first: the OLD content renders instantly, before any click.
+        expect(screen.getByTestId('chapter-0-content').textContent).toContain('click cached body');
+
+        // Boot-time selection (no click) must NOT fire a per-story GET.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-click-story-1')).toBeDefined();
+        });
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 50));
+        });
+        const bootGets = fetchMock.mock.calls.filter(
+            ([url, init]: any[]) => url === `${BASE_URL}/click-story-1` && (!init || init.method === 'GET')
+        );
+        expect(bootGets).toEqual([]);
+
+        // Click the tile → the forced one-shot re-check replaces the cached
+        // content with the server's.
+        fireEvent.click(screen.getByTestId('story-tab-click-story-1'));
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('fresh clicked body');
+        });
+        const afterClickGets = fetchMock.mock.calls.filter(
+            ([url, init]: any[]) => url === `${BASE_URL}/click-story-1` && (!init || init.method === 'GET')
+        );
+        expect(afterClickGets.length).toBe(1);
+
+        // The refreshed payload (with its T2 timestamp) lands back in the
+        // records cache — the next reload serves the fresh copy instantly.
+        await waitFor(() => {
+            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            expect(raw).toContain('fresh clicked body');
+            expect(raw).toContain('"lastUpdatedAt":"2026-08-12T11:00:00.000Z"');
+            expect(raw).toContain('"dataStale":false');
+        });
+    });
 });

@@ -545,6 +545,19 @@ export type StoryStore = {
     // this and shows a small inline warning. Optional because legacy tests /
     // consumers that don't trigger the bootstrap won't set it.
     loadWarning?: string;
+    // Click counter for the sidebar's story tiles. Bumped by EVERY user click
+    // on a tile (StorySidebar's itemProps.onClick) — including re-clicks on the
+    // already-selected story. The content feature (StoryContent's selection
+    // catch-up effect) watches this nonce: a CHANGE is the "user clicked a
+    // story" signal that forces a one-shot server re-check of the selected
+    // story's data (GET → compare/merge → recache) even when the cached payload
+    // exists and is not flagged dataStale. Without it, a finished, previously
+    // cached story would never be re-validated against the server on view —
+    // the cached copy would be shown as-is until an unrelated list sync
+    // happened to flag staleness. Transient: never persisted (it only matters
+    // within the live session; a reload restarts the count and the first
+    // effect run re-primes from whatever value the initialStore carries).
+    selectionNonce: number;
     // Live snapshot of the server's in-memory background-thread job registry —
     // the `jobs` array from the last successful GET /v1/storyboard/generations
     // (generation-job-registry.ts; one entry per running thread: create/fork/
@@ -619,6 +632,8 @@ export const StoryStoreProvider: React.FC<{
         records: initialStore?.records ?? [],
         selected: initialStore?.selected ?? null,
         clientOptions: initialStore?.clientOptions ?? [],
+        // Click nonce starts at 0 (or the seed's value) — see StoryStore.selectionNonce.
+        selectionNonce: initialStore?.selectionNonce ?? 0,
         // Registry snapshot starts empty — it is server-process state, re-synced
         // by the first list fetch (BootstrapLayer) like the transient flags.
         activeJobs: initialStore?.activeJobs ?? [],

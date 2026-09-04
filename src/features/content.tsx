@@ -1061,7 +1061,7 @@ export const StoryContent: React.FC = React.memo(() => {
     //   immediately below) → check the server ONCE → update the store
     //   (auto-persisted to the cache) → STOP.
     //
-    // Fires in TWO cases:
+    // Fires in THREE cases:
     //   1. No data yet (fresh remote entry, never-polled cache entry) or its
     //      cache-only state just resolved (the story reappeared on the server).
     //   2. STATIC-MEMORY STALENESS (browser cache feature): the entry is
@@ -1071,16 +1071,47 @@ export const StoryContent: React.FC = React.memo(() => {
     //      predate a server write (another session expanded/renamed/rewrote
     //      the story). The cached payload is REPLACED by a fresh one-shot GET
     //      instead of shown as-is; lastUpdatedAt/dataStale sync below.
+    //   3. CLICK-TIME RE-CHECK (caching bug fix): the user just CLICKED a
+    //      story tile (store.selectionNonce changed — see StorySidebar's
+    //      itemProps.onClick). Every click forces this one-shot GET even when
+    //      the cached payload exists and is NOT flagged dataStale, so a
+    //      finished story that was cached earlier is always re-validated
+    //      against the server on view and recached when it differs. The
+    //      boot-time selection (bootstrap/merge auto-selecting the last-used
+    //      story on page load) is NOT a click — the first effect run only
+    //      primes the nonce ref and leaves the staleness-gated behaviour
+    //      intact, so a fresh cache is still served without a per-story GET
+    //      on load.
     //
     // An idle story is NEVER polled in a loop — its files only change while a
     // background job writes them, and job activity is handled by the
     // job-gated loop below. Errors and 404s are silent here: the cached copy
     // stays the displayed truth (mirrors the old quiet cache-only policy) and
     // the sidebar's loadWarning covers server unreachability.
+    //
+    // The nonce is tracked in a ref so only CHANGES force the fetch: the
+    // initial mount primes the ref with the current nonce (not a click), and
+    // every later sidebar click bumps the nonce → forced check. Re-clicking
+    // the already-selected story bumps it too — every click re-checks.
+    const lastClickNonceRef = React.useRef<number | null>(null);
     React.useEffect(() => {
         if (!selected?.storyId) return;
-        // Content already available AND not stale — nothing to catch up on.
-        if (selected.data && !selected.dataStale) return;
+
+        // Resolve the click signal BEFORE the cache-freshness early-return:
+        // the first run only primes the ref (boot selection ≠ click); every
+        // later nonce change is an explicit tile click → forced one-shot
+        // server check.
+        let forcedCheck = false;
+        if (lastClickNonceRef.current === null) {
+            lastClickNonceRef.current = store.selectionNonce;
+        } else if (lastClickNonceRef.current !== store.selectionNonce) {
+            lastClickNonceRef.current = store.selectionNonce;
+            forcedCheck = true;
+        }
+
+        // Cache stands (no fetch) only when there is no click AND the payload
+        // is present and not flagged stale.
+        if (!forcedCheck && selected.data && !selected.dataStale) return;
 
         const entryId = selected.id;
         const { storyId } = selected;
@@ -1090,7 +1121,13 @@ export const StoryContent: React.FC = React.memo(() => {
 
         fetchStoryData(baseUrl, storyId)
             .then((result) => {
-                if (cancelled || result.status !== 'data') return;
+                // Ignore anything without a chapters array (malformed payload,
+                // proxy noise, stale-deployment body): replacing `data` with a
+                // chapters-less shape would crash the chapter renderer
+                // (data.chapters.length below) and buy nothing — the cached
+                // copy stays the displayed truth. Same guard for the forced
+                // click-check and the staleness refetch.
+                if (cancelled || result.status !== 'data' || !Array.isArray(result.data?.chapters)) return;
                 setStore((prev) => {
                     const records = prev.records.map((e) =>
                         e.id === entryId
@@ -1139,6 +1176,10 @@ export const StoryContent: React.FC = React.memo(() => {
         selected?.data === null,
         selected?.dataStale,
         selected?.missingFromServer,
+        // Click signal: every sidebar tile click bumps the nonce, which
+        // re-runs this effect and forces the one-shot server re-check (case 3
+        // above) — including re-clicks of the already-selected story.
+        store.selectionNonce,
         store.config.baseUrl
     ]);
 

@@ -545,13 +545,32 @@ export const StorySidebar: React.FC = React.memo(() => {
                 const processingBadge = isProcessing ? '⏳' : '';
 
                 const itemProps = {
-                    // Click = selection ONLY. Viewing a story is read-only
-                    // (GET) — it must NOT bump lastActionedAt, which tracks
+                    // Click = selection + a click-time server re-check. Two
+                    // things happen, in ONE setStore (batched → single
+                    // re-render):
+                    //   1. `selected` = entry — the content area displays this
+                    //      story.
+                    //   2. `selectionNonce` increments — the click signal the
+                    //      StoryContent catch-up effect watches to force a
+                    //      one-shot GET of this story's data, so a finished,
+                    //      previously cached story is re-validated (and
+                    //      recached) against the server on EVERY click, even
+                    //      when it is not generating and its cached payload
+                    //      is not flagged dataStale. Re-clicking the
+                    //      already-selected story also bumps the nonce, so
+                    //      every click re-checks.
+                    // Viewing is still read-only in the ORDERING sense: it
+                    // must NOT bump lastActionedAt, which tracks
                     // data-mutating user actions (POST/PATCH: generate, fork,
                     // expand, rewrite, append, resume, terminate, deletes,
                     // rename). Bumping on view would reorder the list under
                     // the user's cursor without any data actually changing.
-                    onClick: () => setStore((prev) => ({ ...prev, selected: entry })),
+                    onClick: () =>
+                        setStore((prev) => ({
+                            ...prev,
+                            selected: entry,
+                            selectionNonce: prev.selectionNonce + 1
+                        })),
                     'data-testid': `story-tab-${entry.storyId}`,
                     'aria-pressed': isSelected
                 };
