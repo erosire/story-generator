@@ -196,7 +196,8 @@ export const CLIENTS = {
     GLM53: TELNYX_CLIENT.clone({ model: 'telnyx/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.3-Flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS }),
-    GLMFLASH: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS })
+    GLMFLASH: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
+    PARTICLE: TELNYX_CLIENT.clone({ model: 'merge/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
 /**
