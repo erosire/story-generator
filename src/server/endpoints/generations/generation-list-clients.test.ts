@@ -21,24 +21,22 @@ const mocks = vi.hoisted(() => {
     };
 
     return {
-        GLM53FLASH_CLIENT: createClient(),
-        MAKORA_CLIENT: createClient(),
-        KIMI3_CLIENT: createClient(),
-        NVIDIA_CLIENT: createClient(),
         QWEN3_8_CLIENT: createClient(),
         TELNYX_CLIENT: createClient()
     };
 });
 
 // Mock surface mirrors the CURRENT named imports of generation-config.ts
-// (GLM53FLASH_CLIENT / KIMI3_CLIENT / NVIDIA_CLIENT / QWEN3_8_CLIENT) — a
-// missing name (e.g. the retired GLM52_CLIENT id this file used to mock)
-// surfaces as "No ... export is defined on the mock" at import time.
-vi.mock('@runtime/secret/private/makora', () => ({ MAKORA_CLIENT: mocks.MAKORA_CLIENT }));
+// (QWEN3_8_CLIENT from '@runtime/secret/private' and TELNYX_CLIENT from
+// '@runtime/secret/private/telnyx') — a missing name surfaces as
+// "No ... export is defined on the mock" at import time. The makora module is
+// still mocked defensively because vi.mock intercepts the FULL module graph
+// pulled in by '@runtime/secret/private' (its barrel re-exports
+// runtime/secret/private/modal, whose index imports the makora-backed clients);
+// the retired NVIDIA_CLIENT / GLM53FLASH_CLIENT / KIMI3_CLIENT mock entries
+// were removed along with the CLIENTS entries they backed.
+vi.mock('@runtime/secret/private/makora', () => ({ MAKORA_CLIENT: mocks.TELNYX_CLIENT }));
 vi.mock('@runtime/secret/private', () => ({
-    GLM53FLASH_CLIENT: mocks.GLM53FLASH_CLIENT,
-    KIMI3_CLIENT: mocks.KIMI3_CLIENT,
-    NVIDIA_CLIENT: mocks.NVIDIA_CLIENT,
     QWEN3_8_CLIENT: mocks.QWEN3_8_CLIENT
 }));
 vi.mock('@runtime/secret/private/telnyx', () => ({ TELNYX_CLIENT: mocks.TELNYX_CLIENT }));
@@ -51,16 +49,17 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         // Order is the object insertion order of CLIENTS — the UI preserves it.
-        // 'Qwen27B' is the renamed 'Qwen3_8' entry; the retired Modal (GLM52)
-        // and Router (OpenRouter) deployments stay commented out of CLIENTS.
+        // KIMIK3 / MERGEK3 / MERGEK26 / GLM53 / GLMFLASH are all served by the
+        // Telnyx gateway; Qwen27B is the renamed 'Qwen3_8' entry. The retired
+        // Modal (GLM52), Makora, DeepSeek, Router (OpenRouter) and standalone
+        // Nvidia/Telnyx deployments stay commented out of CLIENTS.
         expect(result.response.clients).toEqual([
-            'Nvidia',
             'KIMIK3',
-            'GLMFLASH',
+            'MERGEK3',
+            'MERGEK26',
             'Qwen27B',
-            'Makora',
-            'DeepSeek',
-            'Telnyx'
+            'GLM53',
+            'GLMFLASH'
         ]);
     });
 
@@ -81,8 +80,8 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 7 selectable ids: Nvidia, KIMIK3, GLMFLASH, Qwen27B, Makora, DeepSeek,
-        // Telnyx (Modal/Router commented out of the CLIENTS map).
-        expect(result.response.clients.length).toBe(7);
+        // 6 selectable ids: KIMIK3, MERGEK3, MERGEK26, Qwen27B, GLM53,
+        // GLMFLASH (retired entries commented out of the CLIENTS map).
+        expect(result.response.clients.length).toBe(6);
     });
 });

@@ -15,26 +15,24 @@ const mocks = vi.hoisted(() => {
     };
 
     return {
-        GLM53FLASH_CLIENT: createClient(),
-        MAKORA_CLIENT: createClient(),
-        KIMI3_CLIENT: createClient(),
-        NVIDIA_CLIENT: createClient(),
         QWEN3_8_CLIENT: createClient(),
         TELNYX_CLIENT: createClient()
     };
 });
 
-// Mock the three import paths used by generation-config.ts so no API keys or
+// Mock the import paths used by generation-config.ts so no API keys or
 // provider initialization are evaluated while the configuration is tested.
 // The mock surface mirrors the CURRENT named imports of generation-config.ts
-// (GLM53FLASH_CLIENT / KIMI3_CLIENT / NVIDIA_CLIENT / QWEN3_8_CLIENT) — a
-// missing name (e.g. the retired GLM52_CLIENT id this file used to mock)
-// surfaces as "No ... export is defined on the mock" at import time.
-vi.mock('@runtime/secret/private/makora', () => ({ MAKORA_CLIENT: mocks.MAKORA_CLIENT }));
+// (QWEN3_8_CLIENT from '@runtime/secret/private' and TELNYX_CLIENT from
+// '@runtime/secret/private/telnyx') — a missing name surfaces as
+// "No ... export is defined on the mock" at import time. The makora module is
+// still mocked defensively because vi.mock intercepts the FULL module graph
+// pulled in by '@runtime/secret/private' (its barrel re-exports
+// runtime/secret/private/modal, whose index imports the makora-backed clients);
+// the retired NVIDIA_CLIENT / GLM53FLASH_CLIENT / KIMI3_CLIENT mock entries
+// were removed along with the CLIENTS entries they backed.
+vi.mock('@runtime/secret/private/makora', () => ({ MAKORA_CLIENT: mocks.TELNYX_CLIENT }));
 vi.mock('@runtime/secret/private', () => ({
-    GLM53FLASH_CLIENT: mocks.GLM53FLASH_CLIENT,
-    KIMI3_CLIENT: mocks.KIMI3_CLIENT,
-    NVIDIA_CLIENT: mocks.NVIDIA_CLIENT,
     QWEN3_8_CLIENT: mocks.QWEN3_8_CLIENT
 }));
 vi.mock('@runtime/secret/private/telnyx', () => ({ TELNYX_CLIENT: mocks.TELNYX_CLIENT }));
@@ -72,42 +70,41 @@ describe('generation sampling defaults', () => {
     });
 
     it('attaches the defaults to every selectable story-generation client', () => {
-        expect(mocks.NVIDIA_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'moonshotai/kimi-k3',
+        // KIMIK3 / MERGEK3 / MERGEK26 / GLM53 all clone the TELNYX instance
+        // with their own model override (the Telnyx gateway serves every
+        // Kimi/GLM deployment), while GLMFLASH clones it with the plain
+        // SGLang defaults (no model override — the deployment's default model
+        // is used as-is). Qwen27B clones QWEN3_8_CLIENT with the nonnegative
+        // top_k variant.
+        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
+            model: 'telnyx/kimi-k3',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
-        // GLMFLASH clones with the plain SGLang defaults (no model override —
-        // the deployment's default model is used as-is).
-        expect(mocks.GLM53FLASH_CLIENT.clone).toHaveBeenCalledWith({
+        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
+            model: 'merge/kimi-k3',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
-        expect(mocks.KIMI3_CLIENT.clone).toHaveBeenCalledWith({
+        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
+            model: 'merge/kimi-k2-6',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
-        expect(mocks.QWEN3_8_CLIENT.clone).toHaveBeenCalledWith({
-            sampling: QWEN3_8_SAMPLING_PARAMS
-        });
-        // MAKORA backs two selectable ids (Makora + DeepSeek) — same instance,
-        // different model overrides, so clone is invoked once per entry.
-        expect(mocks.MAKORA_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'zai-org/GLM-5.3-Flash',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.MAKORA_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'deepseek-ai/DeepSeek-V4-Flash',
+        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
+            model: 'telnyx/glm-5.3',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
             sampling: DEFAULT_SAMPLING_PARAMS
         });
+        expect(mocks.QWEN3_8_CLIENT.clone).toHaveBeenCalledWith({
+            sampling: QWEN3_8_SAMPLING_PARAMS
+        });
         expect(Object.keys(CLIENTS)).toEqual([
-            'Nvidia',
             'KIMIK3',
-            'GLMFLASH',
+            'MERGEK3',
+            'MERGEK26',
             'Qwen27B',
-            'Makora',
-            'DeepSeek',
-            'Telnyx'
+            'GLM53',
+            'GLMFLASH'
         ]);
     });
 
@@ -116,16 +113,13 @@ describe('generation sampling defaults', () => {
         // identity assertions prove the lookup is key-accurate — a broken
         // map (e.g. one client returned for every id) would fail exactly one
         // of these per key.
-        expect(resolveClient('Nvidia')).toBe(mocks.NVIDIA_CLIENT);
-        expect(resolveClient('KIMIK3')).toBe(mocks.KIMI3_CLIENT);
-        expect(resolveClient('GLMFLASH')).toBe(mocks.GLM53FLASH_CLIENT);
+        expect(resolveClient('KIMIK3')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('MERGEK3')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('MERGEK26')).toBe(mocks.TELNYX_CLIENT);
         // Qwen27B is the renamed Qwen3_8 entry — same QWEN3_8_CLIENT instance.
         expect(resolveClient('Qwen27B')).toBe(mocks.QWEN3_8_CLIENT);
-        // Makora and DeepSeek both clone the MAKORA instance with different
-        // model overrides, so both ids resolve to the same underlying mock.
-        expect(resolveClient('Makora')).toBe(mocks.MAKORA_CLIENT);
-        expect(resolveClient('DeepSeek')).toBe(mocks.MAKORA_CLIENT);
-        expect(resolveClient('Telnyx')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('GLM53')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('GLMFLASH')).toBe(mocks.TELNYX_CLIENT);
     });
 
     it('falls back to the default client (CLIENT = CLIENTS.Qwen27B) for absent or unknown ids', () => {
@@ -153,13 +147,12 @@ describe('parseClientId', () => {
     });
 
     it('accepts every selectable client id, echoing the key verbatim', () => {
-        expect(parseClientId('Nvidia')).toEqual({ clientId: 'Nvidia' });
         expect(parseClientId('KIMIK3')).toEqual({ clientId: 'KIMIK3' });
-        expect(parseClientId('GLMFLASH')).toEqual({ clientId: 'GLMFLASH' });
+        expect(parseClientId('MERGEK3')).toEqual({ clientId: 'MERGEK3' });
+        expect(parseClientId('MERGEK26')).toEqual({ clientId: 'MERGEK26' });
         expect(parseClientId('Qwen27B')).toEqual({ clientId: 'Qwen27B' });
-        expect(parseClientId('Makora')).toEqual({ clientId: 'Makora' });
-        expect(parseClientId('DeepSeek')).toEqual({ clientId: 'DeepSeek' });
-        expect(parseClientId('Telnyx')).toEqual({ clientId: 'Telnyx' });
+        expect(parseClientId('GLM53')).toEqual({ clientId: 'GLM53' });
+        expect(parseClientId('GLMFLASH')).toEqual({ clientId: 'GLMFLASH' });
     });
 
     it('rejects non-string clientId values with the type error', () => {
@@ -171,27 +164,35 @@ describe('parseClientId', () => {
     });
 
     it('rejects unknown clientId values, listing every available client', () => {
+        // The available-client list is Object.keys(CLIENTS) in insertion order.
+        const AVAILABLE = 'KIMIK3, MERGEK3, MERGEK26, Qwen27B, GLM53, GLMFLASH';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
-            error: 'Unknown clientId \'Nope\'. Available clients: Nvidia, KIMIK3, GLMFLASH, Qwen27B, Makora, DeepSeek, Telnyx'
+            error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`
         });
         // Retired ids from the old CLIENTS map are rejected the same way — a
         // stale id persisted in the UI's localStorage (e.g. the pre-rename
-        // default 'Qwen3_8') surfaces this message on the next generation,
-        // which is why the UI default moved in lockstep with the rename.
+        // default 'Qwen3_8', or the since-retired 'Nvidia' / 'Makora' /
+        // 'DeepSeek' / 'Telnyx' entries) surfaces this message on the next
+        // generation, which is why the UI default moved in lockstep with the
+        // map changes.
         expect(parseClientId('Qwen3_8')).toEqual({
             clientId: undefined,
-            error: 'Unknown clientId \'Qwen3_8\'. Available clients: Nvidia, KIMIK3, GLMFLASH, Qwen27B, Makora, DeepSeek, Telnyx'
+            error: `Unknown clientId 'Qwen3_8'. Available clients: ${AVAILABLE}`
         });
-        expect(parseClientId('Modal')).toEqual({
+        expect(parseClientId('Nvidia')).toEqual({
             clientId: undefined,
-            error: 'Unknown clientId \'Modal\'. Available clients: Nvidia, KIMIK3, GLMFLASH, Qwen27B, Makora, DeepSeek, Telnyx'
+            error: `Unknown clientId 'Nvidia'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('Telnyx')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'Telnyx'. Available clients: ${AVAILABLE}`
         });
         // Inherited prototype names are rejected even though plain-object
         // indexing would "find" them — hasOwnProperty is the guard.
         expect(parseClientId('toString')).toEqual({
             clientId: undefined,
-            error: 'Unknown clientId \'toString\'. Available clients: Nvidia, KIMIK3, GLMFLASH, Qwen27B, Makora, DeepSeek, Telnyx'
+            error: `Unknown clientId 'toString'. Available clients: ${AVAILABLE}`
         });
     });
 });
