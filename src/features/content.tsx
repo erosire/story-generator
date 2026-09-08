@@ -69,11 +69,7 @@ import StopIcon from '@mui/icons-material/Stop';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
 import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter, abortStoryJob } from '../api';
-    import { Badge, Button, Collapsible, Dialog, IconButton, Input, NumberInput, Textarea } from '../components';
-    // Markdown rendering is centralized in the shared material package —
-    // OutputMarkdown (packages/react/material/components/output/OutputMarkdown.tsx)
-    // replaces the former local MarkdownContent duplicate.
-    import { OutputMarkdown } from '@reloaded/material';
+import { Badge, Button, Collapsible, Dialog, IconButton, Input, NumberInput, Textarea, MarkdownContent } from '../components';
 import { getExpandedChapters, setExpandedChapters } from '../context/store';
 
 // Empty-state placeholder shown when no story is selected. Modern: monospace
@@ -1822,19 +1818,11 @@ export const StoryContent: React.FC = React.memo(() => {
                             />
 
                             {/* Chapter expansion content — active revision body,
-                                or a pending hint when not yet expanded. Rendered
-                                by the shared OutputMarkdown card from @reloaded/material
-                                (copy action included; fork/delete are omitted here
-                                because fork/rewrite/delete already live in the
-                                ChapterStickyBar above). */}
+                                or a pending hint when not yet expanded. */}
                             {ch.expanded ? (
-                                <OutputMarkdown
-                                    title={`Chapter ${i + 1}${ch.title ? `: ${ch.title}` : ''}`}
-                                    color="primary"
-                                    content={
-                                        ch.revisions?.[activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1]?.content ?? ''
-                                    }
-                                />
+                                <MarkdownContent>
+                                    {ch.revisions?.[activeRevisions[i] ?? (ch.revisions?.length ?? 1) - 1]?.content ?? ''}
+                                </MarkdownContent>
                             ) : (
                                 <PendingExpansion data-testid={`chapter-${i}-pending`}>
                                     This chapter has not been expanded yet.
