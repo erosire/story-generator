@@ -73,7 +73,7 @@ import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNew
     // Markdown rendering is centralized in the shared material package —
     // OutputMarkdown (packages/react/material/components/output/OutputMarkdown.tsx)
     // replaces the former local MarkdownContent duplicate.
-    import { OutputMarkdown } from '@react/material';
+    import { OutputMarkdown } from '@reloaded/material';
 import { getExpandedChapters, setExpandedChapters } from '../context/store';
 
 // Empty-state placeholder shown when no story is selected. Modern: monospace
@@ -1823,7 +1823,7 @@ export const StoryContent: React.FC = React.memo(() => {
 
                             {/* Chapter expansion content — active revision body,
                                 or a pending hint when not yet expanded. Rendered
-                                by the shared OutputMarkdown card from @react/material
+                                by the shared OutputMarkdown card from @reloaded/material
                                 (copy action included; fork/delete are omitted here
                                 because fork/rewrite/delete already live in the
                                 ChapterStickyBar above). */}

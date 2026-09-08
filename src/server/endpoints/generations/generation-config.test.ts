@@ -70,12 +70,12 @@ describe('generation sampling defaults', () => {
     });
 
     it('attaches the defaults to every selectable story-generation client', () => {
-        // KIMIK3 / MERGEK3 / MERGEK26 / GLM53 all clone the TELNYX instance
-        // with their own model override (the Telnyx gateway serves every
-        // Kimi/GLM deployment), while GLMFLASH clones it with the plain
-        // SGLang defaults (no model override — the deployment's default model
-        // is used as-is). Qwen27B clones QWEN3_8_CLIENT with the nonnegative
-        // top_k variant.
+        // KIMIK3 / MERGEK3 / MERGEK26 / SONNET / OPUS / GLM53 / PARTICLE all
+        // clone the TELNYX instance with their own model override (the Telnyx
+        // gateway serves every Kimi/GLM deployment), while GLMFLASH clones it
+        // with the plain SGLang defaults (no model override — the deployment's
+        // default model is used as-is). Qwen27B clones QWEN3_8_CLIENT with the
+        // nonnegative top_k variant.
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
             model: 'telnyx/kimi-k3',
             sampling: DEFAULT_SAMPLING_PARAMS
@@ -89,7 +89,19 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
+            model: 'lightning/sonnet-5',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
+            model: 'lightning/opus-5',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
             model: 'telnyx/glm-5.3',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
+            model: 'merge/glm-5.3-flash',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
@@ -102,9 +114,12 @@ describe('generation sampling defaults', () => {
             'KIMIK3',
             'MERGEK3',
             'MERGEK26',
+            'SONNET',
+            'OPUS',
             'Qwen27B',
             'GLM53',
-            'GLMFLASH'
+            'GLMFLASH',
+            'PARTICLE'
         ]);
     });
 
@@ -116,10 +131,13 @@ describe('generation sampling defaults', () => {
         expect(resolveClient('KIMIK3')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('MERGEK3')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('MERGEK26')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('SONNET')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('OPUS')).toBe(mocks.TELNYX_CLIENT);
         // Qwen27B is the renamed Qwen3_8 entry — same QWEN3_8_CLIENT instance.
         expect(resolveClient('Qwen27B')).toBe(mocks.QWEN3_8_CLIENT);
         expect(resolveClient('GLM53')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('GLMFLASH')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('PARTICLE')).toBe(mocks.TELNYX_CLIENT);
     });
 
     it('falls back to the default client (CLIENT = CLIENTS.Qwen27B) for absent or unknown ids', () => {
@@ -150,9 +168,12 @@ describe('parseClientId', () => {
         expect(parseClientId('KIMIK3')).toEqual({ clientId: 'KIMIK3' });
         expect(parseClientId('MERGEK3')).toEqual({ clientId: 'MERGEK3' });
         expect(parseClientId('MERGEK26')).toEqual({ clientId: 'MERGEK26' });
+        expect(parseClientId('SONNET')).toEqual({ clientId: 'SONNET' });
+        expect(parseClientId('OPUS')).toEqual({ clientId: 'OPUS' });
         expect(parseClientId('Qwen27B')).toEqual({ clientId: 'Qwen27B' });
         expect(parseClientId('GLM53')).toEqual({ clientId: 'GLM53' });
         expect(parseClientId('GLMFLASH')).toEqual({ clientId: 'GLMFLASH' });
+        expect(parseClientId('PARTICLE')).toEqual({ clientId: 'PARTICLE' });
     });
 
     it('rejects non-string clientId values with the type error', () => {
@@ -165,7 +186,8 @@ describe('parseClientId', () => {
 
     it('rejects unknown clientId values, listing every available client', () => {
         // The available-client list is Object.keys(CLIENTS) in insertion order.
-        const AVAILABLE = 'KIMIK3, MERGEK3, MERGEK26, Qwen27B, GLM53, GLMFLASH';
+        const AVAILABLE =
+            'KIMIK3, MERGEK3, MERGEK26, SONNET, OPUS, Qwen27B, GLM53, GLMFLASH, PARTICLE';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`

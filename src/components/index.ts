@@ -7,7 +7,7 @@
 // app entry is src/App.tsx.
 //
 // NOTE: no local markdown renderer here — markdown output uses the shared
-// OutputMarkdown from @react/material (packages/react/material/components/output).
+// OutputMarkdown from @reloaded/material (packages/react/material/components/output).
 
 export * from './Badge';
 export * from './Button';

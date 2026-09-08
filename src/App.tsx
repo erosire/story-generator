@@ -19,11 +19,11 @@
 // Default open on desktop (≥768px), default closed on mobile (<768px).
 
 import React from 'react';
-// FullScreen — the @react/headless viewport-locked layout primitive
+// FullScreen — the @reloaded/headless viewport-locked layout primitive
 // (packages/react/headless/components/layout/screen.tsx): position:absolute,
 // 100%×100% pinned to top/left 0. The dashboard's own surface treatment
 // (background, overflow clipping) is merged on top via the style prop.
-import { FullScreen } from '@react/headless';
+import { FullScreen } from '@reloaded/headless';
 // Material UI theming — every MUI component (buttons, text fields, dialogs)
 // resolves its internal styling (focus rings, disabled states, dialog paper)
 // against this token-mapped dark theme.
@@ -82,7 +82,7 @@ export const StoryGeneratorApp: React.FC<AppProps> = React.memo(
             <ThemeProvider theme={muiTheme}>
                 <StoryStoreProvider configOverrides={configOverrides} initialStore={initialStore}>
                     <BootstrapLayer />
-                    {/* @react/headless FullScreen + the dashboard's flat surface
+                    {/* @reloaded/headless FullScreen + the dashboard's flat surface
                         treatment merged on top (solid near-black, no scroll). */}
                     <FullScreen style={{ backgroundColor: theme.bg, overflow: 'hidden' }}>
                         <DarkThemeWrapper>

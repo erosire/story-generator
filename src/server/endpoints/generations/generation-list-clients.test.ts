@@ -49,17 +49,21 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         // Order is the object insertion order of CLIENTS — the UI preserves it.
-        // KIMIK3 / MERGEK3 / MERGEK26 / GLM53 / GLMFLASH are all served by the
-        // Telnyx gateway; Qwen27B is the renamed 'Qwen3_8' entry. The retired
-        // Modal (GLM52), Makora, DeepSeek, Router (OpenRouter) and standalone
-        // Nvidia/Telnyx deployments stay commented out of CLIENTS.
+        // KIMIK3 / MERGEK3 / MERGEK26 / SONNET / OPUS / GLM53 / GLMFLASH /
+        // PARTICLE are all served by the Telnyx gateway; Qwen27B is the
+        // renamed 'Qwen3_8' entry. The retired Modal (GLM52), Makora, DeepSeek,
+        // Router (OpenRouter) and standalone Nvidia/Telnyx deployments stay
+        // commented out of CLIENTS.
         expect(result.response.clients).toEqual([
             'KIMIK3',
             'MERGEK3',
             'MERGEK26',
+            'SONNET',
+            'OPUS',
             'Qwen27B',
             'GLM53',
-            'GLMFLASH'
+            'GLMFLASH',
+            'PARTICLE'
         ]);
     });
 
@@ -80,8 +84,8 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 6 selectable ids: KIMIK3, MERGEK3, MERGEK26, Qwen27B, GLM53,
-        // GLMFLASH (retired entries commented out of the CLIENTS map).
-        expect(result.response.clients.length).toBe(6);
+        // 9 selectable ids: KIMIK3, MERGEK3, MERGEK26, SONNET, OPUS, Qwen27B,
+        // GLM53, GLMFLASH, PARTICLE (retired entries commented out of CLIENTS).
+        expect(result.response.clients.length).toBe(9);
     });
 });
