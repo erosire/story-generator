@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import generationsRoute from './service-route';
 import storyRoute from './service-route-storyId';
 import clientsRoute from './service-route-clients';
-import { LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '@config/environment';
+import { LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '../../../config';
 
 /**
  * PORT CONTRACT — every storyboard endpoint of this service MUST declare

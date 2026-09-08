@@ -14,7 +14,7 @@
 // pattern (read + mutate triggers re-render).
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '@config/environment';
+import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '../config';
 import { deleteStory as deleteStoryApi, type ActiveJob, type StoryMeta } from '../api';
 
 // ── localStorage helpers ──────────────────────────────────────────────

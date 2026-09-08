@@ -1,7 +1,22 @@
+// Standalone tsconfig — the compiler options previously inherited from the
+// monorepo root tsconfig.json via `extends: "../../tsconfig.json"` are
+// inlined here so this distribution builds and typechecks as a self-contained
+// repository (required for the GitHub Pages CI, where no parent tsconfig
+// exists). Keep in sync with the monorepo root tsconfig.json.
 {
-    "extends": "../../tsconfig.json",
     "compilerOptions": {
-        "jsx": "react-jsx"
+        "module": "ESNext",
+        "target": "ESNext",
+        "moduleResolution": "bundler",
+        "jsx": "react-jsx",
+        "skipLibCheck": true,
+        "allowJs": true,
+        "experimentalDecorators": true,
+        "esModuleInterop": true,
+        "strict": true,
+        "lib": ["decorators", "dom", "es5", "scripthost", "es2015.collection"],
+        "types": ["node", "vitest/globals"]
     },
+    "exclude": ["node_modules", "**/*.test.ts", "**/dist/*", "**/lib/*"],
     "include": ["src/**/*", "vite.config.ts", "vitest.config.ts"]
 }

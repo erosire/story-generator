@@ -1,6 +1,6 @@
 import { asServiceHandler } from '@underload/service';
 import { generationListClients } from './generation-list-clients';
-import { LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '@config/environment';
+import { LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '../../../config';
 
 // Clients route — serves the selectable LLM client ids to the frontend.
 // Same service/port as the story-specific route so one deployment exposes

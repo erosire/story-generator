@@ -1,0 +1,61 @@
+# GitHub Pages deployment for the story-generator distribution — the CI
+# equivalent of the local `deploy` script (`vite build && gh-pages -d dist`
+# in package.json). Every push to main rebuilds the app and publishes dist/
+# to the gh-pages branch.
+#
+# Pages hosting: repo Settings → Pages → Source "Deploy from a branch",
+# Branch: gh-pages / (root). The deploy step below creates/updates gh-pages.
+#
+# Dependency notes:
+# - Environment constants (host + ports) live in the local src/config.ts —
+#   the monorepo's @config/environment package cannot be published to npm.
+# - @underload/service is unpublished and only used by server/test code —
+#   never by the static Pages build — so it is stripped from package.json
+#   below to keep `npm install` free of registry 404s.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+# Pushing the gh-pages branch with the default GITHUB_TOKEN needs contents write.
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Strip server-only dependency
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+          const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          delete manifest.dependencies['@underload/service'];
+          fs.writeFileSync('package.json', JSON.stringify(manifest, null, 4) + '\n');
+          EOF
+
+      # --legacy-peer-deps: npm's strict peer resolver crashes with
+      # "Cannot read properties of null (reading 'edgesOut')" on this
+      # dependency tree (vitest 4 + jsdom peer sets) and aborts the install.
+      - name: Install dependencies
+        run: npm install --no-package-lock --no-audit --no-fund --legacy-peer-deps
+
+      - name: Build
+        run: npm run build
+
+      # Publishes dist/ to the gh-pages branch — same result as the
+      # `gh-pages -d dist` step of the local deploy script.
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist

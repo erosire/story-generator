@@ -6,7 +6,7 @@ import { generationListStories } from './generation-list-stories';
 // — `port = 5000`) — which is exactly how this collection route ended up on a
 // DIFFERENT port than the story + clients routes. One constant keeps the whole
 // storyboard API surface (list stories, story CRUD, clients) on a single port.
-import { LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '@config/environment';
+import { LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '../../../config';
 
 export default {
     port: LOCAL_AREA_NETWORK_STORYBOARD_PORT,

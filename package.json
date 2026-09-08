@@ -16,7 +16,6 @@
     "author": "NQQT",
     "license": "ISC",
     "dependencies": {
-        "@config/environment": "*",
         "@presource/core": "*",
         "@presource/react": "*",
         "@reloaded/headless": "*",
