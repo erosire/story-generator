@@ -188,7 +188,6 @@ export const CLIENTS = {
     MERGEK26: TELNYX_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
     SONNET: TELNYX_CLIENT.clone({ model: 'lightning/sonnet-5', sampling: DEFAULT_SAMPLING_PARAMS }),
     OPUS: TELNYX_CLIENT.clone({ model: 'lightning/opus-5', sampling: DEFAULT_SAMPLING_PARAMS }),
-    // Modal: GLM52_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // Uses QWEN3_8_SAMPLING_PARAMS (top_k: 0) because the ninfer backend
     // rejects the SGLang-style top_k: -1 sentinel; all other values unchanged.

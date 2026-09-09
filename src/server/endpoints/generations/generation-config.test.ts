@@ -104,6 +104,12 @@ describe('generation sampling defaults', () => {
             model: 'merge/glm-5.3-flash',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
+        // MODAL clones TELNYX with the modal/glm-5.3 model override (added
+        // alongside the GLM53/GLMFLASH/PARTICLE telnyx-gateway entries).
+        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
+            model: 'modal/glm-5.3',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
             sampling: DEFAULT_SAMPLING_PARAMS
         });
@@ -119,7 +125,8 @@ describe('generation sampling defaults', () => {
             'Qwen27B',
             'GLM53',
             'GLMFLASH',
-            'PARTICLE'
+            'PARTICLE',
+            'MODAL'
         ]);
     });
 
@@ -138,6 +145,7 @@ describe('generation sampling defaults', () => {
         expect(resolveClient('GLM53')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('GLMFLASH')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('PARTICLE')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('MODAL')).toBe(mocks.TELNYX_CLIENT);
     });
 
     it('falls back to the default client (CLIENT = CLIENTS.Qwen27B) for absent or unknown ids', () => {
@@ -174,6 +182,7 @@ describe('parseClientId', () => {
         expect(parseClientId('GLM53')).toEqual({ clientId: 'GLM53' });
         expect(parseClientId('GLMFLASH')).toEqual({ clientId: 'GLMFLASH' });
         expect(parseClientId('PARTICLE')).toEqual({ clientId: 'PARTICLE' });
+        expect(parseClientId('MODAL')).toEqual({ clientId: 'MODAL' });
     });
 
     it('rejects non-string clientId values with the type error', () => {
@@ -187,7 +196,7 @@ describe('parseClientId', () => {
     it('rejects unknown clientId values, listing every available client', () => {
         // The available-client list is Object.keys(CLIENTS) in insertion order.
         const AVAILABLE =
-            'KIMIK3, MERGEK3, MERGEK26, SONNET, OPUS, Qwen27B, GLM53, GLMFLASH, PARTICLE';
+            'KIMIK3, MERGEK3, MERGEK26, SONNET, OPUS, Qwen27B, GLM53, GLMFLASH, PARTICLE, MODAL';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`
