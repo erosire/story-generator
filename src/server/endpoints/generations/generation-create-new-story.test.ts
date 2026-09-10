@@ -292,54 +292,14 @@ describe('generationCreateNewStory', () => {
         const chapterDir = path.join(storyboardDir, 'chapter');
         expect(fs.existsSync(chapterDir)).toBe(true);
 
-        // Plotline-only: chapters are NOT auto-expanded, so no chapter-XXX.md
-        // files exist (the .md file is only written by the expansion pass).
-        // Exactly three skeleton chapter-XXX.json payloads — one per plotline
-        // chapter — are written instead.
+        // Payload ownership contract: the plotline flow writes NO
+        // chapter-XXX.json payloads — chapter payloads are created exclusively
+        // by each chapter's own PATCH expandChapterIndex expansion. The
+        // plotline directory stays empty after plotline generation.
         const mdFiles = fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md')).sort();
         const jsonFiles = fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json')).sort();
         expect(mdFiles).toEqual([]);
-        expect(jsonFiles).toEqual(['chapter-001.json', 'chapter-002.json', 'chapter-003.json']);
-
-        // Verify chapter-001.json is a full skeleton: stored LLM context for a
-        // later per-chapter expansion (via PATCH) with EMPTY revisions[].
-        const chapterJsonPath = path.join(chapterDir, 'chapter-001.json');
-        expect(fs.existsSync(chapterJsonPath)).toBe(true);
-
-        const chapterPayload = JSON.parse(fs.readFileSync(chapterJsonPath, 'utf-8'));
-        expect(chapterPayload).toEqual({
-            storyId,
-            storyline: TEST_STORYLINE,
-            chapterCount: TEST_CHAPTER_COUNT,
-            chapterNumber: '1',
-            chapterIndex: 0,
-            title: 'Chapter 1',
-            plotpoints: plotpointsFor('Plot point A'),
-            context: {
-                // All-plotline summaries — exactly what the first expansion of
-                // chapter 1 will see in context (no expanded prose exists yet).
-                appending: [
-                    '> 1: Chapter One' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point A')),
-                    '> 2: Chapter Two' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point B')),
-                    '> 3: Chapter Three' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point C'))
-                ],
-                request: buildExpandRequest('1', 'Chapter One')
-            },
-            config: {
-                systemInstructions: 'test instructions',
-                openingMessage: 'test opening'
-            },
-            revisions: []
-        });
-
-        // The last chapter's skeleton carries the same all-summary context —
-        // proving no chapter was expanded along the way (an expansion pass
-        // would have replaced earlier entries with expanded content).
-        const lastPayload = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-003.json'), 'utf-8'));
-        expect(lastPayload.chapterIndex).toBe(2);
-        expect(lastPayload.revisions).toEqual([]);
-        expect(lastPayload.context.appending).toEqual(chapterPayload.context.appending);
-        expect(lastPayload.context.request).toBe(buildExpandRequest('3', 'Chapter Three'));
+        expect(jsonFiles).toEqual([]);
     });
 
     it('should return 400 when storyline is missing', async () => {
@@ -473,7 +433,7 @@ describe('generationCreateNewStory', () => {
     // chapter with each accepted chapter kept in the conversation as a tool
     // call (generation-create-new-story.ts, "Progressive per-chapter plotpoint
     // generation").
-    it('should generate the plotline only: one LLM call per chapter, skeleton payloads, no expansion', async () => {
+    it('should generate the plotline only: one LLM call per chapter, no chapter payloads, no expansion', async () => {
         const storyId = `test-story-plotonly-${Date.now()}`;
         createdStoryIds.push(storyId);
         const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
@@ -529,32 +489,11 @@ describe('generationCreateNewStory', () => {
         expect(seenRequests).toEqual([basePlotRequest(1, 2), basePlotRequest(2, 2)]);
 
         // No expanded .md files (the .md is only written during expansion).
+        // NO chapter-XXX.json payloads either — payload creation is owned
+        // exclusively by each chapter's own PATCH expansion, so the plotline
+        // flow can never overwrite a revision the expansion flow finalized.
         expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md'))).toEqual([]);
-
-        // Skeleton payload: full LLM context for a later PATCH expansion,
-        // but ZERO revisions — the chapter content was never generated.
-        const skeleton = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-002.json'), 'utf-8'));
-        expect(skeleton).toEqual({
-            storyId,
-            storyline: TEST_STORYLINE,
-            chapterCount: 2,
-            chapterNumber: '2',
-            chapterIndex: 1,
-            title: 'Chapter 2',
-            plotpoints: plotpointsFor('Plot B'),
-            context: {
-                appending: [
-                    '> 1: Chapter One' + SUMMARY_SEP + bulletList(plotpointsFor('Plot A')),
-                    '> 2: Chapter Two' + SUMMARY_SEP + bulletList(plotpointsFor('Plot B'))
-                ],
-                request: buildExpandRequest('2', 'Chapter Two')
-            },
-            config: {
-                systemInstructions: 'test instructions',
-                openingMessage: 'test opening'
-            },
-            revisions: []
-        });
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json'))).toEqual([]);
 
         // Terminal metadata: plotline complete, validation passed on the first
         // attempt, chapterCompleted stays 0 (advances only when the user
@@ -567,6 +506,119 @@ describe('generationCreateNewStory', () => {
             { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot B') }
         ]);
     });
+
+    // ── Race regression: expansion concurrent with plotline generation ─────
+    // The missing-revision bug: a chapter expanded (via PATCH) while the
+    // plotline was still generating had its chapter-XXX.json overwritten by
+    // the plotline flow's plotOnly completion block with revisions: [] —
+    // chapter 1 lost its revision while chapters 2-5 (finalized later by the
+    // expansion chain) survived. The fix removed payload writing from the
+    // plotline flow entirely: plotpoint.json + plotpoint.md are the ONLY
+    // files it touches. This test simulates the exact interleaving: seed an
+    // expanded chapter payload DURING plotline generation and verify the
+    // plotline completion leaves it byte-identical.
+    it('must not touch chapter payloads when a chapter is expanded during plotline generation', async () => {
+        const storyId = `test-story-race-${Date.now()}`;
+        createdStoryIds.push(storyId);
+        const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+
+        // LLM whose FIRST call hangs until the test releases it — the plotline
+        // job stays inside the chapter-1 structured call (the exact heavy-load
+        // window: chapter 1's plotpoints are already visible in plotpoint.json
+        // via the progressive write, but the plotline is far from complete).
+        // Later calls serve deterministic plotline fixtures immediately.
+        const plotFixtures = [
+            { title: 'Chapter One', plotpoints: plotpointsFor('Plot point A') },
+            { title: 'Chapter Two', plotpoints: plotpointsFor('Plot point B') },
+            { title: 'Chapter Three', plotpoints: plotpointsFor('Plot point C') },
+            { title: 'Chapter Four', plotpoints: plotpointsFor('Plot point D') },
+            { title: 'Chapter Five', plotpoints: plotpointsFor('Plot point E') }
+        ];
+        let releaseFirstCall: () => void = () => {};
+        const firstCallGate = new Promise<void>((resolve) => {
+            releaseFirstCall = resolve;
+        });
+        let plotCallCount = 0;
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                plotCallCount++;
+                // First call (chapter 1) blocks until the test has planted the
+                // concurrently-expanded payload.
+                if (plotCallCount === 1) {
+                    return firstCallGate.then(() => ({ response: plotFixtures[0] }));
+                }
+                const request = typeof config?.request === 'string' ? config.request : '';
+                const idx = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+                return Promise.resolve({ response: plotFixtures[idx] ?? plotFixtures[0] });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, { storyline: TEST_STORYLINE, chapterCount: 5 }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        // The placeholder is written synchronously before the first await.
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+        await vi.waitFor(
+            () => {
+                expect(fs.existsSync(plotpointJsonPath)).toBe(true);
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Simulate the expansion flow having finalized chapter 1 while the
+        // plotline call is in flight: write the payload the PATCH handler's
+        // writeChapterFiles produces (full revision history + stored context).
+        const expandedPayload = {
+            storyId,
+            storyline: TEST_STORYLINE,
+            chapterCount: 5,
+            chapterNumber: '1',
+            chapterIndex: 0,
+            title: 'Expanded Chapter',
+            plotpoints: plotpointsFor('Plot point A'),
+            context: {
+                appending: ['> 1: Chapter One'],
+                request: buildExpandRequest('1', 'Chapter One')
+            },
+            config: { systemInstructions: 'test instructions', openingMessage: 'test opening' },
+            revisions: [
+                { content: 'Chapter one expanded prose body.', wordCount: 5, generationTimeMs: 42000 }
+            ]
+        };
+        fs.mkdirSync(chapterDir, { recursive: true });
+        fs.writeFileSync(path.join(chapterDir, 'chapter-001.json'), JSON.stringify(expandedPayload, null, 2), 'utf-8');
+
+        // Release the plotline's first call so the job proceeds (and reaches
+        // the plotOnly completion block — which previously overwrote the
+        // payload above with revisions: []).
+        releaseFirstCall();
+
+        // The plotline completes.
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // THE CONTRACT: the concurrently-expanded chapter's payload survived
+        // byte-identical — the plotline flow never touched chapter-XXX.json.
+        const preserved = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+        expect(preserved).toEqual(expandedPayload);
+
+        // No payload appeared for the other chapters either — the plotline
+        // flow writes zero chapter payloads.
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json')).sort()).toEqual(['chapter-001.json']);
+    }, 30000);
 
     // ── Agentic plotline chain ────────────────────────────────────────────
     // The progressive plotline generation must not only call the LLM once per
@@ -1197,9 +1249,9 @@ describe('generationCreateNewStory', () => {
     // POST { append: { chapterCount, notes? } } against an EXISTING storyId
     // extends that story in place: the LLM generates plotlines for
     // chapterCount NEW chapters which are stored AFTER the current chapter
-    // list (10 existing + 3 appended = 13), with skeleton chapter payloads
-    // so the new chapters can be expanded later. No expansion happens here.
-    // See generation-append-story.ts.
+    // list (10 existing + 3 appended = 13). No expansion and NO chapter
+    // payload writes happen here — payload creation is owned exclusively by
+    // each chapter's own PATCH expansion. See generation-append-story.ts.
 
     it('should return 400 when append.chapterCount is not a positive number', async () => {
         const storyId = `test-append-bad-count-${Date.now()}`;
@@ -1414,51 +1466,13 @@ describe('generationCreateNewStory', () => {
             { number: '6', title: 'Final Stand', plotpoints: ['Plot H', 'Plot I'] }
         ]);
 
-        // Append is PLOTPOINTS ONLY: six skeleton payloads, zero expanded .md
-        // files (the create step was plotOnly and the append never expands).
+        // Append is PLOTPOINTS ONLY: no expanded .md files (the create step
+        // was plotOnly and the append never expands) and NO chapter-XXX.json
+        // payloads — payload creation is owned exclusively by each chapter's
+        // own PATCH expansion, so the plotline flows can never wipe a
+        // revision the expansion flow finalized.
         expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md'))).toEqual([]);
-        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json')).sort()).toEqual([
-            'chapter-001.json',
-            'chapter-002.json',
-            'chapter-003.json',
-            'chapter-004.json',
-            'chapter-005.json',
-            'chapter-006.json'
-        ]);
-
-        // A NEW appended chapter's skeleton carries the full all-plotline
-        // context (all 6 chapters) + its expand request — ready for an
-        // individual PATCH expandChapterIndex later, with empty revisions.
-        const newSkeleton = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-004.json'), 'utf-8'));
-        expect(newSkeleton).toEqual({
-            storyId,
-            storyline: TEST_STORYLINE,
-            chapterCount: 6,
-            chapterNumber: '4',
-            chapterIndex: 3,
-            // writeChapterPayload writes the generic `Chapter N` placeholder as
-            // the skeleton title (same contract as the create flow — the LLM
-            // title only lands in revisions after expansion); the stored
-            // expand request does carry the real title.
-            title: 'Chapter 4',
-            plotpoints: ['Plot E', 'Plot F'],
-            context: {
-                appending: [
-                    '> 1: Chapter One' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point A')),
-                    '> 2: Chapter Two' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point B')),
-                    '> 3: Chapter Three' + SUMMARY_SEP + bulletList(plotpointsFor('Plot point C')),
-                    '> 4: New Arc Begins' + SUMMARY_SEP + '- Plot E\n- Plot F',
-                    '> 5: The Split' + SUMMARY_SEP + '- Plot G',
-                    '> 6: Final Stand' + SUMMARY_SEP + '- Plot H\n- Plot I'
-                ],
-                request: buildExpandRequest('4', 'New Arc Begins')
-            },
-            config: {
-                systemInstructions: 'test instructions',
-                openingMessage: 'test opening'
-            },
-            revisions: []
-        });
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json'))).toEqual([]);
 
         // plotpoint.md grows by the appended entries (markdown debugging file).
         const md = fs.readFileSync(path.join(getStoryboardDir(storyId), 'plotpoint.md'), 'utf-8');
@@ -1470,9 +1484,10 @@ describe('generationCreateNewStory', () => {
     // POST { resume: { chapterCount? } } against an EXISTING storyId continues
     // an interrupted plotline generation: the complete prefix of chapters is
     // kept, everything from the first incomplete chapter onward (a partially
-    // streamed / failed tail) is regenerated per-chapter up to the target,
-    // and skeleton chapter payloads are written only for chapters missing
-    // one. See generation-resume-story.ts.
+    // streamed / failed tail) is regenerated per-chapter up to the target.
+    // Resume runs strictly AFTER the plotline completes, so its
+    // create-if-missing skeleton writes (chapters missing a payload) cannot
+    // race a chapter expansion. See generation-resume-story.ts.
 
     // Seed a storyboard/<storyId>/plotpoint.json in the interrupted state
     // (partial chapters, status 'generating' or 'failed', createdAt kept).
@@ -1673,7 +1688,8 @@ describe('generationCreateNewStory', () => {
         ]);
 
         // Skeleton payloads for ALL three chapters (the interrupted create had
-        // none) — each expandable via PATCH expandChapterIndex afterwards.
+        // none) — resume runs strictly AFTER the plotline completes, so its
+        // create-if-missing skeleton writes cannot race a chapter expansion.
         expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json')).sort()).toEqual([
             'chapter-001.json',
             'chapter-002.json',

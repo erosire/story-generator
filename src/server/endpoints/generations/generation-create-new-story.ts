@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { asHandlerMethod } from '@underload/service';
 import { type TSchema, Type } from '@sinclair/typebox';
-import { arrayEach, arrayEachAsync, jsonComplete } from '@presource/core';
+import { arrayEachAsync, jsonComplete } from '@presource/core';
 import {
     DATABASE_BASE_DIR,
     MAX_PLOT_ATTEMPTS,
@@ -40,11 +40,14 @@ const generateStory = async (options: {
     // per-chapter attempt of the generation.
     clientId?: string;
     // Plotline-only mode (the dashboard Generate button): after plotline
-    // validation writes a skeleton chapter-XXX.json payload for EVERY chapter
-    // and stops — chapters are never auto-expanded by this call. The user
-    // expands chapters one at a time via PATCH expandChapterIndex
-    // (generation-update-chapter.ts), which reads each skeleton's stored LLM
-    // context.
+    // validation the story stops — chapters are never auto-expanded by this
+    // call, and NO chapter-XXX.json payload is written here. Chapter payloads
+    // are created exclusively by each chapter's own expansion (PATCH
+    // expandChapterIndex, generation-update-chapter.ts), which rebuilds the
+    // LLM context from plotpoint.json + on-disk revisions. This keeps
+    // plotline generation and chapter expansion fully decoupled — the two
+    // flows never write the same files, so a chapter can be expanded while
+    // the plotline is still streaming with zero shared-file races.
     plotOnly?: boolean;
 }) => {
     const { storyId, storyName, storyline, chapterCount, root: projectRoot } = options;
@@ -628,15 +631,18 @@ const generateStory = async (options: {
     // expansion. Everything below (appending[] context + per-chapter
     // expansion loop) runs only for legacy full-generation calls.
     //
-    // A skeleton chapter-XXX.json payload is written for every chapter with
-    // the exact context the first expansion would have seen: all-plotline
-    // summaries + buildExpandRequest. Without this, the UI's per-chapter
-    // "Expand Chapter" action (PATCH expandChapterIndex) would 404 —
-    // generation-update-chapter.ts reads the stored LLM context from
-    // chapter-XXX.json before re-expanding. Once a user expands a chapter,
-    // reExpandChapter (generation-update-chapter.ts) propagates its expanded
-    // content into the next chapter's skeleton payload, so later expansions
-    // still see the preceding prose.
+    // NO chapter-XXX.json payload is written here. Payloads are owned by each
+    // chapter's own expansion (PATCH expandChapterIndex): the PATCH handler
+    // writes the chapter's skeleton at expansion time (generation-update-
+    // chapter.ts), with the context rebuilt dynamically by buildExpansionContext
+    // (story-utils.ts) from plotpoint.json + on-disk revisions — so the stored
+    // snapshot this flow used to pre-write was never required. Writing one
+    // here raced the expansion flow: an expansion chain started while the
+    // plotline was still generating finalized chapter revisions, and this
+    // block's unconditional writeChapterPayload overwrote chapter-XXX.json
+    // with revisions: [] — the missing-revision bug (chapter 1 wiped while
+    // chapters 2-5, finalized later, survived). Plotlines and chapter
+    // payloads now touch disjoint files and can run concurrently.
     //
     // Client interaction: the dashboard's target-mode poll
     // (pollStoryData in src/api/storyboard.ts) keeps the GET loop alive
@@ -646,31 +652,6 @@ const generateStory = async (options: {
     // run their own completion poll (SectionStoryContent reExpand effect).
     if (plotOnly) {
         assertStoryExists();
-
-        // Compile one plotline summary per chapter — identical entries to
-        // what the expansion pass below would push into appending[] at the
-        // start. Plotlines are guaranteed non-empty here (missingPlotpointChapters
-        // check above), so map is safe and deterministic.
-        const summaryList = chapters.map(({ number, title, plotpoints }) =>
-            [`> ${number}: ${title}`, '\n\n', plotpoints.map((plot) => `- ${plot}`).join('\n')].join('\n\n')
-        );
-
-        // Persist a skeleton payload per chapter so each one is immediately
-        // expandable from the UI (canReExpand=true in the GET response).
-        arrayEach(chapters, ({ index, value: chapter }) => {
-            assertStoryExists();
-            writeChapterPayload({
-                chapterDir,
-                chapterIndex: index,
-                storyId,
-                storyline,
-                chapterCount,
-                chapterNumber: chapter.number,
-                plotpoints: Array.isArray(chapter.plotpoints) ? chapter.plotpoints : [],
-                contextAppending: [...summaryList],
-                request: buildExpandRequest(chapter.number, chapter.title)
-            });
-        });
 
         // Final state: plotline complete. status 'completed' tells the list
         // endpoint (deriveStatus, generation-list-stories.ts) this story is

@@ -401,7 +401,7 @@ export type Chapter = {
     title: string; // chapter title from the LLM
     plotpoints: string[]; // plotpoints for this chapter
     expanded: boolean; // true if chapter-XXX.json has non-empty result.content
-    canReExpand: boolean; // true if chapter-XXX.json exists (LLM context available for re-expansion)
+    canReExpand: boolean; // true if chapter-XXX.json exists (created by the chapter's own expansion)
     revisions?: Array<{
         content: string; // raw markdown body
         wordCount: number; // word count for this revision

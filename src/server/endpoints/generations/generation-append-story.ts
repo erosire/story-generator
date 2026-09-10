@@ -25,11 +25,16 @@
 //     are renumbered sequentially, chapterCount becomes the new total, and
 //     plotpoint.md gains the new entries. The original stories fields
 //     (storyline/storyName/chapterCompleted/status/createdAt) are untouched.
-//   - A skeleton chapter-XXX.json payload is written for every new chapter
-//     (stored LLM context, empty revisions[]) so each one can be expanded
-//     individually via PATCH expandChapterIndex — the append itself NEVER
-//     expands a chapter (plotpoints only, mirroring the dashboard's
-//     plotOnly generate flow).
+//   - No chapter-XXX.json payload is written here. Payloads are owned by
+//     each chapter's own expansion (PATCH expandChapterIndex,
+//     generation-update-chapter.ts), which writes its skeleton at expansion
+//     time with the context rebuilt from plotpoint.json + on-disk revisions
+//     (buildExpansionContext, story-utils.ts). Pre-writing skeletons here
+//     raced chapter expansions of the SAME indices (append rewrites
+//     plotpoint.json, making the new chapters expandable while the append
+//     job still runs) — a blind writeChapterPayload would wipe any revision
+//     an expansion had already finalized. Plotlines and chapter payloads now
+//     touch disjoint files.
 //   - On LLM validation failure NOTHING is written — the story state is left
 //     untouched and the error is logged by the fire-and-forget caller.
 // ---------------------------------------------------------------------------
@@ -37,7 +42,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Type } from '@sinclair/typebox';
-import { arrayEach } from '@presource/core';
 import {
     DATABASE_BASE_DIR,
     MIN_PLOTPOINTS_PER_CHAPTER,
@@ -46,11 +50,9 @@ import {
 } from './generation-config';
 import {
     buildAppendingFromChapters,
-    buildExpandRequest,
     callStructured,
     createStoryClient,
-    readChapterPayload,
-    writeChapterPayload
+    readChapterPayload
 } from './story-utils';
 // Abort signal from the job registry — a user-requested Terminate (PATCH
 // abortJob) must stop this background flow at its next checkpoint boundary.
@@ -127,9 +129,10 @@ export const appendStoryChapters = async (options: AppendStoryChaptersOptions) =
     const existingChapters: Array<{ number: string; title: string; plotpoints: string[] }> = meta.chapters;
     const existingCount = existingChapters.length;
 
-    // Chapter folder must exist before the skeleton payloads below.
+    // Read-only path into the chapter folder — the priming pass below reads
+    // existing payloads' revisions to substitute expanded prose for summaries.
+    // This flow never WRITES chapter payloads (expansion owns them).
     const chapterDir = path.join(databaseDir, 'chapter');
-    fs.mkdirSync(chapterDir, { recursive: true });
 
     // The story dir can be deleted mid-LLM-call (user deletes from the list);
     // guard every post-call write with this, matching generateStory's contract.
@@ -264,26 +267,15 @@ export const appendStoryChapters = async (options: AppendStoryChaptersOptions) =
     const existingMd = fs.existsSync(plotpointMdPath) ? fs.readFileSync(plotpointMdPath, 'utf-8') : '';
     fs.writeFileSync(plotpointMdPath, existingMd ? `${existingMd}\n\n---\n\n${mdEntries}` : mdEntries, 'utf-8');
 
-    // ── Skeleton payloads for the new chapters ────────────────────────────
-    // Same contract as the plotline-only generate path (generation-create-new-story.ts:698-711):
-    // each new chapter stores the full all-summary context it would see on its
-    // first expansion, so PATCH expandChapterIndex works immediately without
-    // any chapter content having been generated.
-    const fullAppending = buildAppendingFromChapters(allChapters);
-    arrayEach(appendedChapters, ({ index, value: chapter }) => {
-        assertStoryExists();
-        writeChapterPayload({
-            chapterDir,
-            chapterIndex: existingCount + index,
-            storyId,
-            storyline,
-            chapterCount: totalChapterCount,
-            chapterNumber: chapter.number,
-            plotpoints: chapter.plotpoints,
-            contextAppending: fullAppending,
-            request: buildExpandRequest(chapter.number, chapter.title)
-        });
-    });
-
+    // ── Done ──────────────────────────────────────────────────────────────
+    // NO chapter-XXX.json skeleton payloads are written. Each new chapter's
+    // payload is created by its own PATCH expandChapterIndex expansion
+    // (generation-update-chapter.ts), which rebuilds the LLM context from
+    // plotpoint.json + on-disk revisions (buildExpansionContext,
+    // story-utils.ts). The pre-written skeletons this flow used to create
+    // raced chapter expansions: the plotpoint.json rewrite above makes the
+    // new chapters expandable immediately, and a blind writeChapterPayload
+    // would wipe any revision an expansion had already finalized. Chapter
+    // payloads belong exclusively to the expansion flow.
     console.log(`[APPEND] Story '${storyId}' extended with ${chapterCount} new plotline chapters (no expansion performed)`);
 };

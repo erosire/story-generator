@@ -20,11 +20,14 @@
 //       returns: { storyId: string }
 //       behavior: fire-and-forget background generation. For direct creates
 //       (the dashboard Generate button) the server generates the PLOTLINE ONLY:
-//       it writes plotpoint.json (status 'completed') and a skeleton
-//       chapter-NNN.json payload per chapter (LLM context, empty revisions[]).
-//       Chapters are NOT auto-expanded — the client expands them individually
-//       via PATCH expandChapterIndex, which consumes each skeleton's stored
-//       context. Fork mode still re-expands chapters from the fork point.
+//       it writes plotpoint.json (status 'completed') and stops — chapter
+//       payloads are NOT created here. Each chapter's chapter-NNN.json payload
+//       is created exclusively by its own expansion via PATCH
+//       expandChapterIndex, which rebuilds the LLM context from plotpoint.json
+//       + on-disk revisions at expansion time. This keeps plotline generation
+//       and chapter expansion on disjoint files, so a chapter can be expanded
+//       while the plotline is still generating without any shared-file race.
+//       Fork mode still re-expands chapters from the fork point.
 //       clientId selects the LLM client on the server (see Route 3 +
 //       fetchClientOptions); it is NEVER stored with the story.
 //       See generation-create-new-story.ts.
@@ -193,7 +196,9 @@ export async function createNewStory(
 // plotpoint.json, no storyline, no plotpoints, bad chapterCount/notes) and
 // then generates LLM plotlines in the background; the new chapters land in
 // plotpoint.json AFTER the current chapter list (10 existing + 3 appended =
-// 13) and appear here via the caller's existing GET polling.
+// 13) and appear here via the caller's existing GET polling. No chapter
+// payloads are written — each new chapter's payload is created by its own
+// PATCH expandChapterIndex expansion.
 //
 // `notes` (optional) is free-form author guidance for the new plotlines; pass
 // undefined (or empty/whitespace) to omit the field entirely — the server

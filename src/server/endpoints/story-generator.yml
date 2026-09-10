@@ -75,10 +75,12 @@ paths:
       description: >-
         Starts background story generation. Returns the storyId immediately while
         generation continues asynchronously. The story is stored at
-        temporary/database/storyboard/{storyId}/ with plotpoint.md and a chapter/
-        subdirectory. The chapter/ directory contains chapter-XXX.md (readable
-        markdown) and chapter-XXX.json (full expansion payload) for each
-        generated chapter.
+        temporary/database/storyboard/{storyId}/ with plotpoint.json and a
+        chapter/ subdirectory. The plotline flow writes ONLY plotpoint.json
+        (and the plotpoint.md debugging mirror) — chapter-XXX.json payloads are
+        created exclusively by each chapter's own expansion (PATCH
+        expandChapterIndex), so plotline generation and chapter expansion touch
+        disjoint files and can run concurrently without races.
       tags:
         - Storyboard
       parameters:
@@ -471,8 +473,8 @@ components:
         canReExpand:
           type: boolean
           description: >-
-            Whether the chapter-XXX.json payload file exists (it stores the
-            stored LLM context from past expansions). Informational only —
+            Whether the chapter-XXX.json payload file exists (created by the
+            chapter's own expansion). Informational only —
             ANY chapter in the plotline can be expanded via PATCH
             expandChapterIndex: when the payload is missing the server
             rebuilds the context from the plotline (plotpoint summaries, with
@@ -717,7 +719,8 @@ components:
             Zero-based index of the chapter to expand. Must correspond to an
             existing chapter in the plotline (plotpoint.json) — a missing
             chapter-XXX.json payload is fine (a skeleton is written from the
-            plotline first). Any chapter is expandable even when its preceding
+            plotline first; this PATCH flow is the ONLY writer of chapter
+            payloads). Any chapter is expandable even when its preceding
             chapters have not been expanded: the LLM context is rebuilt
             dynamically, using each expanded preceding chapter's latest
             revision prose (within the rolling window) and each pending

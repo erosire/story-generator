@@ -740,6 +740,15 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     // request are persisted (and the GET handler flips canReExpand) even if
     // the background expansion fails. Existing payloads are NEVER overwritten
     // here — they may carry revisions[] a blind skeleton write would wipe.
+    //
+    // OWNERSHIP: this PATCH flow is the ONLY writer of chapter-XXX.json
+    // payloads. The plotline flows (create plotOnly, append) stopped writing
+    // skeletons precisely so that plotline generation and chapter expansion
+    // touch disjoint files — a chapter can be expanded while its plotline is
+    // still streaming, with no shared-file race. (The old pre-written
+    // skeletons were overwritten with revisions: [] by the plotline flow's
+    // completion block, wiping revisions the expansion chain had already
+    // finalized — the "chapter 1 has no revision" bug.)
     if (!chapterPayload) {
         writeChapterPayload({
             chapterDir,
