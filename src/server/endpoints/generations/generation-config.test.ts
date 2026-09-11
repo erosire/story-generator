@@ -97,7 +97,10 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'telnyx/glm-5.3',
+            // GLM53 routes through the Merge gateway (was 'telnyx/glm-5.3' —
+            // switched in generation-config.ts alongside the Merge client's
+            // addition to the shared provider registry).
+            model: 'merge/glm-5.3',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({

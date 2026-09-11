@@ -63,7 +63,8 @@ describe('generationListClients', () => {
             'Qwen27B',
             'GLM53',
             'GLMFLASH',
-            'PARTICLE'
+            'PARTICLE',
+            'MODAL'
         ]);
     });
 
@@ -84,8 +85,9 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 9 selectable ids: KIMIK3, MERGEK3, MERGEK26, SONNET, OPUS, Qwen27B,
-        // GLM53, GLMFLASH, PARTICLE (retired entries commented out of CLIENTS).
-        expect(result.response.clients.length).toBe(9);
+        // 10 selectable ids: KIMIK3, MERGEK3, MERGEK26, SONNET, OPUS, Qwen27B,
+        // GLM53, GLMFLASH, PARTICLE, MODAL (retired entries commented out of
+        // CLIENTS).
+        expect(result.response.clients.length).toBe(10);
     });
 });
