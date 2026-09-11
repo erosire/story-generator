@@ -1,12 +1,32 @@
-# GitHub Pages deployment for the story-generator distribution — the CI
-# equivalent of the local `deploy` script (`vite build && gh-pages -d dist`
-# in package.json). Every push to main rebuilds the app and publishes dist/
-# to the gh-pages branch.
+# GitHub Pages deployment for the story-generator distribution.
 #
-# Pages hosting: repo Settings → Pages → Source "Deploy from a branch",
-# Branch: gh-pages / (root). The deploy step below creates/updates gh-pages.
+# WHY THIS WAS REWRITTEN (cross-ref diagnosis 2026-09-11):
+# The previous version of this workflow used peaceiris/actions-gh-pages@v4
+# to force-push dist/ onto the gh-pages branch, relying on the repo's
+# Pages setting "Deploy from a branch" to pick it up. That pipeline broke:
+#   - gh-pages WAS updated by the workflow (commits c44f02d on 2026-09-09,
+#     e8a637a on 2026-09-10, containing assets/index-BSc0xfGq.js).
+#   - But the live site (https://erosire.github.io/story-generator/) still
+#     served an OLDER bundle (assets/index-Eg-Q13IJ.js) — evidence the
+#     Pages branch-build stopped triggering after the last successful
+#     Pages deployment event (2026-09-08T14:57:45Z, sha 1bbd245 "Create
+#     CNAME"). GitHub's branch-based Pages builds are also notoriously
+#     flaky/silent when a CNAME or custom-domain state gets involved.
+#   - The Actions runs themselves were green (run #5 for 40ba2e5 succeeded),
+#     so the failure was purely in the Pages publishing half.
 #
-# Dependency notes:
+# FIX: switch to the official artifact-based Pages flow — identical to the
+# one that works in distribution/ScriptingSpaceFormatter
+# (.github/workflows/deploy-pages.yml). This publishes dist/ directly
+# through actions/deploy-pages@v4 and does NOT depend on the gh-pages
+# branch or on "Deploy from a branch" builds at all.
+#
+# ONE-TIME REPO SETTING (required, not per-deploy):
+#   Settings → Pages → Build and deployment → Source: "GitHub Actions"
+# The old gh-pages branch becomes unused after this and can be deleted
+# (it no longer receives updates once this workflow is in place).
+#
+# Dependency notes (carried over from the previous workflow):
 # - Environment constants (host + ports) live in the local src/config.ts —
 #   the monorepo's @config/environment package cannot be published to npm.
 # - @underload/service is unpublished and only used by server/test code —
@@ -21,12 +41,20 @@ on:
   # Allow manual runs from the Actions tab.
   workflow_dispatch:
 
-# Pushing the gh-pages branch with the default GITHUB_TOKEN needs contents write.
+# deploy-pages@v4 needs id-token (OIDC) + pages write; checkout needs read.
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; new pushes cancel in-flight deploys
+# (same concurrency guard the working ScriptingSpaceFormatter uses).
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -53,9 +81,24 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Publishes dist/ to the gh-pages branch — same result as the
-      # `gh-pages -d dist` step of the local deploy script.
-      - uses: peaceiris/actions-gh-pages@v4
+      # Artifact-based Pages publishing (replaces the gh-pages branch push):
+      # configure-pages reads/applies repo Pages settings, upload-pages-
+      # artifact packages dist/, deploy-pages publishes it in the deploy job.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
+          path: dist
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
