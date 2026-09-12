@@ -1,10 +1,20 @@
 // Sidebar FEATURE: vertical list of all stories in order.
 //
 // Replaces the previous horizontal tab bar. Each tile shows the story title,
-// a chapter-count badge, a processing indicator, and an "x" delete control
-// pinned to the tile's top-right corner. Clicking the tile body selects it
-// (store.selected = entry) so the content area displays that story; clicking
-// the "x" permanently deletes that story (identified DELETE).
+// a chapter-count badge, a processing indicator, a CACHED-LOCALLY icon, and
+// an "x" delete control pinned to the tile's top-right corner. Clicking the
+// tile body selects it (store.selected = entry) so the content area displays
+// that story; clicking the "x" permanently deletes that story (identified
+// DELETE).
+//
+// CACHED-LOCALLY ICON: each tile carries a small disk icon (data-testid
+// "story-cached-<storyId>", title "Cached locally") whenever the story's
+// content is cached in this browser — i.e. entry.data is non-null (hydrated
+// from the localStorage records cache or fetched into it this session).
+// Stories that exist only as server metadata (freshly synced remote entries
+// with data === null, never fetched) render WITHOUT the icon: nothing of
+// theirs is stored locally yet. The icon is informational only — no click
+// behavior, it is rendered inside the tile's select button like the badges.
 //
 // The "Stories" header carries a live job-count chip (data-testid
 // "sidebar-job-count", text "<n> running") showing how many background
@@ -61,6 +71,9 @@ import React from 'react';
 // Material UI close glyph, icon button, button base + text field — the tile
 // delete control, story tiles, and the real-time search field.
 import CloseIcon from '@mui/icons-material/Close';
+// Material UI save/disk glyph — the cached-locally indicator on a story tile
+// (see the CACHED-LOCALLY ICON note in the file header).
+import SaveAltIcon from '@mui/icons-material/SaveAlt';
 import { TextField, IconButton, ButtonBase } from '@mui/material';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
@@ -316,6 +329,26 @@ const StoryTitle = styled('span', {
     whiteSpace: 'nowrap' as const
 });
 
+// Cached-locally icon — small disk glyph rendered inline after the title on
+// the tile's first row when the story's content is cached in this browser
+// (entry.data non-null — hydrated from localStorage or fetched this session;
+// see the CACHED-LOCALLY ICON note in the file header). Sized to the title's
+// line box (fontSize.sm, ~11px) and vertically aligned so it sits on the
+// title's baseline without stretching the row. Purely informational: rendered
+// inside the tile's select button (like the badges), no click behavior.
+const CachedIcon = styled('span', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: '0 0 auto',
+    // Negative margins keep the glyph tight against the truncated title
+    // without adding width to the row.
+    margin: '0 0 0 4px',
+    color: theme.textMuted,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 1
+});
+
 // Empty-state message when no stories exist.
 const EmptyMessage = styled('div', {
     padding: '20px 14px',
@@ -543,6 +576,14 @@ export const StorySidebar: React.FC = React.memo(() => {
                 // The animated sg-spinner ring sits inside the same chip and
                 // contributes no text content.
                 const processingBadge = isProcessing ? '⏳' : '';
+                // Cached-locally state: the story's content is stored in this
+                // browser. entry.data is set by (a) localStorage hydration
+                // (loadRecordsFromStorage) and (b) any successful fetch that
+                // landed in the store (selection catch-up / poll loop) — the
+                // records-persist effect then keeps it in the cache. A null
+                // data means the entry is server-metadata-only (freshly
+                // synced remote story, never fetched here) → nothing cached.
+                const isCached = entry.data !== null;
 
                 const itemProps = {
                     // Click = selection + a click-time server re-check. Two
@@ -596,7 +637,23 @@ export const StorySidebar: React.FC = React.memo(() => {
                     <StoryEntry key={entry.id}>
                         {isSelected ? (
                             <StoryItemSelected {...itemProps} className={`sg-story-selected${processingClass}`}>
-                                <StoryTitle>{entry.title}</StoryTitle>
+                                <StoryTitle>
+                                    {entry.title}
+                                    {/* Cached-locally icon — disk glyph after the
+                                        title when this browser holds the story's
+                                        content (data-testid is the test contract).
+                                        Rendered INSIDE the title row so it truncates
+                                        with the row rather than overlapping the "x". */}
+                                    {isCached && (
+                                        <CachedIcon
+                                            data-testid={`story-cached-${entry.storyId}`}
+                                            title="Cached locally"
+                                            aria-label="Cached locally"
+                                        >
+                                            <SaveAltIcon style={{ fontSize: 13, display: 'block' }} />
+                                        </CachedIcon>
+                                    )}
+                                </StoryTitle>
                                 <StoryTileMeta>
                                     {chapterBadge && (
                                         <Badge variant="accent" elevated>
@@ -613,7 +670,20 @@ export const StorySidebar: React.FC = React.memo(() => {
                             </StoryItemSelected>
                         ) : (
                             <StoryItem {...itemProps} className={`sg-story-item${processingClass}`}>
-                                <StoryTitle>{entry.title}</StoryTitle>
+                                <StoryTitle>
+                                    {entry.title}
+                                    {/* Same cached-locally icon on the unselected
+                                        variant — identical semantics, neutral tone. */}
+                                    {isCached && (
+                                        <CachedIcon
+                                            data-testid={`story-cached-${entry.storyId}`}
+                                            title="Cached locally"
+                                            aria-label="Cached locally"
+                                        >
+                                            <SaveAltIcon style={{ fontSize: 13, display: 'block' }} />
+                                        </CachedIcon>
+                                    )}
+                                </StoryTitle>
                                 <StoryTileMeta>
                                     {chapterBadge && <Badge variant="neutral">{chapterBadge}</Badge>}
                                     {processingBadge && (

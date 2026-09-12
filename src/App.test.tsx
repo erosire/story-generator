@@ -916,6 +916,147 @@ describe('StoryGeneratorApp', () => {
         vi.useRealTimers();
     });
 
+    // ── Cached-locally icon on the sidebar tiles ───────────────────────────
+    // Each tile shows a small disk icon (data-testid "story-cached-<storyId>")
+    // when the story's content is cached in this browser (entry.data non-null
+    // — hydrated from localStorage or fetched into the store this session).
+    // Server-metadata-only entries (data === null, never fetched here) render
+    // WITHOUT the icon.
+    it('shows the cached-locally icon on stories whose data is cached and omits it on metadata-only stories', async () => {
+        const fetchMock = globalThis.fetch as any;
+        // One server story with NO cached data (metadata-only, never fetched
+        // in this browser) and one cache-only story holding full chapter data
+        // from the localStorage records cache.
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'meta-only-1', storyName: 'Meta Tale', chapterRequested: 1, chapterCompleted: 0, createdDate: '2026-08-13T09:00:00Z', status: 'generating' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+        seedRecordsCache([
+            {
+                id: 31,
+                storyId: 'cached-icon-1',
+                storyName: 'Cached Icon Tale',
+                title: 'Cached Icon Tale',
+                storyline: 'a cached storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-12T09:00:00.000Z',
+                status: 'completed',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Cached Chapter',
+                            plotpoints: ['cached plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Cached Chapter\n\ncached body', wordCount: 2, generationTimeMs: 500 }]
+                        }
+                    ],
+                    meta: { storyline: 'a cached storyline', chapterCount: 1, createdAt: '2026-08-12T09:00:00Z' }
+                },
+                isRemote: false
+            }
+        ]);
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // The cached story's tile carries the disk icon straight from the
+        // localStorage hydration (cache-first render, no server round-trip).
+        // testid pattern: "story-cached-<storyId>" → story-cached-cached-icon-1.
+        expect(screen.getByTestId('story-cached-cached-icon-1')).toBeDefined();
+        // The icon is labelled for accessibility / hover tooltip.
+        expect(screen.getByTestId('story-cached-cached-icon-1').getAttribute('title')).toBe('Cached locally');
+
+        // After the server list sync, the metadata-only story appears WITHOUT
+        // the icon — its data is still null (never fetched in this browser),
+        // so nothing of it is cached locally.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-meta-only-1')).toBeDefined();
+        });
+        expect(screen.queryByTestId('story-cached-meta-only-1')).toBeNull();
+    });
+
+    // The icon appears on a story that had NO cached data once its content is
+    // fetched into the store (the records-persist effect then caches it) —
+    // the icon tracks the live cached state, not just the hydration snapshot.
+    it('gains the cached-locally icon after the story data is fetched into the store', async () => {
+        // The per-story GET is held unresolved until the test releases it, so
+        // the pre-fetch assertion below is deterministic: the boot-time
+        // selection catch-up fires immediately, but its data cannot land in
+        // the store (and flip the icon on) until we resolve the gate.
+        let releaseStoryData: (value?: unknown) => void = () => {};
+        const storyDataGate = new Promise((resolve) => {
+            releaseStoryData = resolve;
+        });
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'fetch-icon-1', storyName: 'Fetch Icon Tale', chapterRequested: 1, chapterCompleted: 0, createdDate: '2026-08-13T09:00:00Z', status: 'generating' }
+                            ]
+                        })
+                    );
+                }
+                // Per-story GET — gated until the test releases it.
+                return storyDataGate.then(() =>
+                    Promise.resolve(
+                        mockResponse(200, {
+                            chapters: [
+                                {
+                                    chapterNumber: '1',
+                                    chapterIndex: 0,
+                                    title: 'Ch1',
+                                    plotpoints: ['plot'],
+                                    expanded: true,
+                                    revisions: [{ content: '## Ch1\n\nbody', wordCount: 2, generationTimeMs: 1000 }]
+                                }
+                            ],
+                            meta: { storyline: 'Fetch Icon Tale', chapterCount: 1, createdAt: '2026-08-13T09:00:00Z' }
+                        })
+                    )
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // Before the fetch lands: the freshly synced entry is metadata-only →
+        // no icon. (The catch-up GET is in flight but gated, so the store
+        // still holds data === null here — deterministic.)
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-fetch-icon-1')).toBeDefined();
+        });
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 30));
+        });
+        expect(screen.queryByTestId('story-cached-fetch-icon-1')).toBeNull();
+
+        // Release the per-story GET → the catch-up effect stores the story
+        // data → the tile now carries the cached-locally icon.
+        await act(async () => {
+            releaseStoryData();
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('story-cached-fetch-icon-1')).toBeDefined();
+        });
+    });
+
     // The sidebar tile animates while the SERVER's in-memory job registry
     // reports a live background thread for the story (StoryMeta.processing).
     // This covers jobs started by OTHER sessions/devices: the animating
