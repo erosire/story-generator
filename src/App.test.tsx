@@ -3343,4 +3343,178 @@ describe('StoryGeneratorApp', () => {
             expect(raw).toContain('"dataStale":false');
         });
     });
+
+    // ── Offline regression: server unreachable → cached stories still show ──
+    // The reported bug: with the server down, the stories list came up EMPTY
+    // and no cached story could be opened. Two legs are pinned here:
+    //   1. Boot with the server REJECTING every request (mixed content /
+    //      connection refused — fetchStoryList throws): the localStorage
+    //      records cache must hydrate the sidebar AND the selected story's
+    //      cached chapter content must render, with the load warning shown.
+    //   2. The sidebar's periodic auto-refresh (30s) must NOT clear the
+    //      cached records when its fetch fails — its catch is silent and the
+    //      cached list stays the displayed truth.
+    it('renders the cached story list and content when the server is unreachable at boot and keeps them after failed refreshes', async () => {
+        // Seed the cache the way a previous (online) session left it: two
+        // stories, both with full chapter content (they were viewed).
+        seedRecordsCache([
+            {
+                id: 41,
+                storyId: 'offline-a',
+                storyName: 'Offline Tale A',
+                title: 'Offline Tale A',
+                storyline: 'storyline a',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-12T09:00:00.000Z',
+                status: 'completed',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Offline Chapter',
+                            plotpoints: ['offline plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Offline Chapter\n\noffline body A', wordCount: 3, generationTimeMs: 500 }]
+                        }
+                    ],
+                    meta: { storyline: 'storyline a', chapterCount: 1, createdAt: '2026-08-12T09:00:00Z' }
+                },
+                isRemote: false
+            },
+            {
+                id: 42,
+                storyId: 'offline-b',
+                storyName: 'Offline Tale B',
+                title: 'Offline Tale B',
+                storyline: 'storyline b',
+                chapterRequested: 2,
+                chapterCompleted: 1,
+                createdDate: '2026-08-11T09:00:00.000Z',
+                status: 'generating',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'B Chapter',
+                            plotpoints: ['b plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## B Chapter\n\noffline body B', wordCount: 3, generationTimeMs: 500 }]
+                        }
+                    ],
+                    meta: { storyline: 'storyline b', chapterCount: 2, createdAt: '2026-08-11T09:00:00Z' }
+                },
+                isRemote: false
+            }
+        ]);
+
+        const fetchMock = globalThis.fetch as any;
+        // SERVER UNREACHABLE: every fetch REJECTS (network failure — the
+        // mixed-content / connection-refused shape, NOT an HTTP error status;
+        // a 500 would take the same path through fetchStoryList's throw).
+        fetchMock.mockImplementation(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // INSTANT (cache-first): both cached stories are listed and the
+        // selected story's cached chapter content renders — no server needed.
+        expect(screen.getByTestId('story-tab-offline-a')).toBeDefined();
+        expect(screen.getByTestId('story-tab-offline-b')).toBeDefined();
+        expect(screen.getByTestId('chapter-0-content').textContent).toContain('offline body A');
+        // The unreachable-server warning is surfaced (bootstrap catch).
+        await waitFor(() => {
+            expect(screen.getByTestId('load-warning').textContent).toContain('Failed to fetch');
+        });
+
+        // The selection persisted from the previous session (lastStoryId
+        // fallback) — the cached story is viewable without any server.
+        expect(screen.getByTestId('story-tab-offline-a').getAttribute('aria-pressed')).toBe('true');
+
+        // Click the OTHER cached story — its cached content renders too
+        // (selection catch-up GET fails silently; the cached copy stands).
+        fireEvent.click(screen.getByTestId('story-tab-offline-b'));
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('offline body B');
+        });
+
+        // The sidebar's auto-refresh (30s idle cadence) fires while offline —
+        // its failure must be silent and leave BOTH cached stories in place.
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        await act(async () => {
+            vi.advanceTimersByTime(31_000);
+        });
+        // Multiple refresh attempts were made and all rejected…
+        const listCalls = fetchMock.mock.calls.filter(([url]: any[]) => url === BASE_URL || url === `${BASE_URL}/`);
+        expect(listCalls.length).toBeGreaterThan(0);
+        // …and the cached list + selection SURVIVED them.
+        expect(screen.getByTestId('story-tab-offline-a')).toBeDefined();
+        expect(screen.getByTestId('story-tab-offline-b')).toBeDefined();
+        expect(screen.getByTestId('chapter-0-content').textContent).toContain('offline body B');
+        vi.useRealTimers();
+
+        // The cache itself was not damaged by the offline session: the
+        // records key still holds both stories with their content.
+        const raw = localStorage.getItem('storyGenerator:records') ?? '';
+        expect(raw).toContain('"storyId":"offline-a"');
+        expect(raw).toContain('"storyId":"offline-b"');
+        expect(raw).toContain('offline body A');
+        expect(raw).toContain('offline body B');
+    });
+
+    // The immediate-cache leg of the offline contract: a story whose data is
+    // fetched from the server must be in localStorage the moment it lands in
+    // the store — SYNCHRONOUSLY, not on an idle callback that a quick tab
+    // close / reload could drop. Regression for the reported bug where the
+    // viewed story never reached the cache and later offline boots came up
+    // with an empty list.
+    it('writes fetched story data into the records cache synchronously (no idle deferral)', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'sync-cache-1', chapterRequested: 1, chapterCompleted: 0, createdDate: '2026-08-13T09:00:00Z', status: 'generating' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'Sync Chapter',
+                                plotpoints: ['plot'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [{ content: '## Sync Chapter\n\nsync cached body', wordCount: 3, generationTimeMs: 700 }]
+                            }
+                        ],
+                        meta: { storyline: 'sync storyline', chapterCount: 1, createdAt: '2026-08-13T09:00:00Z' }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // The story data lands in the store via the selection catch-up GET…
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('sync cached body');
+        });
+
+        // …and is ALREADY in localStorage at that moment (synchronous write —
+        // no waitFor-on-idle needed; the assertion runs on the next tick).
+        const raw = localStorage.getItem('storyGenerator:records') ?? '';
+        expect(raw).toContain('"storyId":"sync-cache-1"');
+        expect(raw).toContain('sync cached body');
+    });
 });

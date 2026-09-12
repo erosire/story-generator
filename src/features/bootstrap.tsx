@@ -19,6 +19,19 @@
 //      by the dashboard header / sidebar so the user can see the backend is
 //      unreachable).
 //
+// OFFLINE CONTRACT (the reason this layer exists in this shape): the
+// deployment's baseUrl points at a LAN host (src/config.ts —
+// LOCAL_AREA_NETWORK_HOST_NAME:5252). Served from an HTTPS origin (GitHub
+// Pages) or with the server off, EVERY fetch rejects immediately (mixed
+// content / connection refused). In that state this layer's ONLY job is to
+// put the localStorage records cache on screen and leave it alone:
+//   - The catch path NEVER touches records — only loadWarning.
+//   - The sidebar's periodic refresh (features/sidebar.tsx) mirrors this:
+//     its catch is silent for the same reason.
+// Cached records reach localStorage synchronously the moment a story is
+// viewed (saveRecordsToStorage in src/context/store.tsx), so any story that
+// was ever loaded from the server is viewable offline forever after.
+//
 // Renders null — purely a side-effect component. This is a FEATURE (owns the
 // bootstrap business logic), moved from the old src/components/BootstrapLayer.
 

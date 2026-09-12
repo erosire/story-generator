@@ -100,11 +100,29 @@ export const clearExpandedChapters = (storyId: string) => {
     }
 };
 
-// ── Records persistence (async) ────────────────────────────────────────
+// ── Records persistence (synchronous, quota-resilient) ────────────────
 // Persists the full story records array to localStorage so the dashboard
 // loads instantly with cached data even if the server is unreachable.
-// Writes are scheduled via requestIdleCallback (or setTimeout fallback)
-// to keep the main thread responsive.
+//
+// SYNCHRONOUS BY CONTRACT: the offline-viewing requirement is "any story
+// loaded from the server (viewed) is immediately cached for viewing without
+// the server running". The previous idle-deferred write (requestIdleCallback)
+// could be dropped when the tab closed / the page reloaded shortly after
+// viewing — the fetched data never reached localStorage and the offline
+// dashboard came up with an EMPTY story list. The write now happens
+// synchronously inside the provider's records-changed effect, so the cache
+// is durable the moment fetched data lands in the store.
+//
+// QUOTA RESILIENCE: the cache holds FULL chapter content (every revision's
+// markdown). Chapter bodies are large (MIN_WORDS_PER_CHAPTER = 3000, target
+// 15000 — see server generation-config.ts), and every re-expand/rewrite
+// ACCUMULATES another full revision, so a handful of stories can exceed the
+// browser's ~5MB localStorage quota. A failed write previously threw and was
+// swallowed silently — the WHOLE cache never persisted (the write is
+// all-or-nothing) and the offline dashboard came up empty. The write now
+// sheds weight and retries (see saveRecordsToStorage): the newest stories
+// keep full content, older ones keep only their latest revision, then
+// metadata only — the story LIST always survives offline.
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
 // that don't survive across sessions (error, isProcessing, serverProcessing).
@@ -338,9 +356,120 @@ let pendingIdleHandle: number | null = null;
 let pendingRecords: PersistableStoryEntry[] | null = null;
 
 /**
+ * Serialize a records array for the localStorage cache, shedding payload
+ * weight entry-by-entry until it fits the storage quota.
+ *
+ * Weight-shedding ladder (least → most destructive):
+ *   0. Full fidelity — every entry keeps its complete `data` (all revisions).
+ *   1. Trim revisions — entries beyond the newest `keepFull` keep ONLY their
+ *      LATEST revision per chapter (drop older revision bodies; the dropdown
+ *      loses history for those stories offline but the chapter text survives).
+ *   2. Drop data — the oldest entries lose their chapter content entirely and
+ *      persist as metadata-only (title/storyId/counts). The sidebar LIST still
+ *      shows them offline; opening one shows the pending-empty state.
+ *
+ * The newest stories are always the ones kept at full fidelity: the sidebar
+ * sorts lastActionedAt-on-top, and the story the user is most likely to read
+ * offline is the one they just viewed.
+ */
+const buildCachePayload = (records: PersistableStoryEntry[]): string => {
+    // Pass 0: full fidelity.
+    const attempts: PersistableStoryEntry[][] = [records];
+
+    // Pass 1: keep the newest `keepFull` entries whole; trim older entries to
+    // their latest revision only.
+    const keepFull = Math.max(1, Math.ceil(records.length / 2));
+    attempts.push(
+        records.map((entry, index) => {
+            if (index < records.length - keepFull) return entry;
+            if (!entry.data) return entry;
+            return {
+                ...entry,
+                data: {
+                    ...entry.data,
+                    chapters: (entry.data.chapters ?? []).map((ch) => {
+                        const revisions = ch.revisions ?? [];
+                        // Latest revision only (the array is oldest→newest —
+                        // the dropdown's default selection is the last index).
+                        return revisions.length > 1 ? { ...ch, revisions: [revisions[revisions.length - 1]] } : ch;
+                    })
+                }
+            };
+        })
+    );
+
+    // Pass 2: keep only the newest `keepFull` entries' data; the rest become
+    // metadata-only records (data: null). The list always survives.
+    attempts.push(
+        records.map((entry, index) => (index < records.length - keepFull ? { ...entry, data: null } : entry))
+    );
+
+    // Try each attempt in order; the first one that serializes AND fits wins.
+    // JSON.stringify throws on quota-unfriendly structures too (circular refs
+    // cannot occur here — the store shape is plain data — but the try/catch
+    // keeps a poisoned entry from breaking the whole cache).
+    for (const attempt of attempts) {
+        try {
+            const serialized = JSON.stringify(attempt);
+            return serialized;
+        } catch {
+            // Serialization itself failed — fall through to the next,
+            // lighter attempt.
+        }
+    }
+    // Last resort: metadata-only for every entry (cannot realistically throw —
+    // the fields are primitives).
+    return JSON.stringify(records.map((entry) => ({ ...entry, data: null })));
+};
+
+/**
+ * Synchronous write of records to localStorage. Writes only when the payload
+ * actually changed (cheap string comparison against the stored value).
+ * On QuotaExceededError the payload is shed via buildCachePayload's ladder
+ * and the write retried — see the QUOTA RESILIENCE note above.
+ */
+export const saveRecordsToStorage = (records: StoryEntry[]): void => {
+    const serializable = records.map(toPersistable);
+    let incoming: string;
+    try {
+        incoming = buildCachePayload(serializable);
+    } catch {
+        // Poisoned record — skip this write entirely rather than corrupting
+        // the cache (the previous payload stays readable).
+        return;
+    }
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
+        if (raw !== incoming) {
+            localStorage.setItem(STORAGE_KEY_RECORDS, incoming);
+        }
+    } catch {
+        // QuotaExceededError (or storage unavailable). Retry ONCE with the
+        // most-shed payload (every entry metadata-only) — that is tiny and
+        // almost always fits. If even that fails (storage disabled), give up
+        // silently: the in-memory store keeps working for this session.
+        try {
+            const minimal = JSON.stringify(serializable.map((entry) => ({ ...entry, data: null })));
+            const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
+            if (raw !== minimal) {
+                localStorage.setItem(STORAGE_KEY_RECORDS, minimal);
+            }
+        } catch {
+            // Storage fully unavailable — silently ignore.
+        }
+    }
+};
+
+/**
  * Schedule a non-blocking write of records to localStorage.
  * Coalesces rapid successive calls: only the latest records payload is written.
  * Uses requestIdleCallback when available, falls back to setTimeout(0).
+ *
+ * KEPT for API compatibility with existing tests, but the provider no longer
+ * routes through it — the offline-cache contract requires the SYNCHRONOUS
+ * saveRecordsToStorage above (a deferred write can be lost when the tab
+ * closes before the idle callback fires, which is exactly the
+ * "server unreachable → empty list" bug this module fixes).
  */
 export const scheduleSaveRecordsToStorage = (records: StoryEntry[]): void => {
     const serializable = records.map(toPersistable);
@@ -674,8 +803,16 @@ export const StoryStoreProvider: React.FC<{
     }, [store.config.clientId]);
 
     // Auto-persist records to localStorage whenever they change.
-    // Writes are scheduled non-blocking via requestIdleCallback so the UI
-    // thread is never blocked by storage I/O.
+    // SYNCHRONOUS (saveRecordsToStorage, not the idle-deferred variant): the
+    // offline-cache contract is "a story viewed from the server is cached
+    // immediately". A requestIdleCallback write can be dropped when the tab
+    // is closed / reloaded before the idle slot fires — that is precisely the
+    // reported failure (server unreachable later → empty story list, because
+    // the viewed story never reached localStorage). The synchronous write
+    // makes every fetch that lands in the store durable immediately.
+    // Writes are quota-resilient (weight-shedding ladder in
+    // saveRecordsToStorage / buildCachePayload) so large chapter caches
+    // degrade to metadata-only instead of silently never persisting.
     const didHydrateRef = useRef(false);
     useEffect(() => {
         // Skip the very first render — we don't want to overwrite localStorage
@@ -684,7 +821,7 @@ export const StoryStoreProvider: React.FC<{
             didHydrateRef.current = true;
             return;
         }
-        scheduleSaveRecordsToStorage(store.records);
+        saveRecordsToStorage(store.records);
     }, [store.records]);
 
     // Delete a story by storyId.

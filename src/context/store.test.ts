@@ -19,8 +19,13 @@
 // and the timestamp round-trip through localStorage so a reload while stale
 // still refreshes.
 
-import { beforeEach, describe, expect, it } from 'vitest';
-import { loadRecordsFromStorage, mergeServerStoryList, type StoryEntry } from './store';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+    loadRecordsFromStorage,
+    mergeServerStoryList,
+    saveRecordsToStorage,
+    type StoryEntry
+} from './store';
 
 // Minimal valid StoryEntry factory — only the fields merge/persist code and
 // types require; tests override the fields they assert on.
@@ -224,5 +229,185 @@ describe('lastUpdatedAt / dataStale (static-memory staleness)', () => {
         expect(records.length).toBe(1);
         expect(records[0].dataStale).toBe(false);
         expect(records[0].lastUpdatedAt).toBeUndefined();
+    });
+});
+
+// ── Offline cache durability (saveRecordsToStorage) ─────────────────────
+// The offline-viewing contract: a story fetched from the server must be in
+// localStorage the moment it lands in the store, so a later session with the
+// server unreachable still shows the full story list and chapter content.
+// These tests pin the synchronous write, its change-detection, and the
+// quota-shedding ladder.
+describe('saveRecordsToStorage (synchronous offline cache)', () => {
+    beforeEach(() => {
+        localStorage.clear();
+    });
+
+    it('writes the full records payload synchronously', () => {
+        const entry = makeEntry({
+            storyId: 'offline-story-1',
+            data: { chapters: [], meta: null }
+        });
+
+        saveRecordsToStorage([entry]);
+
+        const raw = localStorage.getItem('storyGenerator:records');
+        expect(raw).not.toBeNull();
+        const parsed = JSON.parse(raw!);
+        expect(parsed).toEqual([
+            {
+                id: 1,
+                storyId: 'offline-story-1',
+                storyName: undefined,
+                title: 'Story A',
+                storyline: '',
+                chapterRequested: 1,
+                chapterCompleted: 0,
+                createdDate: '2026-08-01T00:00:00.000Z',
+                lastActionedAt: undefined,
+                lastUpdatedAt: undefined,
+                dataStale: undefined,
+                status: 'generating',
+                data: { chapters: [], meta: null },
+                isRemote: true,
+                missingFromServer: undefined
+            }
+        ]);
+    });
+
+    it('skips the write when the payload is unchanged', () => {
+        const entry = makeEntry({ storyId: 'offline-story-1', data: { chapters: [], meta: null } });
+        saveRecordsToStorage([entry]);
+        const first = localStorage.getItem('storyGenerator:records');
+
+        // Second call with identical records must not rewrite the value —
+        // the raw string stays byte-identical (and no quota churn happens).
+        saveRecordsToStorage([entry]);
+        expect(localStorage.getItem('storyGenerator:records')).toBe(first);
+    });
+
+    it('rewrites when the payload changes (e.g. newly fetched chapter data)', () => {
+        saveRecordsToStorage([makeEntry({ storyId: 'offline-story-1', data: null })]);
+        const before = localStorage.getItem('storyGenerator:records');
+        expect(before).not.toContain('Cached Chapter');
+
+        // The user views the story and fresh data lands in the store.
+        saveRecordsToStorage([
+            makeEntry({
+                storyId: 'offline-story-1',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Cached Chapter',
+                            plotpoints: ['plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Cached Chapter\n\noffline body', wordCount: 2, generationTimeMs: 100 }]
+                        }
+                    ],
+                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+                }
+            })
+        ]);
+
+        const after = localStorage.getItem('storyGenerator:records')!;
+        expect(after).not.toBe(before);
+        // The fetched chapter content is IN the cache — this is what a later
+        // offline session reads via loadRecordsFromStorage.
+        expect(after).toContain('offline body');
+    });
+
+    it('sheds older entries to metadata-only when the payload exceeds the quota', () => {
+        // Simulate the real-world quota: setItem throws for LARGE payloads
+        // (full chapter content > ~5MB) but succeeds for small ones — exactly
+        // how the browser behaves, and why the shedding ladder exists.
+        //
+        // jsdom quirk: localStorage's methods live on the prototype one level
+        // ABOVE the Storage.prototype the instance reports — spy on
+        // Object.getPrototypeOf(localStorage) so the override is actually
+        // reachable through the `localStorage` global the store code uses.
+        // vitest quirk: mockImplementation REPLACES the real method entirely
+        // (it does not wrap/call through), so the mock must explicitly
+        // delegate to the captured original for the under-quota case.
+        const QUOTA_LIMIT = 2000;
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const originalSetItem = storageProto.setItem;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(function (this: Storage, key: string, value: string) {
+                if (String(value).length > QUOTA_LIMIT) {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                // Under quota → real write (explicit passthrough — the mock
+                // fully replaces the method, it does not call through).
+                return originalSetItem.call(this, key, value);
+            });
+
+        // Many entries so the shedding ladder has something to shed. The
+        // entries carry full chapter content (two revisions each) so the
+        // pass-0/pass-1 payloads exceed QUOTA_LIMIT while the metadata-only
+        // ladder rungs fit under it.
+        const entries = Array.from({ length: 6 }, (_, i) =>
+            makeEntry({
+                id: i + 1,
+                storyId: `story-${i}`,
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: `Chapter of ${i}`,
+                            plotpoints: ['p'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [
+                                { content: `old rev ${i}`, wordCount: 1, generationTimeMs: 1 },
+                                { content: `latest rev ${i}`, wordCount: 1, generationTimeMs: 2 }
+                            ]
+                        }
+                    ],
+                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+                }
+            })
+        );
+
+        saveRecordsToStorage(entries);
+
+        // The ladder shed enough weight to fit under the (simulated) quota —
+        // SOMETHING was written.
+        const raw = localStorage.getItem('storyGenerator:records');
+        expect(raw).not.toBeNull();
+        const parsed = JSON.parse(raw!) as StoryEntry[];
+        expect(parsed.length).toBe(6);
+        // Every entry shed to metadata-only (data: null) — the LIST survives
+        // offline even when the full content does not fit.
+        parsed.forEach((e) => expect(e.data).toBeNull());
+
+        setItem.mockRestore();
+    });
+
+    it('gives up silently when storage is entirely unavailable', () => {
+        // Both attempts fail (e.g. storage disabled / private mode edge) —
+        // the call must not throw (the in-memory store keeps working).
+        // Spy on the prototype ABOVE the instance (jsdom quirk — see the
+        // quota test above). The getItem spy is the load-bearing one here:
+        // saveRecordsToStorage reads the current value BEFORE writing, so a
+        // failing getItem short-circuits the write path entirely (the catch
+        // swallows it) — the contract under test is "never throws".
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi.spyOn(storageProto, 'setItem').mockImplementation(() => {
+            throw new DOMException('SecurityError', 'SecurityError');
+        });
+        const getItem = vi.spyOn(storageProto, 'getItem').mockImplementation(() => {
+            throw new DOMException('SecurityError', 'SecurityError');
+        });
+
+        expect(() => saveRecordsToStorage([makeEntry({ storyId: 'offline-story-1' })])).not.toThrow();
+        expect(getItem).toHaveBeenCalled();
+
+        getItem.mockRestore();
+        setItem.mockRestore();
     });
 });
