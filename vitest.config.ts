@@ -25,5 +25,12 @@ export default defineConfig({
         globals: true,
         include: ['src/**/*.{test,spec}.{ts,tsx}'],
         passWithNoTests: true,
+        // jsdom ships NO IndexedDB. The story cache mirrors its localStorage
+        // records to IndexedDB (src/context/storyCache.ts — the iOS private
+        // mode / ITP eviction survival tier), so the tests exercise the real
+        // code paths against fake-indexeddb (devDependency, installed at the
+        // workspace root). The 'auto' entry installs the fake globals BEFORE
+        // any test module loads.
+        setupFiles: ['./src/test/setup.ts'],
     },
 });

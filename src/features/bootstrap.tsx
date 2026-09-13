@@ -9,12 +9,20 @@
 //   1. On mount, hydrate from localStorage INSTANTLY so the dashboard appears
 //      with cached data (stories + chapter content) even if the server is
 //      slow or unreachable.
+//   1b. If localStorage came up EMPTY (iOS Safari private mode wipes it on
+//      tab close; Safari ITP evicts 7-day-unused keys; quota churn can drop
+//      the key), recover the records from the DURABLE INDEXEDDB MIRROR
+//      (storyCacheGet — see src/context/storyCache.ts) and self-heal
+//      localStorage with the recovered payload before hydrating. The
+//      recovery is awaited before the server check so the offline render
+//      path never races it.
 //   2. Then call fetchStoryList(config.baseUrl) to check the server for
 //      updates, and merge via mergeServerStoryList (src/context/store.tsx):
 //      server metadata refreshes cached entries, new server stories are
 //      added, and cache-only stories are RETAINED (flagged missingFromServer)
 //      so they stay visible in the sidebar. The merged records are written
-//      back to localStorage by the store's auto-persist effect.
+//      back to localStorage by the store's auto-persist effect (and mirrored
+//      to IndexedDB by saveRecordsToStorage).
 //   3. On fetch error, keep the cached records and set a loadWarning (read
 //      by the dashboard header / sidebar so the user can see the backend is
 //      unreachable).
@@ -38,7 +46,12 @@
 import React from 'react';
 import { useStoryStore } from '../context';
 import { fetchStoryList } from '../api';
-import { getLastStoryId, loadRecordsFromStorage, mergeServerStoryList } from '../context/store';
+import {
+    getLastStoryId,
+    loadRecordsFromStorage,
+    loadRecordsFromIdbMirror,
+    mergeServerStoryList
+} from '../context/store';
 
 // Hidden bootstrap layer. Renders nothing; only effects.
 export const BootstrapLayer: React.FC = React.memo(() => {
@@ -58,65 +71,101 @@ export const BootstrapLayer: React.FC = React.memo(() => {
         // ── Step 1: Hydrate from localStorage instantly ──────────────────
         // This makes the dashboard appear immediately with cached data
         // (stories + chapter content) without waiting for the server.
-        const cachedRecords = loadRecordsFromStorage();
-        if (cachedRecords.length > 0) {
-            setStore((prev) => {
-                // Don't overwrite records that were pre-seeded via initialStore
-                // prop (eg. by tests).
-                if (prev.records.length > 0) return prev;
+        let cachedRecords = loadRecordsFromStorage();
 
-                const lastStoryId = getLastStoryId();
-                const selected = lastStoryId
-                    ? cachedRecords.find((m) => m.storyId === lastStoryId) ?? cachedRecords[0]
-                    : cachedRecords[0] ?? null;
-                return { ...prev, records: cachedRecords, selected: selected ?? prev.selected };
-            });
-        }
-
-        // ── Step 2: Check the server for updates, then update the cache ──
-        // Runs in background after localStorage hydration. The merge keeps
-        // cached chapter data / storylines, refreshes metadata for known
-        // stories, adds stories new on the server, and RETAINS cache-only
-        // stories (flagged missingFromServer). The resulting records are
-        // written back to localStorage by the store's auto-persist effect.
-        fetchStoryList(baseUrl)
-            .then(({ stories, jobs }) => {
+        // ── Step 1b: Recover from the IndexedDB mirror when localStorage
+        // is empty ─────────────────────────────────────────────────────────
+        // iOS Safari private mode wipes localStorage on tab close and ITP
+        // evicts 7-day-unused keys — but the IndexedDB mirror (written on
+        // every save) usually survives both. The recovery is async, so the
+        // store update + server check below are chained AFTER it resolves;
+        // when localStorage had records this resolves without touching
+        // anything (storyCacheGet returns null fast when nothing was
+        // mirrored).
+        const hydrateAndCheckServer = () => {
+            if (cachedRecords.length > 0) {
                 setStore((prev) => {
-                    // activeJobs is updated in BOTH branches: the `jobs` array
-                    // is authoritative on its own (an empty registry answer is
-                    // a real answer — the server's in-memory registry blanks on
-                    // restart), unlike an empty story list which is treated as
-                    // "no information" for the records merge.
-                    // Empty server list → mergeServerStoryList returns null:
-                    // not a sync signal — keep the cached records untouched.
-                    const merged = mergeServerStoryList(prev, stories ?? []);
-                    if (!merged) {
+                    // Don't overwrite records that were pre-seeded via initialStore
+                    // prop (eg. by tests).
+                    if (prev.records.length > 0) return prev;
+
+                    const lastStoryId = getLastStoryId();
+                    const selected = lastStoryId
+                        ? cachedRecords.find((m) => m.storyId === lastStoryId) ?? cachedRecords[0]
+                        : cachedRecords[0] ?? null;
+                    return { ...prev, records: cachedRecords, selected: selected ?? prev.selected };
+                });
+            }
+
+            // ── Step 2: Check the server for updates, then update the cache ──
+            // Runs in background after the cache hydration. The merge keeps
+            // cached chapter data / storylines, refreshes metadata for known
+            // stories, adds stories new on the server, and RETAINS cache-only
+            // stories (flagged missingFromServer). The resulting records are
+            // written back to localStorage by the store's auto-persist effect
+            // (and mirrored to IndexedDB by saveRecordsToStorage).
+            fetchStoryList(baseUrl)
+                .then(({ stories, jobs }) => {
+                    setStore((prev) => {
+                        // activeJobs is updated in BOTH branches: the `jobs` array
+                        // is authoritative on its own (an empty registry answer is
+                        // a real answer — the server's in-memory registry blanks on
+                        // restart), unlike an empty story list which is treated as
+                        // "no information" for the records merge.
+                        // Empty server list → mergeServerStoryList returns null:
+                        // not a sync signal — keep the cached records untouched.
+                        const merged = mergeServerStoryList(prev, stories ?? []);
+                        if (!merged) {
+                            return {
+                                ...prev,
+                                activeJobs: jobs ?? [],
+                                // Still clear any previous warning — the server answered.
+                                loadWarning: undefined
+                            };
+                        }
                         return {
                             ...prev,
+                            records: merged.records,
+                            selected: merged.selected,
                             activeJobs: jobs ?? [],
-                            // Still clear any previous warning — the server answered.
+                            // A successful list sync clears the unreachable-server
+                            // warning from a previous failure.
                             loadWarning: undefined
                         };
-                    }
-                    return {
-                        ...prev,
-                        records: merged.records,
-                        selected: merged.selected,
-                        activeJobs: jobs ?? [],
-                        // A successful list sync clears the unreachable-server
-                        // warning from a previous failure.
-                        loadWarning: undefined
-                    };
+                    });
+                })
+                .catch((err: Error) => {
+                    // Surface a non-blocking warning rather than crashing the dashboard —
+                    // the user can still see cached data from localStorage and Add a
+                    // story locally and POST (the bootstrap failure shouldn't block
+                    // the whole UI). Cached records are left intact.
+                    setStore((prev) => ({ ...prev, loadWarning: err.message }));
+                    console.warn('[BootstrapLayer] Failed to list existing stories.', err);
                 });
-            })
-            .catch((err: Error) => {
-                // Surface a non-blocking warning rather than crashing the dashboard —
-                // the user can still see cached data from localStorage and Add a
-                // story locally and POST (the bootstrap failure shouldn't block
-                // the whole UI). Cached records are left intact.
-                setStore((prev) => ({ ...prev, loadWarning: err.message }));
-                console.warn('[BootstrapLayer] Failed to list existing stories.', err);
-            });
+        };
+
+        if (cachedRecords.length === 0) {
+            // localStorage empty → try the durable mirror before rendering
+            // an empty dashboard. loadRecordsFromIdbMirror also self-heals
+            // localStorage with the recovered payload (see store.tsx).
+            loadRecordsFromIdbMirror()
+                .then((recovered) => {
+                    if (recovered && recovered.length > 0) {
+                        cachedRecords = recovered;
+                        console.info(
+                            `[BootstrapLayer] localStorage cache empty — recovered ${recovered.length} story record(s) from the IndexedDB mirror.`
+                        );
+                    }
+                    hydrateAndCheckServer();
+                })
+                .catch(() => {
+                    // Mirror unavailable (no IndexedDB / error) — proceed as
+                    // if it returned null.
+                    hydrateAndCheckServer();
+                });
+        } else {
+            hydrateAndCheckServer();
+        }
         // Intentionally run once on mount only.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);

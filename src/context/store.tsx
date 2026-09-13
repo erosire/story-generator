@@ -7,6 +7,15 @@
 //   - selected: the currently active story entry (same reference as one in records)
 //   - config: API base URL + poll interval (overridable for tests)
 //
+// PERSISTENCE (two-tier):
+//   - localStorage (synchronous) — the instant first paint. Written on every
+//     records change; quota-limited (~5MB) so large caches shed weight.
+//   - IndexedDB (durable mirror, ./storyCache.ts) — the mobile-survival copy.
+//     iOS Safari private mode wipes localStorage on tab close and ITP evicts
+//     it under pressure; IndexedDB has orders-of-magnitude larger quotas and
+//     survives eviction. Every records write is mirrored (fire-and-forget)
+//     and BootstrapLayer rehydrates the durable copy at boot.
+//
 // Unlike localContextStore, this distribution package cannot import @presource/react
 // (it is not in package.json deps — see distribution/story-generator/package.json).
 // We use plain React context + useState instead, exposing a custom hook
@@ -16,6 +25,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '../config';
 import { deleteStory as deleteStoryApi, type ActiveJob, type StoryMeta } from '../api';
+import { storyCacheGet, storyCacheSet } from './storyCache';
 
 // ── localStorage helpers ──────────────────────────────────────────────
 const STORAGE_KEY_STORY = 'storyGenerator:lastStoryId';
@@ -409,6 +419,13 @@ const buildCachePayload = (records: PersistableStoryEntry[]): string => {
  * fails (storage disabled / private mode), give up silently — the in-memory
  * store keeps working for this session and the previous cache payload (if
  * any) stays readable.
+ *
+ * INDEXEDDB MIRROR (see ./storyCache.ts): whatever rung won is ALSO mirrored
+ * to IndexedDB fire-and-forget. localStorage is ~5MB and wiped entirely by
+ * iOS Safari private mode / ITP 7-day eviction; IndexedDB has orders-of-
+ * magnitude larger quotas and survives both. The mirror carries the SAME
+ * rung's payload — a quota-shed localStorage cache and the IndexedDB mirror
+ * can never disagree about what was persisted.
  */
 export const saveRecordsToStorage = (records: StoryEntry[]): void => {
     const serializable = records.map(toPersistable);
@@ -471,15 +488,80 @@ export const saveRecordsToStorage = (records: StoryEntry[]): void => {
                 localStorage.setItem(STORAGE_KEY_RECORDS, incoming);
             }
             // Write accepted (or unchanged) — this rung is the cache's new
-            // content; stop shedding.
+            // content; stop shedding. Mirror the SAME payload to IndexedDB
+            // (the parsed rung payload, not the serialized string — IndexedDB
+            // stores structured clones natively). Never awaited: an IndexedDB
+            // failure must not disturb the synchronous localStorage path.
+            void storyCacheSet(JSON.parse(incoming) as Parameters<typeof storyCacheSet>[0]).then((ok) => {
+                if (!ok) {
+                    // Logged, not thrown — the localStorage tier already won.
+                    console.warn('[storyCache] IndexedDB mirror write failed (localStorage copy retained)');
+                }
+            });
             return;
         } catch {
             // QuotaExceededError (or storage unavailable) — shed weight and
             // retry with the next rung.
         }
     }
-    // Every rung failed (storage fully unavailable) — silently ignore: the
-    // in-memory store keeps working for this session.
+    // Every rung failed (storage fully unavailable — e.g. iOS private mode).
+    // localStorage is gone but IndexedDB usually still works there: mirror the
+    // full-fidelity payload (no shedding needed — IndexedDB quotas are huge)
+    // so the next session can recover the cache via storyCacheGet.
+    try {
+        void storyCacheSet(serializable).then((ok) => {
+            if (!ok) {
+                console.warn('[storyCache] IndexedDB mirror write failed (localStorage unavailable)');
+            }
+        });
+    } catch {
+        // JSON.parse/stringify of plain data cannot throw — defensive only.
+    }
+};
+
+/**
+ * Recover the records cache from the IndexedDB mirror.
+ *
+ * Called by BootstrapLayer on mount when localStorage hydration found
+ * NOTHING (private-mode wipe, ITP eviction, quota churn) but the durable
+ * IndexedDB mirror may still hold the last written payload. Restores the
+ * records into localStorage (so the synchronous tier is self-healing) and
+ * returns them for the store hydration — null when this tier has nothing.
+ */
+export const loadRecordsFromIdbMirror = async (): Promise<StoryEntry[] | null> => {
+    const mirrored = await storyCacheGet();
+    if (!mirrored || mirrored.length === 0) return null;
+    try {
+        // Self-heal the localStorage tier: write the recovered payload back
+        // so subsequent synchronous saves start from this state. Failure is
+        // fine (private mode will keep failing) — the returned records still
+        // hydrate the store for THIS session.
+        const raw = JSON.stringify(mirrored);
+        try {
+            if (localStorage.getItem(STORAGE_KEY_RECORDS) !== raw) {
+                localStorage.setItem(STORAGE_KEY_RECORDS, raw);
+            }
+        } catch {
+            // localStorage still unavailable — the in-memory hydration below
+            // still recovers the session.
+        }
+        // Rehydrate with the same defaults loadRecordsFromStorage applies
+        // (transient flags reset, legacy fields defaulted).
+        return mirrored.map((entry) => ({
+            ...entry,
+            createdDate: entry.createdDate || new Date(0).toISOString(),
+            chapterRequested: entry.chapterRequested || 0,
+            chapterCompleted: entry.chapterCompleted || 0,
+            status: entry.status || 'generating',
+            missingFromServer: entry.missingFromServer ?? false,
+            dataStale: entry.dataStale ?? false,
+            serverProcessing: false,
+            isProcessing: false,
+            error: ''
+        })) as StoryEntry[];
+    } catch {
+        return null;
+    }
 };
 
 /**

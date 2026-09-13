@@ -22,10 +22,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     loadRecordsFromStorage,
+    loadRecordsFromIdbMirror,
     mergeServerStoryList,
     saveRecordsToStorage,
     type StoryEntry
 } from './store';
+import { storyCacheGet, storyCacheResetForTests } from './storyCache';
 
 // Minimal valid StoryEntry factory — only the fields merge/persist code and
 // types require; tests override the fields they assert on.
@@ -521,5 +523,212 @@ describe('saveRecordsToStorage (synchronous offline cache)', () => {
 
         getItem.mockRestore();
         setItem.mockRestore();
+    });
+});
+
+// ── IndexedDB durable mirror (the mobile-survival tier) ─────────────────
+// localStorage alone does not survive iOS Safari private mode (wiped on tab
+// close, setItem throws) or ITP 7-day eviction. saveRecordsToStorage mirrors
+// every winning payload into IndexedDB (see src/context/storyCache.ts), and
+// loadRecordsFromIdbMirror recovers it when localStorage boots empty. These
+// tests run against fake-indexeddb (setupFiles) — real module code paths.
+describe('IndexedDB mirror (saveRecordsToStorage / loadRecordsFromIdbMirror)', () => {
+    beforeEach(async () => {
+        localStorage.clear();
+        await storyCacheResetForTests();
+    });
+
+    it('mirrors the written records payload into IndexedDB', async () => {
+        const entry = makeEntry({
+            storyId: 'mirror-1',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Mirrored Chapter',
+                        plotpoints: ['plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: '## Mirrored Chapter\n\nmirrored body', wordCount: 2, generationTimeMs: 100 }]
+                    }
+                ],
+                meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            }
+        });
+
+        saveRecordsToStorage([entry]);
+
+        // The mirror is fire-and-forget — wait for the put to complete.
+        await vi.waitFor(async () => {
+            const mirrored = await storyCacheGet();
+            expect(mirrored).not.toBeNull();
+        });
+        const mirrored = (await storyCacheGet())!;
+        expect(mirrored.length).toBe(1);
+        expect(mirrored[0].storyId).toBe('mirror-1');
+        // Full content survives the mirror (structured clone of the parsed
+        // winning rung's payload — same shape the localStorage cache holds).
+        expect(mirrored[0].data!.chapters[0].revisions).toEqual([
+            { content: '## Mirrored Chapter\n\nmirrored body', wordCount: 2, generationTimeMs: 100 }
+        ]);
+    });
+
+    it('mirrors the SHED rung when localStorage is over quota (mirror ≠ wiped)', async () => {
+        // Same quota simulation as the ladder test above: the full payload
+        // exceeds the limit, the shed rung fits. The MIRROR must carry the
+        // shed rung's payload — the surviving chapter content, not nulls.
+        const QUOTA_LIMIT = 2100;
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const originalSetItem = storageProto.setItem;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(function (this: Storage, key: string, value: string) {
+                if (String(value).length > QUOTA_LIMIT) {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                return originalSetItem.call(this, key, value);
+            });
+
+        // Same fixture as the ladder-engagement test (newest-first ordering).
+        const entries = [
+            makeEntry({
+                id: 2,
+                storyId: 'mirror-new',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'New Chapter',
+                            plotpoints: ['p'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [
+                                { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
+                                { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
+                            ]
+                        }
+                    ],
+                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-02T00:00:00.000Z' }
+                }
+            }),
+            makeEntry({
+                id: 1,
+                storyId: 'mirror-old',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Old Chapter',
+                            plotpoints: ['p'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [
+                                { content: 'x'.repeat(300) + ' old', wordCount: 3, generationTimeMs: 1 },
+                                { content: 'x'.repeat(300) + ' latest', wordCount: 3, generationTimeMs: 2 }
+                            ]
+                        }
+                    ],
+                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+                }
+            })
+        ];
+
+        saveRecordsToStorage(entries);
+
+        await vi.waitFor(async () => {
+            const mirrored = await storyCacheGet();
+            expect(mirrored).not.toBeNull();
+        });
+        const mirrored = (await storyCacheGet())!;
+        expect(mirrored.length).toBe(2);
+        // The mirror matches the SHED localStorage rung exactly: newest entry
+        // full, older entry latest-revision-only. NOT the all-null fallback.
+        expect(mirrored[0].data!.chapters[0].revisions).toEqual([
+            { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
+            { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
+        ]);
+        expect(mirrored[1].data!.chapters[0].revisions).toEqual([
+            { content: 'x'.repeat(300) + ' latest', wordCount: 3, generationTimeMs: 2 }
+        ]);
+
+        setItem.mockRestore();
+    });
+
+    it('mirrors the FULL payload when localStorage is entirely unavailable (private mode)', async () => {
+        // iOS Safari private mode: EVERY localStorage write throws. The
+        // fallback path mirrors the full-fidelity payload to IndexedDB (no
+        // shedding needed — IndexedDB quotas are huge) so the next session
+        // can recover the complete cache.
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi.spyOn(storageProto, 'setItem').mockImplementation(() => {
+            throw new DOMException('SecurityError', 'SecurityError');
+        });
+        const getItem = vi.spyOn(storageProto, 'getItem').mockImplementation(() => {
+            throw new DOMException('SecurityError', 'SecurityError');
+        });
+
+        const entry = makeEntry({
+            storyId: 'private-mode-1',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Private Chapter',
+                        plotpoints: ['plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: '## Private Chapter\n\nprivate body', wordCount: 2, generationTimeMs: 100 }]
+                    }
+                ],
+                meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            }
+        });
+
+        expect(() => saveRecordsToStorage([entry])).not.toThrow();
+
+        await vi.waitFor(async () => {
+            const mirrored = await storyCacheGet();
+            expect(mirrored).not.toBeNull();
+        });
+        const mirrored = (await storyCacheGet())!;
+        expect(mirrored.length).toBe(1);
+        expect(mirrored[0].storyId).toBe('private-mode-1');
+        expect(mirrored[0].data!.chapters[0].revisions).toEqual([
+            { content: '## Private Chapter\n\nprivate body', wordCount: 2, generationTimeMs: 100 }
+        ]);
+
+        getItem.mockRestore();
+        setItem.mockRestore();
+    });
+
+    it('loadRecordsFromIdbMirror recovers records when localStorage is empty and self-heals localStorage', async () => {
+        // Simulate the private-mode/eviction aftermath: localStorage records
+        // key is gone, but a previous session mirrored the payload.
+        const entry = makeEntry({ storyId: 'recover-1', data: { chapters: [], meta: null } });
+        saveRecordsToStorage([entry]);
+        localStorage.clear(); // the wipe
+
+        const recovered = await loadRecordsFromIdbMirror();
+        expect(recovered).not.toBeNull();
+        expect(recovered!.length).toBe(1);
+        expect(recovered![0].storyId).toBe('recover-1');
+        // Transient flags are reset on recovery (same defaults as
+        // loadRecordsFromStorage).
+        expect(recovered![0].isProcessing).toBe(false);
+        expect(recovered![0].error).toBe('');
+
+        // Self-heal: localStorage holds the recovered payload again.
+        const healed = loadRecordsFromStorage();
+        expect(healed.length).toBe(1);
+        expect(healed[0].storyId).toBe('recover-1');
+    });
+
+    it('loadRecordsFromIdbMirror returns null when the mirror is empty', async () => {
+        const recovered = await loadRecordsFromIdbMirror();
+        expect(recovered).toBeNull();
     });
 });

@@ -35,6 +35,7 @@ import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoryGeneratorApp } from './App';
 import { cancelPendingStorageWrites } from './context/store';
+import { storyCacheResetForTests } from './context/storyCache';
 import { injectGlobalStyles } from './styles/global';
 
 const BASE_URL = 'http://test.local/v1/storyboard/generations';
@@ -76,6 +77,14 @@ describe('StoryGeneratorApp', () => {
         cancelPendingStorageWrites();
         localStorage.clear();
         vi.unstubAllGlobals();
+    });
+    // Wipe the IndexedDB mirror after every test too: BootstrapLayer now
+    // RECOVERS records from the mirror when localStorage boots empty, so a
+    // previous test's mirrored records would otherwise leak into the next
+    // test's fresh render (symptom: ghost story tabs from earlier tests).
+    // storyCacheResetForTests is a no-op when IndexedDB is unavailable.
+    afterEach(async () => {
+        await storyCacheResetForTests();
     });
 
     it('renders the empty state and input area before any story is created', async () => {
