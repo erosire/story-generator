@@ -491,6 +491,12 @@ export async function pollStoryData(params: {
 
         const result = await fetchStoryData(baseUrl, storyId);
 
+        // Re-check cancellation AFTER the round-trip: an in-flight fetch that
+        // resolves after unmount/selection-change must not fire onData (its
+        // setStore would churn state — and in tests, mirror a cache write —
+        // after teardown).
+        if (shouldStop()) return { status: 'stopped' };
+
         if (result.status === 'error') {
             return { status: 'error', error: result.error };
         }

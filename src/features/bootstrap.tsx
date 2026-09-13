@@ -13,9 +13,12 @@
 //      tab close; Safari ITP evicts 7-day-unused keys; quota churn can drop
 //      the key), recover the records from the DURABLE INDEXEDDB MIRROR
 //      (storyCacheGet — see src/context/storyCache.ts) and self-heal
-//      localStorage with the recovered payload before hydrating. The
-//      recovery is awaited before the server check so the offline render
-//      path never races it.
+//      localStorage with the recovered payload before hydrating.
+//   1c. If localStorage HAS records but the mirror is RICHER (the quota
+//      ladder shed chapters from localStorage while the un-shed mirror kept
+//      them), UPGRADE the records from the mirror per story
+//      (upgradeRecordsFromIdbMirror) before hydrating — cached chapters
+//      that were shed come back.
 //   2. Then call fetchStoryList(config.baseUrl) to check the server for
 //      updates, and merge via mergeServerStoryList (src/context/store.tsx):
 //      server metadata refreshes cached entries, new server stories are
@@ -50,7 +53,9 @@ import {
     getLastStoryId,
     loadRecordsFromStorage,
     loadRecordsFromIdbMirror,
-    mergeServerStoryList
+    upgradeRecordsFromIdbMirror,
+    mergeServerStoryList,
+    type StoryEntry
 } from '../context/store';
 
 // Hidden bootstrap layer. Renders nothing; only effects.
@@ -73,17 +78,18 @@ export const BootstrapLayer: React.FC = React.memo(() => {
         // (stories + chapter content) without waiting for the server.
         let cachedRecords = loadRecordsFromStorage();
 
-        // ── Step 1b: Recover from the IndexedDB mirror when localStorage
-        // is empty ─────────────────────────────────────────────────────────
-        // iOS Safari private mode wipes localStorage on tab close and ITP
-        // evicts 7-day-unused keys — but the IndexedDB mirror (written on
-        // every save) usually survives both. The recovery is async, so the
-        // store update + server check below are chained AFTER it resolves;
-        // when localStorage had records this resolves without touching
-        // anything (storyCacheGet returns null fast when nothing was
-        // mirrored).
-        const hydrateAndCheckServer = () => {
-            if (cachedRecords.length > 0) {
+        // ── Step 1c: Upgrade from the IndexedDB mirror when the mirror is
+        // RICHER ────────────────────────────────────────────────────────────
+        // The localStorage ladder sheds weight under quota (older stories lose
+        // revisions or their whole chapter payload), but the IndexedDB mirror
+        // NEVER sheds — it always holds the full-fidelity payload. After a
+        // shed session the mirror holds chapters the localStorage copy lost;
+        // this pass restores them per story before hydration. Async, so the
+        // hydration + server check are chained after it. When localStorage is
+        // EMPTY this is skipped — step 1b's full recovery already returns the
+        // un-shed mirror payload.
+        const hydrateAndCheckServer = (records: StoryEntry[], cacheWarning?: string) => {
+            if (records.length > 0) {
                 setStore((prev) => {
                     // Don't overwrite records that were pre-seeded via initialStore
                     // prop (eg. by tests).
@@ -91,9 +97,18 @@ export const BootstrapLayer: React.FC = React.memo(() => {
 
                     const lastStoryId = getLastStoryId();
                     const selected = lastStoryId
-                        ? cachedRecords.find((m) => m.storyId === lastStoryId) ?? cachedRecords[0]
-                        : cachedRecords[0] ?? null;
-                    return { ...prev, records: cachedRecords, selected: selected ?? prev.selected };
+                        ? records.find((m) => m.storyId === lastStoryId) ?? records[0]
+                        : records[0] ?? null;
+                    return {
+                        ...prev,
+                        records,
+                        selected: selected ?? prev.selected,
+                        // Surface the recovery/upgrade event to the sidebar's
+                        // cache chip (informational, cleared on the next
+                        // successful sync by nothing — it is session-scoped
+                        // context, so it persists until reload).
+                        ...(cacheWarning !== undefined ? { cacheWarning } : {})
+                    };
                 });
             }
 
@@ -151,20 +166,55 @@ export const BootstrapLayer: React.FC = React.memo(() => {
             loadRecordsFromIdbMirror()
                 .then((recovered) => {
                     if (recovered && recovered.length > 0) {
-                        cachedRecords = recovered;
                         console.info(
                             `[BootstrapLayer] localStorage cache empty — recovered ${recovered.length} story record(s) from the IndexedDB mirror.`
                         );
+                        hydrateAndCheckServer(
+                            recovered,
+                            'Recovered your stories from local app storage — the browser cache had been cleared.'
+                        );
+                    } else {
+                        hydrateAndCheckServer(cachedRecords);
                     }
-                    hydrateAndCheckServer();
                 })
                 .catch(() => {
                     // Mirror unavailable (no IndexedDB / error) — proceed as
                     // if it returned null.
-                    hydrateAndCheckServer();
+                    hydrateAndCheckServer(cachedRecords);
                 });
         } else {
-            hydrateAndCheckServer();
+            // HYDRATE SYNCHRONOUSLY FIRST — the cache-first contract requires
+            // the cached stories to paint on the FIRST render, before any
+            // async work. The upgrade pass below then enriches them.
+            hydrateAndCheckServer(cachedRecords);
+            // localStorage has records → try to UPGRADE them from the
+            // un-shed mirror (restore shed chapters). Async: when the mirror
+            // holds richer payloads, re-hydrate with the upgraded records
+            // (the setStore guard only skips when records are ALREADY
+            // present, so pass upgraded records directly through a second
+            // setStore that replaces the freshly hydrated ones).
+            upgradeRecordsFromIdbMirror(cachedRecords)
+                .then((upgraded) => {
+                    if (upgraded) {
+                        setStore((prev) => {
+                            if (prev.records.length > 0) return prev;
+                            const lastStoryId = getLastStoryId();
+                            const selected = lastStoryId
+                                ? upgraded.find((m) => m.storyId === lastStoryId) ?? upgraded[0]
+                                : upgraded[0] ?? null;
+                            return {
+                                ...prev,
+                                records: upgraded,
+                                selected: selected ?? prev.selected,
+                                cacheWarning:
+                                    'Restored cached chapters from local app storage that the browser cache had shed.'
+                            };
+                        });
+                    }
+                })
+                .catch(() => {
+                    // Mirror unavailable — the synchronous hydration stands.
+                });
         }
         // Intentionally run once on mount only.
         // eslint-disable-next-line react-hooks/exhaustive-deps

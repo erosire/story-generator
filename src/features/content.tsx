@@ -1708,8 +1708,12 @@ export const StoryContent: React.FC = React.memo(() => {
 
             <ChapterListContainer data-testid="chapters-list">
                 {data.chapters.length === 0 && (
-                    <EmptyChaptersHint>
-                        {selected.isProcessing ? 'Waiting for the first chapter…' : 'No chapters yet.'}
+                    <EmptyChaptersHint data-testid="chapters-empty-hint">
+                        {selected.isProcessing
+                            ? 'Waiting for the first chapter…'
+                            : selected.dataStale
+                                ? 'Cached chapters were shed to free browser storage — they will reload automatically next time the server is reachable.'
+                                : 'No chapters yet.'}
                     </EmptyChaptersHint>
                 )}
                 {data.chapters.map((ch, i) => (

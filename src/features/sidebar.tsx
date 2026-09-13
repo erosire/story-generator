@@ -7,14 +7,27 @@
 // that story; clicking the "x" permanently deletes that story (identified
 // DELETE).
 //
-// CACHED-LOCALLY ICON: each tile carries a small disk icon (data-testid
-// "story-cached-<storyId>", title "Cached locally") whenever the story's
-// content is cached in this browser — i.e. entry.data is non-null (hydrated
-// from the localStorage records cache or fetched into it this session).
-// Stories that exist only as server metadata (freshly synced remote entries
-// with data === null, never fetched) render WITHOUT the icon: nothing of
-// theirs is stored locally yet. The icon is informational only — no click
-// behavior, it is rendered inside the tile's select button like the badges.
+// CACHED-LOCALLY INDICATOR (three states, data-testid "story-cached-<storyId>"
+// in every state): each tile carries a small glyph after the title showing the
+// story's LOCAL-SAVE state:
+//   - disk icon (title "Cached locally") — entry.data non-null: the story's
+//     chapters are stored in this browser (hydrated from the localStorage /
+//     IndexedDB cache or fetched into it this session) and viewable offline.
+//   - cloud-off icon (title "Not saved locally — open once while connected")
+//     — entry.data null: only server metadata is known; the chapters have
+//     never been fetched here, so offline it renders metadata-only.
+//   - warning save-off icon (title "Cache write failed…") — the story HAS
+//     cached content but the browser can no longer WRITE the cache
+//     (store.cacheWriteFailed — iOS private mode / storage disabled): the
+//     visible content is readable but new content will NOT be saved.
+// The icon is informational only — no click behavior, it is rendered inside
+// the tile's select button like the badges.
+//
+// CACHE-HEALTH CHIP (data-testid "cache-warning"): below the load warning, a
+// chip appears when the local cache is degraded — writes failing entirely
+// ("Local saving unavailable…") or a boot recovery/upgrade restored records
+// from the IndexedDB mirror (informational). See store.cacheWarning /
+// store.cacheWriteFailed in src/context/store.tsx.
 //
 // The "Stories" header carries a live job-count chip (data-testid
     // "sidebar-job-count", text "<n>") showing how many background
@@ -81,6 +94,15 @@ import CloseIcon from '@mui/icons-material/Close';
 // Material UI save/disk glyph — the cached-locally indicator on a story tile
 // (see the CACHED-LOCALLY ICON note in the file header).
 import SaveAltIcon from '@mui/icons-material/SaveAlt';
+// Material UI sync-disabled glyph — the "NOT saved locally" warning variant of
+// the cached icon (rendered when the cache write failed; see NotSavedIcon
+// below). (SaveOff does not exist in @mui/icons-material v9 — SyncDisabled is
+// the equivalent "saving unavailable" glyph.)
+import SyncDisabledIcon from '@mui/icons-material/SyncDisabled';
+// Material UI cloud-off glyph — the "not cached at all" variant: the story's
+// content has never been fetched into this browser, so it is viewable only
+// while the server is reachable.
+import CloudOffOutlinedIcon from '@mui/icons-material/CloudOffOutlined';
 import { TextField, IconButton, ButtonBase } from '@mui/material';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
@@ -91,6 +113,12 @@ import { Badge } from '../components';
 // How often to auto-refresh the story list from the server when the dashboard
 // looks idle (30 seconds).
 const REFRESH_INTERVAL_MS = 30_000;
+
+// Cache-write-failure copy (data-testid "cache-warning" chip). Shown when
+// store.cacheWriteFailed is set — the browser cannot WRITE the local cache
+// (iOS private mode / disabled storage), so stories the user opens are NOT
+// being saved for offline reading even though they display fine.
+const CACHE_WRITE_FAILED_MESSAGE = 'Local saving unavailable — stories will not be saved on this device';
 
 // How often to auto-refresh while any story is being processed in the
 // background. The list response carries the server's live job-registry flags
@@ -356,6 +384,41 @@ const CachedIcon = styled('span', {
     lineHeight: 1
 });
 
+// NOT-SAVED variant of the cached icon — same slot, warning tint + glyph.
+// Rendered instead of the disk when the story HAS cached content but the
+// browser can no longer WRITE the cache (store.cacheWriteFailed — iOS
+// private mode / disabled storage): what the user sees is cached but the
+// next change will not be saved.
+const NotSavedIcon = styled('span', {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: '0 0 auto',
+    margin: '0 0 0 4px',
+    color: theme.warning,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 1
+});
+
+// Cached-locally state resolution — THREE states per tile:
+//   'saved'        — entry.data is non-null: the story's content (chapters)
+//                    is stored in this browser (hydrated from the cache or
+//                    fetched this session; the records-persist effect keeps
+//                    it durable). Disk icon.
+//   'not-cached'   — entry.data is null (freshly synced remote entry, never
+//                    fetched): NOTHING of its chapters is stored locally, so
+//                    offline it would show as metadata-only. Cloud-off icon.
+//   'write-failed' — the story has cached content BUT the last cache write
+//                    failed (store.cacheWriteFailed — iOS private mode /
+//                    disabled storage): what is on screen is readable now, but
+//                    NEW content cannot be saved. Warning save-off icon.
+const resolveCacheState = (entry: { data: unknown }, cacheWriteFailed: boolean): 'saved' | 'not-cached' | 'write-failed' => {
+    if (entry.data !== null && entry.data !== undefined) {
+        return cacheWriteFailed ? 'write-failed' : 'saved';
+    }
+    return 'not-cached';
+};
+
 // Empty-state message when no stories exist.
 const EmptyMessage = styled('div', {
     padding: '20px 14px',
@@ -600,14 +663,46 @@ export const StorySidebar: React.FC = React.memo(() => {
                 // The animated sg-spinner ring sits inside the same chip and
                 // contributes no text content.
                 const processingBadge = isProcessing ? '⏳' : '';
-                // Cached-locally state: the story's content is stored in this
-                // browser. entry.data is set by (a) localStorage hydration
-                // (loadRecordsFromStorage) and (b) any successful fetch that
-                // landed in the store (selection catch-up / poll loop) — the
-                // records-persist effect then keeps it in the cache. A null
-                // data means the entry is server-metadata-only (freshly
-                // synced remote story, never fetched here) → nothing cached.
-                const isCached = entry.data !== null;
+                // Cached-locally state — THREE states (see resolveCacheState
+                // above the component): 'saved' (disk icon), 'not-cached'
+                // (cloud-off icon), 'write-failed' (warning save-off icon).
+                const cacheState = resolveCacheState(entry, store.cacheWriteFailed === true);
+
+                // Cached-state icon per tile — the three-state resolution
+                // above drives WHICH glyph renders in the title row (testid
+                // stays "story-cached-<storyId>" in every state so tests and
+                // users find the indicator at the same place):
+                //   saved        → disk glyph, "Cached locally"
+                //   not-cached   → cloud-off glyph, "Not saved locally — open
+                //                  once while connected to cache it"
+                //   write-failed → warning save-off glyph, "Cache write
+                //                  failed — this story cannot be saved"
+                const cachedIndicator =
+                    cacheState === 'saved' ? (
+                        <CachedIcon
+                            data-testid={`story-cached-${entry.storyId}`}
+                            title="Cached locally"
+                            aria-label="Cached locally"
+                        >
+                            <SaveAltIcon style={{ fontSize: 13, display: 'block' }} />
+                        </CachedIcon>
+                    ) : cacheState === 'write-failed' ? (
+                        <NotSavedIcon
+                            data-testid={`story-cached-${entry.storyId}`}
+                            title="Cache write failed — this story cannot be saved locally (storage unavailable)"
+                            aria-label="Cache write failed — this story cannot be saved locally"
+                        >
+                            <SyncDisabledIcon style={{ fontSize: 13, display: 'block' }} />
+                        </NotSavedIcon>
+                    ) : (
+                        <NotSavedIcon
+                            data-testid={`story-cached-${entry.storyId}`}
+                            title="Not saved locally — open this story once while the server is reachable to cache it"
+                            aria-label="Not saved locally"
+                        >
+                            <CloudOffOutlinedIcon style={{ fontSize: 13, display: 'block' }} />
+                        </NotSavedIcon>
+                    );
 
                 const itemProps = {
                     // Click = selection + a click-time server re-check. Two
@@ -663,20 +758,12 @@ export const StorySidebar: React.FC = React.memo(() => {
                             <StoryItemSelected {...itemProps} className={`sg-story-selected${processingClass}`}>
                                 <StoryTitle>
                                     {entry.title}
-                                    {/* Cached-locally icon — disk glyph after the
-                                        title when this browser holds the story's
-                                        content (data-testid is the test contract).
-                                        Rendered INSIDE the title row so it truncates
-                                        with the row rather than overlapping the "x". */}
-                                    {isCached && (
-                                        <CachedIcon
-                                            data-testid={`story-cached-${entry.storyId}`}
-                                            title="Cached locally"
-                                            aria-label="Cached locally"
-                                        >
-                                            <SaveAltIcon style={{ fontSize: 13, display: 'block' }} />
-                                        </CachedIcon>
-                                    )}
+                                    {/* Cached-state indicator — three-state glyph
+                                        (saved / not-cached / write-failed; see
+                                        cachedIndicator above). Rendered INSIDE
+                                        the title row so it truncates with the
+                                        row rather than overlapping the "x". */}
+                                    {cachedIndicator}
                                 </StoryTitle>
                                 <StoryTileMeta>
                                     {chapterBadge && (
@@ -696,17 +783,10 @@ export const StorySidebar: React.FC = React.memo(() => {
                             <StoryItem {...itemProps} className={`sg-story-item${processingClass}`}>
                                 <StoryTitle>
                                     {entry.title}
-                                    {/* Same cached-locally icon on the unselected
-                                        variant — identical semantics, neutral tone. */}
-                                    {isCached && (
-                                        <CachedIcon
-                                            data-testid={`story-cached-${entry.storyId}`}
-                                            title="Cached locally"
-                                            aria-label="Cached locally"
-                                        >
-                                            <SaveAltIcon style={{ fontSize: 13, display: 'block' }} />
-                                        </CachedIcon>
-                                    )}
+                                    {/* Same cached-state indicator on the
+                                        unselected variant — identical
+                                        semantics, neutral tone. */}
+                                    {cachedIndicator}
                                 </StoryTitle>
                                 <StoryTileMeta>
                                     {chapterBadge && <Badge variant="neutral">{chapterBadge}</Badge>}
@@ -741,6 +821,21 @@ export const StorySidebar: React.FC = React.memo(() => {
                     title={store.loadWarning}
                 >
                     ⚠ {store.loadWarning}
+                </LoadWarning>
+            )}
+            {/* Cache-health chip — shown when the LOCAL cache is degraded:
+                writes failing entirely (iOS private mode / storage disabled —
+                new stories cannot be saved for offline reading) or a boot
+                recovery/upgrade pass restored records from the IndexedDB
+                mirror (informational). Independent of loadWarning (server
+                reachability) — the cache can be broken while the server is
+                fine and vice versa. */}
+            {(store.cacheWriteFailed || store.cacheWarning) && (
+                <LoadWarning
+                    data-testid="cache-warning"
+                    title={store.cacheWriteFailed ? CACHE_WRITE_FAILED_MESSAGE : store.cacheWarning}
+                >
+                    {store.cacheWriteFailed ? `⚠ ${CACHE_WRITE_FAILED_MESSAGE}` : `ⓘ ${store.cacheWarning}`}
                 </LoadWarning>
             )}
         </SidebarContainer>

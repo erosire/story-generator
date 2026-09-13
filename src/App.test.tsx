@@ -30,7 +30,7 @@
 // fetch is mocked globally. Poll interval is overridden via configOverrides to a
 // tiny value so the loop advances quickly under real timers.
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoryGeneratorApp } from './App';
@@ -74,6 +74,13 @@ describe('StoryGeneratorApp', () => {
         // otherwise leak fake timers into every subsequent test in this
         // file (timers control the sidebar refresh + poll loops).
         vi.useRealTimers();
+        // Unmount FIRST so the store's records-persist effect cannot fire a
+        // mirror write after teardown (the unmount latch flips didHydrateRef).
+        // Vitest's globals:true auto-cleanup runs afterEach hooks BEFORE the
+        // global teardown, but our FIRST afterEach hook (the IndexedDB mirror
+        // reset below) runs before that auto-cleanup — an unmount here is the
+        // deterministic way to guarantee no post-reset put lands.
+        cleanup();
         cancelPendingStorageWrites();
         localStorage.clear();
         vi.unstubAllGlobals();
@@ -996,12 +1003,17 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('story-cached-cached-icon-1').getAttribute('title')).toBe('Cached locally');
 
         // After the server list sync, the metadata-only story appears WITHOUT
-        // the icon — its data is still null (never fetched in this browser),
-        // so nothing of it is cached locally.
+        // the disk icon — its data is still null (never fetched in this
+        // browser), so nothing of it is cached locally. It now carries the
+        // cloud-off "not saved locally" variant instead (same testid slot).
         await waitFor(() => {
             expect(screen.getByTestId('story-tab-meta-only-1')).toBeDefined();
         });
-        expect(screen.queryByTestId('story-cached-meta-only-1')).toBeNull();
+        const metaIcon = screen.queryByTestId('story-cached-meta-only-1');
+        expect(metaIcon).not.toBeNull();
+        expect(metaIcon!.getAttribute('title')).toBe(
+            'Not saved locally — open this story once while the server is reachable to cache it'
+        );
     });
 
     // The icon appears on a story that had NO cached data once its content is
@@ -1060,7 +1072,13 @@ describe('StoryGeneratorApp', () => {
         await act(async () => {
             await new Promise((r) => setTimeout(r, 30));
         });
-        expect(screen.queryByTestId('story-cached-fetch-icon-1')).toBeNull();
+        // The story still holds data === null → the cloud-off "not saved
+        // locally" variant occupies the indicator slot (same testid).
+        const preFetchIcon = screen.queryByTestId('story-cached-fetch-icon-1');
+        expect(preFetchIcon).not.toBeNull();
+        expect(preFetchIcon!.getAttribute('title')).toBe(
+            'Not saved locally — open this story once while the server is reachable to cache it'
+        );
 
         // Release the per-story GET → the catch-up effect stores the story
         // data → the tile now carries the cached-locally icon.

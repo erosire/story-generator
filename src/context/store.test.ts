@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     loadRecordsFromStorage,
     loadRecordsFromIdbMirror,
+    upgradeRecordsFromIdbMirror,
     mergeServerStoryList,
     saveRecordsToStorage,
     type StoryEntry
@@ -485,17 +486,15 @@ describe('saveRecordsToStorage (synchronous offline cache)', () => {
         const parsed = JSON.parse(raw!) as StoryEntry[];
         expect(parsed.length).toBe(2);
 
-        // Rung 2 engaged, NOT rung 3/4: the newest entry (index 0) keeps BOTH
-        // revisions (full fidelity), and the older entry (index 1) keeps its
-        // LATEST revision body (chapter content survives — only the older
-        // revision was shed).
-        expect(parsed[0].data).not.toBeNull();
-        expect(parsed[0].data!.chapters[0].revisions).toEqual([
+        // Rung 2 engaged, NOT rung 3/4: the newest entry (rank 0 by user
+        // recency — createdDate story-new > story-old) keeps BOTH revisions
+        // (full fidelity), and the older entry keeps its LATEST revision body
+        // (chapter content survives — only the older revision was shed).
+        expect(parsed.find((e) => e.storyId === 'story-new')!.data!.chapters[0].revisions).toEqual([
             { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
             { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
         ]);
-        expect(parsed[1].data).not.toBeNull();
-        expect(parsed[1].data!.chapters[0].revisions).toEqual([
+        expect(parsed.find((e) => e.storyId === 'story-old')!.data!.chapters[0].revisions).toEqual([
             { content: 'x'.repeat(300) + ' latest', wordCount: 3, generationTimeMs: 2 }
         ]);
 
@@ -567,17 +566,19 @@ describe('IndexedDB mirror (saveRecordsToStorage / loadRecordsFromIdbMirror)', (
         const mirrored = (await storyCacheGet())!;
         expect(mirrored.length).toBe(1);
         expect(mirrored[0].storyId).toBe('mirror-1');
-        // Full content survives the mirror (structured clone of the parsed
-        // winning rung's payload — same shape the localStorage cache holds).
+        // Full content survives the mirror (structured clone of the FULL
+        // payload — the mirror never sheds, same shape the localStorage cache
+        // holds when it fits).
         expect(mirrored[0].data!.chapters[0].revisions).toEqual([
             { content: '## Mirrored Chapter\n\nmirrored body', wordCount: 2, generationTimeMs: 100 }
         ]);
     });
 
-    it('mirrors the SHED rung when localStorage is over quota (mirror ≠ wiped)', async () => {
+    it('mirrors the FULL-fidelity payload even when localStorage had to shed (mirror is richer)', async () => {
         // Same quota simulation as the ladder test above: the full payload
-        // exceeds the limit, the shed rung fits. The MIRROR must carry the
-        // shed rung's payload — the surviving chapter content, not nulls.
+        // exceeds the limit, the shed rung fits in localStorage. The MIRROR
+        // must carry the UNSHED full payload — it is the recovery source for
+        // upgradeRecordsFromIdbMirror at the next boot.
         const QUOTA_LIMIT = 2100;
         const storageProto = Object.getPrototypeOf(localStorage) as Storage;
         const originalSetItem = storageProto.setItem;
@@ -644,13 +645,15 @@ describe('IndexedDB mirror (saveRecordsToStorage / loadRecordsFromIdbMirror)', (
         });
         const mirrored = (await storyCacheGet())!;
         expect(mirrored.length).toBe(2);
-        // The mirror matches the SHED localStorage rung exactly: newest entry
-        // full, older entry latest-revision-only. NOT the all-null fallback.
+        // The mirror is RICHER than the shed localStorage rung: BOTH entries
+        // keep BOTH revisions in the mirror (full fidelity), while localStorage
+        // (asserted in the ladder test) trimmed the older entry.
         expect(mirrored[0].data!.chapters[0].revisions).toEqual([
             { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
             { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
         ]);
         expect(mirrored[1].data!.chapters[0].revisions).toEqual([
+            { content: 'x'.repeat(300) + ' old', wordCount: 3, generationTimeMs: 1 },
             { content: 'x'.repeat(300) + ' latest', wordCount: 3, generationTimeMs: 2 }
         ]);
 
@@ -730,5 +733,108 @@ describe('IndexedDB mirror (saveRecordsToStorage / loadRecordsFromIdbMirror)', (
     it('loadRecordsFromIdbMirror returns null when the mirror is empty', async () => {
         const recovered = await loadRecordsFromIdbMirror();
         expect(recovered).toBeNull();
+    });
+
+    it('upgradeRecordsFromIdbMirror restores chapters the localStorage ladder shed', async () => {
+        // The core "cached chapters gone on click" regression: localStorage
+        // shed a story to metadata-only under quota, but the mirror still
+        // holds its chapters. The upgrade pass must return the entry with the
+        // mirror's data restored.
+        const fullEntry = makeEntry({
+            storyId: 'upgrade-1',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Upgraded Chapter',
+                        plotpoints: ['plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: '## Upgraded Chapter\n\nrestored body', wordCount: 2, generationTimeMs: 100 }]
+                    }
+                ],
+                meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            }
+        });
+        // Mirror the full payload, then simulate the shed localStorage state.
+        saveRecordsToStorage([fullEntry]);
+        const shedEntry = { ...fullEntry, data: null };
+
+        const upgraded = await upgradeRecordsFromIdbMirror([shedEntry]);
+        expect(upgraded).not.toBeNull();
+        expect(upgraded!.length).toBe(1);
+        expect(upgraded![0].storyId).toBe('upgrade-1');
+        expect(upgraded![0].data).not.toBeNull();
+        expect(upgraded![0].data!.chapters[0].revisions).toEqual([
+            { content: '## Upgraded Chapter\n\nrestored body', wordCount: 2, generationTimeMs: 100 }
+        ]);
+    });
+
+    it('upgradeRecordsFromIdbMirror restores trimmed revisions from the mirror', async () => {
+        // Ladder rung 2 trims a story to its latest revision; the mirror kept
+        // both. The upgrade must restore the richer revision history.
+        const revisions = [
+            { content: '## Ch\n\nold rev', wordCount: 3, generationTimeMs: 1 },
+            { content: '## Ch\n\nlatest rev', wordCount: 3, generationTimeMs: 2 }
+        ];
+        const fullEntry = makeEntry({
+            storyId: 'upgrade-2',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Ch',
+                        plotpoints: ['p'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions
+                    }
+                ],
+                meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            }
+        });
+        saveRecordsToStorage([fullEntry]);
+        const trimmedEntry = {
+            ...fullEntry,
+            data: {
+                ...fullEntry.data!,
+                chapters: [{ ...fullEntry.data!.chapters[0], revisions: [revisions[1]] }]
+            }
+        };
+
+        const upgraded = await upgradeRecordsFromIdbMirror([trimmedEntry]);
+        expect(upgraded).not.toBeNull();
+        expect(upgraded![0].data!.chapters[0].revisions).toEqual(revisions);
+    });
+
+    it('upgradeRecordsFromIdbMirror returns null when localStorage already matches the mirror', async () => {
+        const entry = makeEntry({
+            storyId: 'upgrade-3',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Ch',
+                        plotpoints: ['p'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: 'body', wordCount: 1, generationTimeMs: 1 }]
+                    }
+                ],
+                meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            }
+        });
+        saveRecordsToStorage([entry]);
+
+        const upgraded = await upgradeRecordsFromIdbMirror([entry]);
+        expect(upgraded).toBeNull();
+    });
+
+    it('upgradeRecordsFromIdbMirror returns null when the mirror is empty', async () => {
+        const upgraded = await upgradeRecordsFromIdbMirror([makeEntry({ storyId: 'upgrade-4' })]);
+        expect(upgraded).toBeNull();
     });
 });

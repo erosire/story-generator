@@ -26,6 +26,39 @@
 // TEST SHIM: vitest runs in jsdom which has NO IndexedDB — tests install
 // fake-indexeddb via setupFiles (vitest.config.ts) so the real code paths run
 // unmocked. The module itself never imports the shim.
+//
+// WRITE QUEUE: all mutating operations (set/clear/reset) are serialized
+// through a single promise chain (writeQueue) so IndexedDB transactions land
+// strictly in call order. The queue can STALL for seconds under vitest's
+// fake-timer/act conditions (observed in App.test.tsx's fake-timer tests) —
+// storyCacheResetForTests therefore never trusts a queued clear to have run:
+// it always finishes with a DIRECT (out-of-queue) clear + verify pass, and
+// every queued op carries a generation stamp so ops enqueued before a reset
+// are skipped whenever they eventually run.
+//
+// OPEN-HOISTING INVARIANT: storyCacheSet/storyCacheClear issue their
+// openDatabase() call SYNCHRONOUSLY (outside the queue) and only the
+// transaction runs inside the queued op. Recovery reads (storyCacheGet) are
+// deliberately NOT queued; the sync open keeps a put's open() request ordered
+// before a get issued right after it, so fake-indexeddb runs the put's
+// transaction first and the read observes the write (this ordering is what
+// the "save then immediately recover" tests rely on).
+//
+// Diagnostic trace helper: appends to a fixed temp file when STORY_CACHE_TRACE
+// is enabled. Written SYNCHRONOUSLY (fs.appendFileSync) so the output survives
+// vitest's per-test stdout buffering — console output printed between tests
+// (afterEach) gets attributed to the wrong test block, which made a cross-test
+// mirror leak impossible to attribute. Only active when STORY_CACHE_TRACE=1.
+const traceLog = (message: string): void => {
+    if (process.env.STORY_CACHE_TRACE !== '1') return;
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('node:fs') as typeof import('node:fs');
+        fs.appendFileSync('story-cache-trace.log', `${Date.now()} ${message}\n`);
+    } catch {
+        // Tracing must never break the cache.
+    }
+};
 
 // Database + store constants. A version bump would require an upgrade path —
 // the schema is a single key/value pair, so v1 is all we ever need.
@@ -33,6 +66,24 @@ const DB_NAME = 'storyGenerator';
 const DB_VERSION = 1;
 const STORE_NAME = 'kv';
 const RECORDS_KEY = 'records';
+
+// Pending-write serialization: IndexedDB transactions from rapid successive
+// saves could otherwise land OUT OF ORDER (put A → put B → clear could become
+// clear → put A → put B if the puts were queued first). Every mutating
+// operation is chained through this promise so operations execute strictly in
+// call order.
+let writeQueue: Promise<unknown> = Promise.resolve();
+const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
+    const run = writeQueue.then(operation, operation);
+    writeQueue = run.catch(() => undefined);
+    return run;
+};
+
+// Generation counter for test resets: every storyCacheResetForTests bumps it
+// and enqueued writes captured a generation at enqueue time — a put whose
+// generation is stale (reset happened after it was enqueued) is SKIPPED, so a
+// late-landing put can never resurrect wiped records into the next test.
+let queueGeneration = 0;
 
 // Feature test: is a usable IndexedDB present? (jsdom: no; SSR: no; private
 // Safari: yes — IndexedDB works there even when localStorage throws, which is
@@ -62,6 +113,17 @@ const openDatabase = (): Promise<IDBDatabase> =>
                 db.createObjectStore(STORE_NAME);
             }
         };
+        // Release the connection when another context (or a later open with a
+        // new version) requests an upgrade — without this a stale open
+        // connection blocks the new open (onblocked) and hangs the caller.
+        // (onversionchange is missing from some older TS DOM lib versions —
+        // the event handler exists at runtime in every browser and in
+        // fake-indexeddb, so the assignment is cast defensively.)
+        (request as IDBOpenDBRequest & {
+            onversionchange: ((this: IDBOpenDBRequest, ev: IDBVersionChangeEvent) => unknown) | null;
+        }).onversionchange = () => {
+            request.result?.close();
+        };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
         request.onblocked = () => reject(new Error('IndexedDB open blocked'));
@@ -90,50 +152,78 @@ export const storyCacheGet = (): Promise<PersistableStoryEntryShape[] | null> =>
 
 // Write the records payload. Resolves true when durably written, false when
 // the tier is unavailable or the write failed (never rejects — fire-and-forget
-// callers cannot await-catch meaningfully).
-export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<boolean> =>
-    openDatabase()
-        .then(
+// callers cannot await-catch meaningfully). Serialized through the write queue
+// so a rapid save→save→reset sequence cannot reorder puts after a clear; a
+// stale-generation put (enqueued before a reset) is skipped entirely.
+//
+// OPEN HOISTED OUT OF THE QUEUE: openDatabase() is issued SYNCHRONOUSLY at
+// call time and the queued op only awaits the ready connection. This keeps
+// the put's IndexedDB open() request ordered BEFORE any concurrent
+// storyCacheGet() (recovery reads are NOT queued), so fake-indexeddb creates
+// the put's transaction first and the read observes the write. Queueing the
+// open inside the op reversed that ordering and broke the store.test.ts
+// "recover right after save" tests (the read raced ahead of the queued put).
+export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<boolean> => {
+    const generation = queueGeneration;
+    traceLog(`set enqueue gen=${generation} ids=${records.map((r) => r.storyId).join(',')}`);
+    // Issue the open() synchronously; a failed open becomes a null db and the
+    // queued op resolves false (same as the old catch path).
+    const dbPromise = openDatabase().catch(() => null);
+    return enqueue(() => {
+        if (generation !== queueGeneration) {
+            // A reset happened after this put was enqueued — discard it.
+            traceLog(`set SKIPPED gen=${generation} (current ${queueGeneration})`);
+            return Promise.resolve(false);
+        }
+        return dbPromise.then(
             (db) =>
-                new Promise<boolean>((resolve, reject) => {
-                    const tx = db.transaction(STORE_NAME, 'readwrite');
-                    tx.objectStore(STORE_NAME).put(records, RECORDS_KEY);
-                    tx.oncomplete = () => {
-                        db.close();
-                        resolve(true);
-                    };
-                    tx.onerror = () => {
-                        db.close();
-                        reject(tx.error ?? new Error('IndexedDB put failed'));
-                    };
-                    tx.onabort = () => {
-                        db.close();
-                        reject(tx.error ?? new Error('IndexedDB put aborted'));
-                    };
-                })
-        )
-        .catch(() => false);
+                db
+                    ? new Promise<boolean>((resolve, reject) => {
+                          const tx = db.transaction(STORE_NAME, 'readwrite');
+                          tx.objectStore(STORE_NAME).put(records, RECORDS_KEY);
+                          tx.oncomplete = () => {
+                              db.close();
+                              resolve(true);
+                          };
+                          tx.onerror = () => {
+                              db.close();
+                              reject(tx.error ?? new Error('IndexedDB put failed'));
+                          };
+                          tx.onabort = () => {
+                              db.close();
+                              reject(tx.error ?? new Error('IndexedDB put aborted'));
+                          };
+                      })
+                    : Promise.resolve(false)
+        );
+    });
+};
 
 // Purge the mirror (story deletion writes the emptied records array through
 // the normal set path, so an explicit delete is only needed for completeness).
-export const storyCacheClear = (): Promise<boolean> =>
-    openDatabase()
-        .then(
+// Same open-hoisting rationale as storyCacheSet above.
+export const storyCacheClear = (): Promise<boolean> => {
+    const dbPromise = openDatabase().catch(() => null);
+    return enqueue(() =>
+        dbPromise.then(
             (db) =>
-                new Promise<boolean>((resolve, reject) => {
-                    const tx = db.transaction(STORE_NAME, 'readwrite');
-                    tx.objectStore(STORE_NAME).delete(RECORDS_KEY);
-                    tx.oncomplete = () => {
-                        db.close();
-                        resolve(true);
-                    };
-                    tx.onerror = () => {
-                        db.close();
-                        reject(tx.error ?? new Error('IndexedDB delete failed'));
-                    };
-                })
+                db
+                    ? new Promise<boolean>((resolve, reject) => {
+                          const tx = db.transaction(STORE_NAME, 'readwrite');
+                          tx.objectStore(STORE_NAME).delete(RECORDS_KEY);
+                          tx.oncomplete = () => {
+                              db.close();
+                              resolve(true);
+                          };
+                          tx.onerror = () => {
+                              db.close();
+                              reject(tx.error ?? new Error('IndexedDB delete failed'));
+                          };
+                      })
+                    : Promise.resolve(false)
         )
-        .catch(() => false);
+    );
+};
 
 // Test isolation: vitest runs every test file in a fresh worker, but MULTIPLE
 // tests within one file share the module — and beforeEach only clears
@@ -141,24 +231,109 @@ export const storyCacheClear = (): Promise<boolean> =>
 // the fake IndexedDB database between tests (prevents a test's mirrored
 // records from "recovering" into the next test's empty-localStorage boot).
 // In the browser this is never called; the cache is meant to persist.
+//
+// HANG GUARD: the reset races the writeQueue with a 2s timeout. A queued put
+// whose completion was swallowed by a fake-timer teardown (vitest
+// useFakeTimers/useRealTimers transitions) would otherwise block the queue
+// forever and time out the afterEach hook.
 export const storyCacheResetForTests = async (): Promise<void> => {
+    // Bump the generation FIRST: every put enqueued before this point becomes
+    // stale and is skipped when its turn in the queue arrives. This is the
+    // PRIMARY protection — a pre-reset put can never write, no matter when
+    // its queued op eventually runs (even minutes later after a queue stall).
+    queueGeneration++;
+    traceLog(`reset begin gen=${queueGeneration}`);
+    // Drain: wait for the current queue tail so the clear below runs after
+    // every pending op. The writeQueue can STALL for seconds under
+    // fake-timer/act conditions (observed ~3.2s stalls in App.test.tsx's
+    // fake-timer tests), so the bail-out here must NOT be treated as "the
+    // queue is empty" — it only means "stop waiting". The direct-clear pass
+    // at the end handles whatever the queued clear missed.
+    const drained = await Promise.race([
+        writeQueue.catch(() => undefined).then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))
+    ]);
+    traceLog(drained ? 'reset drain done (settled)' : 'reset drain BAILED (queue stalled)');
+    // Clear + verify via the queue (in-order with any remaining ops).
+    // GENERATION GUARD: the clear captures the post-bump generation. If a
+    // LATER reset supersedes this one before the op runs (queue stall — the
+    // drain bailed and this op is still parked in the old chain), the clear
+    // must SKIP: an un-guarded late clear would wipe the NEXT test's mirror
+    // writes (observed: store.test.ts recovery tests got null because the
+    // previous test's stalled queued clear landed after their put). The
+    // direct wipe below still guarantees emptiness for THIS reset.
+    const clearGeneration = queueGeneration;
+    const cleared = await Promise.race([
+        enqueue(async () => {
+            if (clearGeneration !== queueGeneration) {
+                traceLog(`reset queued clear SKIPPED (gen ${clearGeneration} vs ${queueGeneration})`);
+                return false;
+            }
+            try {
+                for (let pass = 0; pass < 3; pass++) {
+                    const db = await openDatabase();
+                    await new Promise<void>((resolve, reject) => {
+                        const tx = db.transaction(STORE_NAME, 'readwrite');
+                        tx.objectStore(STORE_NAME).clear();
+                        tx.oncomplete = () => {
+                            db.close();
+                            resolve();
+                        };
+                        tx.onerror = () => {
+                            db.close();
+                            reject(tx.error ?? new Error('IndexedDB clear failed'));
+                        };
+                    });
+                    // Let any straggler put microtask settle, then re-check.
+                    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+                    const check = await storyCacheGet();
+                    traceLog(
+                        `reset pass ${pass}: ${check ? check.map((r) => r.storyId).join(',') : 'EMPTY'}`
+                    );
+                    if (!check || check.length === 0) return true;
+                }
+                return false;
+            } catch {
+                // No IndexedDB / already closed — nothing to reset.
+                return true;
+            }
+        }),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000))
+    ]);
+    traceLog(cleared ? 'reset queued clear done' : 'reset queued clear BAILED');
+    // Sever the queue: the remaining old-chain ops are all generation-stale
+    // (skipped at run time), so dropping the chain is safe.
+    writeQueue = Promise.resolve();
+    // DIRECT final wipe (outside the queue): guarantees emptiness even when
+    // the queued clear bailed or the queue stalled past the reset. Any put
+    // that already completed before the generation bump is wiped here; any
+    // put still pending in the old chain is generation-stale and skipped at
+    // run time — so nothing can write after this pass.
     try {
-        const db = await openDatabase();
-        await new Promise<void>((resolve, reject) => {
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            tx.objectStore(STORE_NAME).clear();
-            tx.oncomplete = () => {
-                db.close();
-                resolve();
-            };
-            tx.onerror = () => {
-                db.close();
-                reject(tx.error ?? new Error('IndexedDB clear failed'));
-            };
-        });
+        for (let pass = 0; pass < 3; pass++) {
+            const db = await openDatabase();
+            await new Promise<void>((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                tx.objectStore(STORE_NAME).clear();
+                tx.oncomplete = () => {
+                    db.close();
+                    resolve();
+                };
+                tx.onerror = () => {
+                    db.close();
+                    reject(tx.error ?? new Error('IndexedDB clear failed'));
+                };
+            });
+            const check = await storyCacheGet();
+            traceLog(
+                `reset direct pass ${pass}: ${check ? check.map((r) => r.storyId).join(',') : 'EMPTY'}`
+            );
+            if (!check || check.length === 0) break;
+        }
     } catch {
-        // No IndexedDB / already closed — nothing to reset.
+        // No IndexedDB — nothing to wipe.
     }
+    traceLog('reset end');
 };
 
 // Structural shape of the persisted record — mirrors PersistableStoryEntry in
