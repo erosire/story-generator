@@ -85,8 +85,14 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('content-empty').textContent).toBe('Select one');
         // Input area is always visible — user can type a storyline and click Generate.
         expect(screen.getByTestId('storyline-input')).toBeDefined();
-        // Sidebar is present with the "Stories" label.
+        // Sidebar is present with the "Stories" label + package version suffix
+        // ("Stories v1.0.2"). The version comes from the compile-time
+        // __APP_VERSION__ constant (vite.config.ts / vitest.config.ts `define`
+        // reads package.json) — asserting against the SAME constant keeps this
+        // test version-agnostic so package version bumps never break it
+        // (same pattern as ScriptingSpaceFormatter's footer version test).
         expect(screen.getByTestId('sidebar')).toBeDefined();
+        expect(screen.getByTestId('sidebar-version').textContent).toBe(`v${__APP_VERSION__}`);
         // The top-right LLM client dropdown is always rendered. Before the
         // server's client list arrives it offers only the default client id
         // (localStorage cleared in beforeEach → DEFAULT_CLIENT_ID 'Qwen27B').

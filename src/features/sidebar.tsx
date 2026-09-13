@@ -31,6 +31,13 @@
 // all untouched — clearing the query restores the exact list that was there
 // before. Empty/whitespace query shows every story.
 //
+// VERSION SUFFIX: the "Stories" label carries the package version
+// ("Stories v1.0.2") so the user can see which release they are running.
+// The value comes from the compile-time __APP_VERSION__ constant injected by
+// vite.config.ts `define` (reads package.json; declared ambient in
+// src/vite-env.d.ts; mirrored in vitest.config.ts for tests). Same pattern
+// as distribution/ScriptingSpaceFormatter's footer version.
+//
 // No manual refresh button — the sidebar auto-refreshes periodically by polling
 // GET /v1/storyboard/generations to pick up stories created by other
 // sessions/devices and the server's live background-job flags.
@@ -358,6 +365,19 @@ const EmptyMessage = styled('div', {
     lineHeight: 1.5
 });
 
+// Version suffix inside the "Stories" header — dimmed + lighter weight so it
+// reads as metadata next to the label, not as part of the section title.
+// data-testid "sidebar-version" is the test contract (App.test.tsx asserts
+// the exact "v<version>" text against the __APP_VERSION__ compile constant).
+const VersionSuffix = styled('span', {
+    marginLeft: 6,
+    fontSize: theme.fontSize.xs,
+    fontWeight: 500,
+    color: theme.textFaint,
+    letterSpacing: 0.4,
+    whiteSpace: 'nowrap' as const
+});
+
 // Load-warning chip — shown if the bootstrap or auto-refresh failed. Flat
 // warning-tinted surface with an ellipsized single-line message.
 const LoadWarning = styled('div', {
@@ -498,13 +518,17 @@ export const StorySidebar: React.FC = React.memo(() => {
 
     return (
         <SidebarContainer data-testid="sidebar" className="sg-scroll">
-            {/* Header label + live background-thread count. The chip renders only
-                while inProgressCount > 0 — an idle server shows the bare label.
+            {/* Header label + package version + live background-thread count.
+                The version suffix ("Stories v1.0.2") comes from the compile-time
+                __APP_VERSION__ constant (vite.config.ts define reads
+                package.json). The job-count chip renders only while
+                inProgressCount > 0 — an idle server shows the bare label.
                 data-testid="sidebar-job-count" is the test contract; textContent
                 is exactly "<n> running" (the spinner ring contributes no text).
                 FLAT REWORK: modular accent-rail Badge instead of the pill. */}
             <SectionLabel>
                 Stories
+                <VersionSuffix data-testid="sidebar-version">v{__APP_VERSION__}</VersionSuffix>
                 {inProgressCount > 0 && (
                     <span data-testid="sidebar-job-count">
                         <Badge
