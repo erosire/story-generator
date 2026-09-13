@@ -17,7 +17,7 @@
 // behavior, it is rendered inside the tile's select button like the badges.
 //
 // The "Stories" header carries a live job-count chip (data-testid
-// "sidebar-job-count", text "<n> running") showing how many background
+    // "sidebar-job-count", text "<n>") showing how many background
 // threads are currently in flight on the server — see inProgressCount below
 // for how the server registry snapshot (store.activeJobs) combines with this
 // session's local processing flags.
@@ -524,7 +524,7 @@ export const StorySidebar: React.FC = React.memo(() => {
                 package.json). The job-count chip renders only while
                 inProgressCount > 0 — an idle server shows the bare label.
                 data-testid="sidebar-job-count" is the test contract; textContent
-                is exactly "<n> running" (the spinner ring contributes no text).
+                is exactly "<n>" (the spinner ring contributes no text).
                 FLAT REWORK: modular accent-rail Badge instead of the pill. */}
             <SectionLabel>
                 Stories
@@ -537,7 +537,7 @@ export const StorySidebar: React.FC = React.memo(() => {
                             style={{ marginLeft: 8 }}
                         >
                             <span className="sg-spinner" aria-hidden="true" />
-                            {inProgressCount} running
+                            {inProgressCount}
                         </Badge>
                     </span>
                 )}

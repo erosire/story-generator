@@ -1162,7 +1162,7 @@ describe('StoryGeneratorApp', () => {
     it('shows the server job count in the Stories header and clears it when the jobs finish', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true });
         // Two stories, one job each → the header chip must read exactly
-        // "2 running" (2 threads in flight on the server).
+        // "2" (2 threads in flight on the server).
         let listResponse = {
             stories: [
                 {
@@ -1200,7 +1200,7 @@ describe('StoryGeneratorApp', () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
         await waitFor(() => {
-            expect(screen.getByTestId('sidebar-job-count').textContent).toBe('2 running');
+            expect(screen.getByTestId('sidebar-job-count').textContent).toBe('2');
         });
 
         // Both jobs finish on the server — the registry snapshot empties and
@@ -1296,7 +1296,7 @@ describe('StoryGeneratorApp', () => {
         });
 
         await waitFor(() => {
-            expect(screen.getByTestId('sidebar-job-count').textContent).toBe('1 running');
+            expect(screen.getByTestId('sidebar-job-count').textContent).toBe('1');
         });
     });
 
