@@ -367,97 +367,119 @@ let pendingRecords: PersistableStoryEntry[] | null = null;
  *   2. Drop data — the oldest entries lose their chapter content entirely and
  *      persist as metadata-only (title/storyId/counts). The sidebar LIST still
  *      shows them offline; opening one shows the pending-empty state.
+ *   3. Metadata-only for every entry (the last resort, only reachable when
+ *      even the pass-2 payload does not fit).
  *
  * The newest stories are always the ones kept at full fidelity: the sidebar
  * sorts lastActionedAt-on-top, and the story the user is most likely to read
  * offline is the one they just viewed.
+ *
+ * REAL QUOTA CONTRACT: the ladder must be verified against the REAL setItem —
+ * a payload that JSON.stringify's fine can still exceed the browser's ~5MB
+ * localStorage quota. buildCachePayload therefore only returns the pass-0
+ * string; every lighter rung is built lazily by saveRecordsToStorage and
+ * validated with an actual localStorage.setItem attempt (see the comment
+ * there). The previous eager buildCachePayload ladder never engaged its
+ * lighter rungs at write time — the first quota failure fell through to the
+ * all-metadata-only retry and WIPED every cached chapter body (the reported
+ * "cached chapters disappear offline" bug).
  */
 const buildCachePayload = (records: PersistableStoryEntry[]): string => {
-    // Pass 0: full fidelity.
-    const attempts: PersistableStoryEntry[][] = [records];
-
-    // Pass 1: keep the newest `keepFull` entries whole; trim older entries to
-    // their latest revision only.
-    const keepFull = Math.max(1, Math.ceil(records.length / 2));
-    attempts.push(
-        records.map((entry, index) => {
-            if (index < records.length - keepFull) return entry;
-            if (!entry.data) return entry;
-            return {
-                ...entry,
-                data: {
-                    ...entry.data,
-                    chapters: (entry.data.chapters ?? []).map((ch) => {
-                        const revisions = ch.revisions ?? [];
-                        // Latest revision only (the array is oldest→newest —
-                        // the dropdown's default selection is the last index).
-                        return revisions.length > 1 ? { ...ch, revisions: [revisions[revisions.length - 1]] } : ch;
-                    })
-                }
-            };
-        })
-    );
-
-    // Pass 2: keep only the newest `keepFull` entries' data; the rest become
-    // metadata-only records (data: null). The list always survives.
-    attempts.push(
-        records.map((entry, index) => (index < records.length - keepFull ? { ...entry, data: null } : entry))
-    );
-
-    // Try each attempt in order; the first one that serializes AND fits wins.
-    // JSON.stringify throws on quota-unfriendly structures too (circular refs
-    // cannot occur here — the store shape is plain data — but the try/catch
-    // keeps a poisoned entry from breaking the whole cache).
-    for (const attempt of attempts) {
-        try {
-            const serialized = JSON.stringify(attempt);
-            return serialized;
-        } catch {
-            // Serialization itself failed — fall through to the next,
-            // lighter attempt.
-        }
-    }
-    // Last resort: metadata-only for every entry (cannot realistically throw —
-    // the fields are primitives).
-    return JSON.stringify(records.map((entry) => ({ ...entry, data: null })));
+    // Pass 0 only: the full-fidelity payload. Serialization errors (circular
+    // refs cannot occur here — the store shape is plain data — but the
+    // try/catch keeps a poisoned entry from breaking the whole cache) surface
+    // to the caller, which skips the write rather than corrupting the cache.
+    return JSON.stringify(records);
 };
 
 /**
  * Synchronous write of records to localStorage. Writes only when the payload
  * actually changed (cheap string comparison against the stored value).
- * On QuotaExceededError the payload is shed via buildCachePayload's ladder
- * and the write retried — see the QUOTA RESILIENCE note above.
+ *
+ * QUOTA RESILIENCE (the real ladder — see buildCachePayload): each rung is
+ * serialized lazily and ATTEMPTED against the real localStorage.setItem, so a
+ * payload that exceeds the quota falls through to the next-lighter rung
+ * instead of wiping the cache down to metadata-only in one step:
+ *   1. full fidelity (all revisions on every entry)
+ *   2. newest half keeps full data; older entries trimmed to their LATEST
+ *      revision per chapter
+ *   3. newest half keeps data; older entries become metadata-only (data:null)
+ *   4. every entry metadata-only
+ * The first rung that setItem accepts wins. If even the metadata-only rung
+ * fails (storage disabled / private mode), give up silently — the in-memory
+ * store keeps working for this session and the previous cache payload (if
+ * any) stays readable.
  */
 export const saveRecordsToStorage = (records: StoryEntry[]): void => {
     const serializable = records.map(toPersistable);
-    let incoming: string;
-    try {
-        incoming = buildCachePayload(serializable);
-    } catch {
-        // Poisoned record — skip this write entirely rather than corrupting
-        // the cache (the previous payload stays readable).
-        return;
-    }
-    try {
-        const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
-        if (raw !== incoming) {
-            localStorage.setItem(STORAGE_KEY_RECORDS, incoming);
-        }
-    } catch {
-        // QuotaExceededError (or storage unavailable). Retry ONCE with the
-        // most-shed payload (every entry metadata-only) — that is tiny and
-        // almost always fits. If even that fails (storage disabled), give up
-        // silently: the in-memory store keeps working for this session.
+
+    // Ladder rungs, lightest-touch first. Built lazily — each payload is only
+    // serialized when the previous rung's write attempt failed, so a
+    // comfortably-fitting cache pays for exactly one JSON.stringify.
+    const keepFull = Math.max(1, Math.ceil(serializable.length / 2));
+    const attempts: Array<() => string> = [
+        // Rung 1: full fidelity — every entry keeps its complete data.
+        () => buildCachePayload(serializable),
+        // Rung 2: keep the newest `keepFull` entries whole; trim older entries
+        // to their latest revision only (the array is oldest→newest — the
+        // dropdown's default selection is the last index).
+        () =>
+            JSON.stringify(
+                serializable.map((entry, index) => {
+                    if (index < serializable.length - keepFull) return entry;
+                    if (!entry.data) return entry;
+                    return {
+                        ...entry,
+                        data: {
+                            ...entry.data,
+                            chapters: (entry.data.chapters ?? []).map((ch) => {
+                                const revisions = ch.revisions ?? [];
+                                return revisions.length > 1
+                                    ? { ...ch, revisions: [revisions[revisions.length - 1]] }
+                                    : ch;
+                            })
+                        }
+                    };
+                })
+            ),
+        // Rung 3: keep only the newest `keepFull` entries' data; the rest
+        // become metadata-only records (data: null). The list always survives.
+        () =>
+            JSON.stringify(
+                serializable.map((entry, index) =>
+                    index < serializable.length - keepFull ? { ...entry, data: null } : entry
+                )
+            ),
+        // Rung 4: metadata-only for every entry (tiny — almost always fits).
+        () => JSON.stringify(serializable.map((entry) => ({ ...entry, data: null })))
+    ];
+
+    // Try each rung in order against the REAL storage. The first one that
+    // setItem accepts wins; serialization of a rung itself throwing (poisoned
+    // record) falls through to the next, lighter rung the same way.
+    for (const buildAttempt of attempts) {
+        let incoming: string;
         try {
-            const minimal = JSON.stringify(serializable.map((entry) => ({ ...entry, data: null })));
-            const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
-            if (raw !== minimal) {
-                localStorage.setItem(STORAGE_KEY_RECORDS, minimal);
-            }
+            incoming = buildAttempt();
         } catch {
-            // Storage fully unavailable — silently ignore.
+            // Serialization failed — fall through to the next, lighter rung.
+            continue;
+        }
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
+            if (raw !== incoming) {
+                localStorage.setItem(STORAGE_KEY_RECORDS, incoming);
+            }
+            // Write accepted (or unchanged) — this rung is the cache's new
+            // content; stop shedding.
+            return;
+        } catch {
+            // QuotaExceededError (or storage unavailable) — shed weight and
+            // retry with the next rung.
         }
     }
+    // Every rung failed (storage fully unavailable) — silently ignore: the
+    // in-memory store keeps working for this session.
 };
 
 /**

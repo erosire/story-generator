@@ -388,6 +388,118 @@ describe('saveRecordsToStorage (synchronous offline cache)', () => {
         setItem.mockRestore();
     });
 
+    it('engages the intermediate ladder rungs: trims revisions before dropping chapter content', () => {
+        // REGRESSION for the "cached chapters disappear offline" bug: the
+        // previous implementation built its ladder eagerly against
+        // JSON.stringify (which never throws for quota size) and only
+        // discovered the quota failure at setItem time — where its catch
+        // fell straight through to the all-metadata-only retry, wiping EVERY
+        // cached chapter body in one step. The fix validates each rung
+        // against the REAL setItem, so the lighter rungs actually engage:
+        // rung 2 (latest-revision-only for older entries) must be accepted
+        // when it fits, keeping the newest stories at FULL fidelity and the
+        // older ones readable with their latest revision.
+        // Two entries, each with two revisions carrying a padded body so the
+        // rung sizes have real spread. The array is ordered NEWEST-FIRST
+        // (mirroring production: mergeServerStoryList seeds server entries in
+        // createdDate-descending order). keepFull = max(1, ceil(2/2)) = 1, so
+        // rung 2 keeps entry 0 (the newest, story-new) whole and trims entry
+        // 1 (story-old) to its latest revision; rung 3 would additionally
+        // null entry 1's data. Measured serialized sizes for this fixture:
+        //   rung 1 (both full)                                   = 2257 chars
+        //   rung 2 (entry 0 full, entry 1 latest-revision-only)  = 1903 chars
+        //   rung 3 (entry 0 full, entry 1 metadata-only)         = 1326 chars
+        // QUOTA_LIMIT = 2100 sits between rung 1 and rung 2, so rung 2 is the
+        // first accepted rung — the exact persisted shape is asserted below.
+        // (The padded revision bodies make each rung's size deterministic:
+        // 'x'.repeat(300)+' latest' serializes to exactly 321 chars, etc.)
+        const QUOTA_LIMIT = 2100;
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const originalSetItem = storageProto.setItem;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(function (this: Storage, key: string, value: string) {
+                if (String(value).length > QUOTA_LIMIT) {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                return originalSetItem.call(this, key, value);
+            });
+
+        // Two entries, each with two revisions carrying a padded body (the
+        // padding is what spreads the rung sizes apart — see the measured
+        // sizes in the QUOTA_LIMIT comment above).
+        const entries = [
+            // Index 0 = the NEWEST story (production ordering is
+            // createdDate-descending) — rung 2 keeps it at full fidelity.
+            makeEntry({
+                id: 2,
+                storyId: 'story-new',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'New Chapter',
+                            plotpoints: ['p'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [
+                                { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
+                                { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
+                            ]
+                        }
+                    ],
+                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-02T00:00:00.000Z' }
+                }
+            }),
+            // Index 1 = the older story — rung 2 trims it to its latest revision.
+            makeEntry({
+                id: 1,
+                storyId: 'story-old',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Old Chapter',
+                            plotpoints: ['p'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [
+                                { content: 'x'.repeat(300) + ' old', wordCount: 3, generationTimeMs: 1 },
+                                { content: 'x'.repeat(300) + ' latest', wordCount: 3, generationTimeMs: 2 }
+                            ]
+                        }
+                    ],
+                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+                }
+            })
+        ];
+
+        saveRecordsToStorage(entries);
+
+        const raw = localStorage.getItem('storyGenerator:records');
+        expect(raw).not.toBeNull();
+        const parsed = JSON.parse(raw!) as StoryEntry[];
+        expect(parsed.length).toBe(2);
+
+        // Rung 2 engaged, NOT rung 3/4: the newest entry (index 0) keeps BOTH
+        // revisions (full fidelity), and the older entry (index 1) keeps its
+        // LATEST revision body (chapter content survives — only the older
+        // revision was shed).
+        expect(parsed[0].data).not.toBeNull();
+        expect(parsed[0].data!.chapters[0].revisions).toEqual([
+            { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
+            { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
+        ]);
+        expect(parsed[1].data).not.toBeNull();
+        expect(parsed[1].data!.chapters[0].revisions).toEqual([
+            { content: 'x'.repeat(300) + ' latest', wordCount: 3, generationTimeMs: 2 }
+        ]);
+
+        setItem.mockRestore();
+    });
+
     it('gives up silently when storage is entirely unavailable', () => {
         // Both attempts fail (e.g. storage disabled / private mode edge) —
         // the call must not throw (the in-memory store keeps working).
