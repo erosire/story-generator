@@ -127,7 +127,11 @@ const moduleClearTimeout: typeof globalThis.clearTimeout = globalThis.clearTimeo
 // aborted tx made NO changes (abort rolls back), so settling as "not
 // written / not read" is accurate; resolve/reject are first-call-wins, so a
 // tx that completes normally after an abort attempt cannot double-settle.
-const STALL_WATCHDOG_MS = 500;
+//
+// 2000ms (not lower): structured-clone puts of multi-MB chapter payloads are
+// legitimate on slow mobile disks — a watchdog this size never fires on a
+// healthy (even slow) write, only on the never-completing zombie case.
+const STALL_WATCHDOG_MS = 2000;
 
 const armTxWatchdog = (tx: IDBTransaction, settle: () => void): (() => void) => {
     const handle = moduleSetTimeout(() => {

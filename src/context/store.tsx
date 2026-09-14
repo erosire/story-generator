@@ -169,9 +169,15 @@ export const deleteStoryRecordFromStorage = (storyId: string) => {
 // rewritten on every tick — and once the blob exceeded the ~5MB quota, the
 // weight-shedding ladder DROPPED OTHER STORIES' cached chapter data to fit
 // (one story generating ⇒ every other story's offline cache wiped). Per
-// story, the quota ladder (saveSingleStoryToStorage) can only shed the story
-// that caused the write: full content → latest revision per chapter →
-// metadata only — that story's LIST entry always survives offline.
+// story, the quota ladder (saveStoryAtRung) can only shed the story that
+// caused the write: full content → latest revision per chapter → metadata
+// only — that story's LIST entry always survives offline. MAKE-ROOM (pass 2
+// in saveRecordsToStorage) is the single exception: when a story fails ALL
+// of its own rungs because the ORIGIN-WIDE quota is exhausted by the other
+// stories, the OLDEST cached stories are degraded one rung at a time (each
+// step recoverable from the IndexedDB mirror at the next boot) until it
+// fits — so "cache write failed" only ever means storage is genuinely
+// unavailable or truly full.
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
 // that don't survive across sessions (error, isProcessing, serverProcessing).
@@ -488,38 +494,52 @@ const trimToLatestRevisions = (entry: PersistableStoryEntry): PersistableStoryEn
     };
 };
 
+// Shed rung of a story's cached payload — the ladder (lightest last):
+//   0 = full fidelity (all revisions)
+//   1 = latest revision per chapter
+//   2 = metadata-only (data: null) — the story list always survives offline
+const buildShedRung = (entry: PersistableStoryEntry, rung: number): PersistableStoryEntry => {
+    if (rung >= 2) return { ...entry, data: null };
+    if (rung === 1) return trimToLatestRevisions(entry);
+    return entry;
+};
+
+// OLDEST-FIRST comparator for make-room shedding (see saveRecordsToStorage
+// pass 2). Keyed by lastActionedAt (client-owned user-action stamp) falling
+// back to createdDate — the same recency key the sidebar sorts by. Stories
+// with no usable timestamp sort first (we know least about them, so they are
+// the safest to shed).
+const oldestFirst = (a: PersistableStoryEntry, b: PersistableStoryEntry): number => {
+    const timeOf = (entry: PersistableStoryEntry): number => {
+        const parsed = Date.parse(entry.lastActionedAt || entry.createdDate || '');
+        return Number.isNaN(parsed) ? 0 : parsed;
+    };
+    return timeOf(a) - timeOf(b);
+};
+
 /**
  * Write ONE story's persistable record to its own localStorage key
- * ('storyGenerator:story:<storyId>'). Writes only when the payload actually
- * changed (cheap string comparison against the stored value) so a poll tick
- * for one story never rewrites the other stories' keys.
+ * ('storyGenerator:story:<storyId>') at a given minimum shed rung. Writes
+ * only when the payload actually changed (cheap string comparison against
+ * the stored value) so a poll tick for one story never rewrites the other
+ * stories' keys.
  *
- * PER-STORY QUOTA LADDER: each rung is serialized lazily and ATTEMPTED
- * against the real localStorage.setItem, so a payload that exceeds the quota
- * falls through to the next-lighter rung instead of dropping everything in
- * one step. The rungs shed THIS STORY ONLY — other stories' keys are never
- * touched (that is the whole point of the per-story layout):
- *   1. full fidelity (all revisions)
- *   2. latest revision per chapter
- *   3. metadata-only (data: null) — the story list always survives offline
- * If even the metadata-only rung fails (storage disabled / private mode),
- * returns false — the in-memory store keeps working for this session and the
- * IndexedDB mirror (which never sheds) holds the full payload for recovery.
+ * QUOTA LADDER: each rung from `minRung` up is serialized lazily and
+ * ATTEMPTED against the real localStorage.setItem, so a payload that exceeds
+ * the quota falls through to the next-lighter rung instead of dropping
+ * everything in one step.
+ *
+ * Returns the rung index that was accepted (>= minRung), or -1 when every
+ * rung failed (storage disabled / private mode / origin quota exhausted —
+ * the caller decides whether make-room shedding can help, see
+ * saveRecordsToStorage pass 2).
  */
-const saveSingleStoryToStorage = (entry: PersistableStoryEntry): boolean => {
+const saveStoryAtRung = (entry: PersistableStoryEntry, minRung: number): number => {
     const key = storyStorageKey(entry.storyId);
-    const attempts: Array<() => string> = [
-        // Rung 1: full fidelity — every revision of every chapter.
-        () => JSON.stringify(entry),
-        // Rung 2: revision history trimmed to the latest per chapter.
-        () => JSON.stringify(trimToLatestRevisions(entry)),
-        // Rung 3: metadata-only (tiny — almost always fits).
-        () => JSON.stringify({ ...entry, data: null })
-    ];
-    for (const buildAttempt of attempts) {
+    for (let rung = Math.max(0, minRung); rung <= 2; rung++) {
         let incoming: string;
         try {
-            incoming = buildAttempt();
+            incoming = JSON.stringify(buildShedRung(entry, rung));
         } catch {
             // Serialization failed (poisoned record) — shed to the next rung.
             continue;
@@ -530,13 +550,12 @@ const saveSingleStoryToStorage = (entry: PersistableStoryEntry): boolean => {
             }
             // Write accepted (or unchanged) — this rung is the story's new
             // cache content; stop shedding.
-            return true;
+            return rung;
         } catch {
-            // QuotaExceededError (or storage unavailable) — shed THIS story
-            // further and retry. Other stories are unaffected.
+            // QuotaExceededError (or storage unavailable) — shed further.
         }
     }
-    return false;
+    return -1;
 };
 
 /** Remove every per-story key whose storyId is absent from `records`. */
@@ -565,6 +584,30 @@ const removeOrphanStoryKeys = (validIds: Set<string>): void => {
  * progress (a generating/expanding job re-persists every poll tick) only
  * ever rewrites that story's key.
  *
+ * PASS 1 — per-story quota ladder: every story saves at its own lightest
+ * rung (full → trimmed revisions → metadata-only). A story that sheds itself
+ * degrades only ITS OWN cached data.
+ *
+ * PASS 2 — make room (LAST RESORT): localStorage quota is ORIGIN-WIDE (~5MB
+ * shared by every key), so a story can fail ALL of its own rungs purely
+ * because the OTHER cached stories fill the budget — without this pass a
+ * full cache would mark the story (and via cacheWriteFailed, every tile) as
+ * "cache write failed" even though plenty of shedable content exists. When
+ * a story failed its own ladder, the OLDEST cached stories (recency key:
+ * lastActionedAt || createdDate — the sidebar's own sort key) are degraded
+ * ONE RUNG at a time (trim revision history → metadata-only), retrying the
+ * failed story's full ladder after each step, until it fits or nothing
+ * shedable remains. This is the old single-blob ladder's space-reclaiming
+ * job, but scoped: it only engages on a genuine failure, sheds progressively
+ * (never jumps straight to wiping content), and every shed payload stays
+ * recoverable — the IndexedDB mirror never sheds, and
+ * upgradeRecordsFromIdbMirror restores the chapters at the next boot.
+ *
+ * lastSaveFailed (→ store.cacheWriteFailed → the sidebar's "not saved" tile
+ * state) is set ONLY when a story still could not be saved after everything
+ * shedable was shed — i.e. storage is genuinely unavailable or truly full.
+ * A metadata-only save is a SUCCESSFUL save.
+ *
  * ORPHAN CLEANUP: keys for stories no longer in `records` (deleted) are
  * removed, so deleting a story purges its cache without a full-blob rewrite.
  *
@@ -579,11 +622,7 @@ const removeOrphanStoryKeys = (validIds: Set<string>): void => {
 export const saveRecordsToStorage = (records: StoryEntry[]): void => {
     const serializable = records.map(toPersistable);
 
-    // Session-scoped cache-health flag: true when ANY story could not write
-    // its localStorage key (storage unavailable — iOS private mode, disabled
-    // storage, a single story too big for a hard quota). Read by the
-    // provider's persist effect → store.cacheWriteFailed → the sidebar's
-    // "not saved" tile state. Reset optimistically at the start of each save.
+    // Reset the cache-health flag optimistically at the start of each save.
     lastSaveFailed = false;
     // Mirror the FULL payload to IndexedDB FIRST (fire-and-forget) — the
     // durable tier never sheds, so even when localStorage must degrade the
@@ -597,16 +636,68 @@ export const saveRecordsToStorage = (records: StoryEntry[]): void => {
         }
     });
 
-    // Per-story writes: a story whose key write fails sheds ITS OWN weight
-    // only — every other story's cached data stays exactly as it was.
-    let anyStoryFailed = false;
+    // ── Pass 1: every story saves at its own lightest rung ────────────────
+    // savedRungs tracks the rung each story's key currently holds (needed by
+    // pass 2 to know how much shed headroom a story has left).
+    const savedRungs = new Map<string, number>();
+    const failed: PersistableStoryEntry[] = [];
     serializable.forEach((entry) => {
-        if (!saveSingleStoryToStorage(entry)) anyStoryFailed = true;
+        const rung = saveStoryAtRung(entry, 0);
+        if (rung >= 0) savedRungs.set(entry.storyId, rung);
+        else failed.push(entry);
     });
+
+    // ── Pass 2: make room for stories the shared quota could not fit ──────
+    // Only engages on a genuine pass-1 failure — the common poll-tick save
+    // (one story updated, everything fits) never touches other stories.
+    if (failed.length > 0) {
+        // Shed candidates: stories that DID save, oldest first. A story
+        // already at rung 2 (metadata-only) has nothing left to give.
+        const shedable = serializable
+            .filter((entry) => savedRungs.has(entry.storyId))
+            .sort(oldestFirst);
+        for (const failedEntry of failed) {
+            let saved = false;
+            // Degrade one story ONE RUNG per step (oldest first), retrying
+            // the failed story's FULL ladder after every step — and keep
+            // cycling while ANY story still has shed headroom. A single pass
+            // over the list is not enough: one big old story may need to go
+            // trim → metadata-only before the failed story fits.
+            let headroom = true;
+            while (!saved && headroom) {
+                headroom = false;
+                for (const other of shedable) {
+                    const currentRung = savedRungs.get(other.storyId) ?? 2;
+                    if (currentRung >= 2) continue; // already minimal — nothing to take
+                    headroom = true;
+                    // Degrade the other story ONE rung further (trim first,
+                    // metadata-only only if trimming was not enough).
+                    const shedRung = saveStoryAtRung(other, currentRung + 1);
+                    if (shedRung >= 0) savedRungs.set(other.storyId, shedRung);
+                    // Space changed — give the failed story its FULL ladder
+                    // back (it deserves a chance at full fidelity, not just
+                    // the rung it failed at).
+                    const retryRung = saveStoryAtRung(failedEntry, 0);
+                    if (retryRung >= 0) {
+                        savedRungs.set(failedEntry.storyId, retryRung);
+                        saved = true;
+                        break;
+                    }
+                }
+            }
+            if (!saved) {
+                // Nothing shedable remained — storage is genuinely
+                // unavailable or truly full. The in-memory store keeps
+                // working for this session and the IndexedDB mirror (which
+                // never sheds) holds the full payload for recovery.
+                lastSaveFailed = true;
+            }
+        }
+    }
+
     // Purge keys of stories removed from the records list (deleted) so a
     // deleted story can never resurrect from a stale key on the next boot.
     removeOrphanStoryKeys(new Set(serializable.map((entry) => entry.storyId)));
-    lastSaveFailed = anyStoryFailed;
 };
 
 /**

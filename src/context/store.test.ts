@@ -26,6 +26,7 @@ import {
     upgradeRecordsFromIdbMirror,
     mergeServerStoryList,
     saveRecordsToStorage,
+    didLastSaveFail,
     type StoryEntry
 } from './store';
 import { storyCacheGet, storyCacheResetForTests } from './storyCache';
@@ -465,6 +466,206 @@ describe('saveRecordsToStorage (synchronous offline cache, per-story keys)', () 
         ]);
 
         setItem.mockRestore();
+    });
+
+    // Shared fixture for the make-room tests: two identically-shaped stories
+    // with big chapter payloads (two padded revisions each). Sizes below are
+    // MEASURED from the exact JSON the store writes (toPersistable output ==
+    // the entry minus its transient fields — JSON.stringify drops undefined),
+    // so the origin-wide quota mock's thresholds are exact, not guessed.
+    const bigChapters = (pad: string) => ({
+        chapters: [
+            {
+                chapterNumber: '1',
+                chapterIndex: 0,
+                title: 'Ch',
+                plotpoints: ['p'],
+                expanded: true,
+                canReExpand: true,
+                revisions: [
+                    { content: pad + ' old', wordCount: 3, generationTimeMs: 1 },
+                    { content: pad + ' latest', wordCount: 3, generationTimeMs: 2 }
+                ]
+            }
+        ],
+        meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+    });
+    const trimmedChapters = (d: { chapters: Array<{ revisions: Array<unknown> }> }) => ({
+        ...d,
+        chapters: [{ ...d.chapters[0], revisions: [d.chapters[0].revisions[d.chapters[0].revisions.length - 1]] }]
+    });
+    // Size of the exact JSON a shed rung writes for `entry` with `data`
+    // (toPersistable drops the transient fields — JSON.stringify drops
+    // undefined — so this matches the store's serialized output exactly).
+    const persistedSize = (e: StoryEntry, data: unknown): number =>
+        JSON.stringify({ ...e, data, isProcessing: undefined, error: undefined, serverProcessing: undefined })
+            .length;
+    // Origin-wide quota mock: setItem throws when the TOTAL size of all
+    // tracked keys would exceed the limit (how the browser's ~5MB per-origin
+    // budget actually behaves — unlike the per-value mocks above).
+    const installOriginQuotaMock = (quotaLimit: number) => {
+        const sizes = new Map<string, number>();
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const originalSetItem = storageProto.setItem;
+        const originalRemoveItem = storageProto.removeItem;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(function (this: Storage, key: string, value: string) {
+                let projected = String(value).length;
+                sizes.forEach((size, k) => {
+                    if (k !== key) projected += size;
+                });
+                if (projected > quotaLimit) {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                originalSetItem.call(this, key, value);
+                sizes.set(key, String(value).length);
+            });
+        const removeItem = vi
+            .spyOn(storageProto, 'removeItem')
+            .mockImplementation(function (this: Storage, key: string) {
+                sizes.delete(key);
+                originalRemoveItem.call(this, key);
+            });
+        return {
+            restore: () => {
+                setItem.mockRestore();
+                removeItem.mockRestore();
+            }
+        };
+    };
+
+    it('makes room for a story the full cache cannot fit by shedding the oldest story one rung', () => {
+        // REGRESSION for the "cache write failed" report: pass 1 sheds only
+        // the story that caused the write — but the quota is ORIGIN-WIDE, so
+        // once the other cached stories fill the budget a growing story
+        // fails ALL of its own rungs (even metadata-only) and every tile
+        // flipped to "cache write failed". Pass 2 must reclaim space from
+        // the OLDEST cached story — one rung at a time (trim revision
+        // history BEFORE dropping content) — until the story fits.
+        const ancient = makeEntry({
+            id: 1,
+            storyId: 'shed-old-1',
+            title: 'Shed Old',
+            createdDate: '2026-08-01T00:00:00.000Z',
+            data: bigChapters('x'.repeat(400))
+        });
+        const active = makeEntry({
+            id: 2,
+            storyId: 'shed-new-1',
+            title: 'Shed New',
+            createdDate: '2026-08-02T00:00:00.000Z',
+            data: bigChapters('y'.repeat(400))
+        });
+
+        // F/T/M = the full / trimmed / metadata-only payload sizes of one
+        // story (identical fixtures → identical sizes). The quota admits the
+        // FIRST story's full payload but NONE of the second story's rungs
+        // while the first is full — and after the first sheds to trimmed,
+        // only the second's metadata-only rung fits:
+        //   pass 1:      F ≤ LIMIT ✓;  F+F, F+T, F+M > LIMIT → active fails
+        //   make-room:   shed ancient to T; retry: T+F, T+T > LIMIT,
+        //                T+M ≤ LIMIT → active saves metadata-only.
+        // LIMIT = F + 100 satisfies every inequality with ≥100 chars of
+        // margin (base payload ≈ 300 chars, one padded revision ≈ 445).
+        const fullSize = persistedSize(active, active.data);
+        const QUOTA_LIMIT = fullSize + 100;
+        const mock = installOriginQuotaMock(QUOTA_LIMIT);
+        // try/finally: a failed assertion must not leak the quota mock into
+        // subsequent tests (a stale sizes map would make every later
+        // localStorage write throw and cascade failures).
+        try {
+            saveRecordsToStorage([ancient, active]);
+
+            // The active story WAS saved — at its metadata-only rung (the
+            // ladder's floor). NOT a cache-write failure.
+            const savedActive = JSON.parse(
+                localStorage.getItem('storyGenerator:story:shed-new-1')!
+            ) as StoryEntry;
+            expect(savedActive.data).toBeNull();
+
+            // The oldest story degraded EXACTLY ONE rung to make room:
+            // revision history trimmed, chapter content KEPT (never nulled
+            // outright).
+            const savedOld = JSON.parse(
+                localStorage.getItem('storyGenerator:story:shed-old-1')!
+            ) as StoryEntry;
+            expect(savedOld.data).not.toBeNull();
+            expect(savedOld.data!.chapters[0].revisions).toEqual([
+                { content: 'x'.repeat(400) + ' latest', wordCount: 3, generationTimeMs: 2 }
+            ]);
+
+            // A metadata-only save is a successful save — no write-failed
+            // state.
+            expect(didLastSaveFail()).toBe(false);
+        } finally {
+            mock.restore();
+        }
+    });
+
+    it('flags the write failure only after every shedable story was exhausted', () => {
+        // Same quota as the make-room test, but the active story's key can
+        // NEVER accept a write (simulating storage that is truly full /
+        // unavailable for this story). The make-room pass must still run to
+        // exhaustion — the oldest story sheds trim → metadata-only — and
+        // only THEN is lastSaveFailed set.
+        const ancient = makeEntry({
+            id: 1,
+            storyId: 'shed-old-2',
+            title: 'Shed Old',
+            createdDate: '2026-08-01T00:00:00.000Z',
+            data: bigChapters('x'.repeat(400))
+        });
+        const active = makeEntry({
+            id: 2,
+            storyId: 'hopeless-1',
+            title: 'Shed New',
+            createdDate: '2026-08-02T00:00:00.000Z',
+            data: bigChapters('y'.repeat(400))
+        });
+
+        const fullSize = persistedSize(active, active.data);
+        const QUOTA_LIMIT = fullSize + 100;
+        const sizes = new Map<string, number>();
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const originalSetItem = storageProto.setItem;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(function (this: Storage, key: string, value: string) {
+                // This story's key is unwritable no matter the payload.
+                if (key === 'storyGenerator:story:hopeless-1') {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                let projected = String(value).length;
+                sizes.forEach((size, k) => {
+                    if (k !== key) projected += size;
+                });
+                if (projected > QUOTA_LIMIT) {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                originalSetItem.call(this, key, value);
+                sizes.set(key, String(value).length);
+            });
+
+        // try/finally (see the make-room test above — a failed assertion
+        // must not leak the quota mock into subsequent tests).
+        try {
+            saveRecordsToStorage([ancient, active]);
+
+            // The shedable story was degraded ALL the way to metadata-only
+            // (the pass cycles until no shed headroom remains)...
+            const savedOld = JSON.parse(
+                localStorage.getItem('storyGenerator:story:shed-old-2')!
+            ) as StoryEntry;
+            expect(savedOld.data).toBeNull();
+            // ...the hopeless story was never written (its key does not
+            // exist)...
+            expect(localStorage.getItem('storyGenerator:story:hopeless-1')).toBeNull();
+            // ...and only then the write-failure state is flagged.
+            expect(didLastSaveFail()).toBe(true);
+        } finally {
+            setItem.mockRestore();
+        }
     });
 
     it('engages the intermediate rung: trims revisions before dropping chapter content', () => {
