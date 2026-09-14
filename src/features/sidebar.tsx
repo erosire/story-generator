@@ -1,15 +1,20 @@
 // Sidebar FEATURE: vertical list of all stories in order.
 //
-// Replaces the previous horizontal tab bar. Each tile shows the story title,
-// a chapter-count badge, a processing indicator, a CACHED-LOCALLY icon, and
-// an "x" delete control pinned to the tile's top-right corner. Clicking the
-// tile body selects it (store.selected = entry) so the content area displays
-// that story; clicking the "x" permanently deletes that story (identified
-// DELETE).
+// Replaces the previous horizontal tab bar. Each tile is a two-row card:
+// row 1 = the story title (the "x" delete control pinned to the tile's
+// top-right corner, unchanged), row 2 = the cached-locally icon followed by
+// the status badges (chapter count, processing indicator):
+//
+//     [Story title]              [x]
+//     [Icon] [Chapters] [⏳]
+//
+// Clicking the tile body selects it (store.selected = entry) so the content
+// area displays that story; clicking the "x" permanently deletes that story
+// (identified DELETE).
 //
 // CACHED-LOCALLY INDICATOR (three states, data-testid "story-cached-<storyId>"
-// in every state): each tile carries a small glyph after the title showing the
-// story's LOCAL-SAVE state:
+// in every state, leading the tile's meta row): each tile carries a small
+// glyph showing the story's LOCAL-SAVE state:
 //   - disk icon (title "Cached locally") — entry.data non-null: the story's
 //     chapters are stored in this browser (hydrated from the localStorage /
 //     IndexedDB cache or fetched into it this session) and viewable offline.
@@ -364,29 +369,26 @@ const StoryTitle = styled('span', {
     whiteSpace: 'nowrap' as const
 });
 
-// Cached-locally icon — small disk glyph rendered inline after the title on
-// the tile's first row when the story's content is cached in this browser
-// (entry.data non-null — hydrated from localStorage or fetched this session;
-// see the CACHED-LOCALLY ICON note in the file header). Sized to the title's
-// line box (fontSize.sm, ~11px) and vertically aligned so it sits on the
-// title's baseline without stretching the row. Purely informational: rendered
-// inside the tile's select button (like the badges), no click behavior.
+// Cached-locally icon — small disk glyph rendered at the START of the tile's
+// meta row (the second row, before the chapter-count badge) when the story's
+// content is cached in this browser (entry.data non-null — hydrated from
+// localStorage or fetched this session; see the CACHED-LOCALLY ICON note in
+// the file header). Sized to the badge line box (fontSize.sm, ~11px). Purely
+// informational: rendered inside the tile's select button (like the badges),
+// no click behavior.
 const CachedIcon = styled('span', {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
     flex: '0 0 auto',
-    // Negative margins keep the glyph tight against the truncated title
-    // without adding width to the row.
-    margin: '0 0 0 4px',
     color: theme.textMuted,
     fontSize: theme.fontSize.sm,
     lineHeight: 1
 });
 
-// NOT-SAVED variant of the cached icon — same slot, warning tint + glyph.
-// Rendered instead of the disk when the story HAS cached content but the
-// browser can no longer WRITE the cache (store.cacheWriteFailed — iOS
+// NOT-SAVED variant of the cached icon — same meta-row slot, warning tint +
+// glyph. Rendered instead of the disk when the story HAS cached content but
+// the browser can no longer WRITE the cache (store.cacheWriteFailed — iOS
 // private mode / disabled storage): what the user sees is cached but the
 // next change will not be saved.
 const NotSavedIcon = styled('span', {
@@ -394,7 +396,6 @@ const NotSavedIcon = styled('span', {
     alignItems: 'center',
     justifyContent: 'center',
     flex: '0 0 auto',
-    margin: '0 0 0 4px',
     color: theme.warning,
     fontSize: theme.fontSize.sm,
     lineHeight: 1
@@ -756,16 +757,17 @@ export const StorySidebar: React.FC = React.memo(() => {
                     <StoryEntry key={entry.id}>
                         {isSelected ? (
                             <StoryItemSelected {...itemProps} className={`sg-story-selected${processingClass}`}>
-                                <StoryTitle>
-                                    {entry.title}
-                                    {/* Cached-state indicator — three-state glyph
-                                        (saved / not-cached / write-failed; see
-                                        cachedIndicator above). Rendered INSIDE
-                                        the title row so it truncates with the
-                                        row rather than overlapping the "x". */}
-                                    {cachedIndicator}
-                                </StoryTitle>
+                                {/* Row 1: the title alone (the "x" delete control
+                                    is absolutely pinned to the tile's top-right
+                                    corner, unchanged). */}
+                                <StoryTitle>{entry.title}</StoryTitle>
+                                {/* Row 2: cached-state indicator FIRST, then the
+                                    status badges — "[Icon] [Chapters]" (the
+                                    three-state glyph: saved / not-cached /
+                                    write-failed; see cachedIndicator above).
+                                    testid stays "story-cached-<storyId>". */}
                                 <StoryTileMeta>
+                                    {cachedIndicator}
                                     {chapterBadge && (
                                         <Badge variant="accent" elevated>
                                             {chapterBadge}
@@ -781,14 +783,11 @@ export const StorySidebar: React.FC = React.memo(() => {
                             </StoryItemSelected>
                         ) : (
                             <StoryItem {...itemProps} className={`sg-story-item${processingClass}`}>
-                                <StoryTitle>
-                                    {entry.title}
-                                    {/* Same cached-state indicator on the
-                                        unselected variant — identical
-                                        semantics, neutral tone. */}
-                                    {cachedIndicator}
-                                </StoryTitle>
+                                {/* Same two-row layout on the unselected
+                                    variant: title row, then icon + badges. */}
+                                <StoryTitle>{entry.title}</StoryTitle>
                                 <StoryTileMeta>
+                                    {cachedIndicator}
                                     {chapterBadge && <Badge variant="neutral">{chapterBadge}</Badge>}
                                     {processingBadge && (
                                         <Badge variant="neutral">

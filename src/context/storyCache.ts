@@ -102,6 +102,47 @@ const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
 // late-landing put can never resurrect wiped records into the next test.
 let queueGeneration = 0;
 
+// REAL timers captured at MODULE LOAD. vitest's useFakeTimers() replaces
+// globalThis.setTimeout/clearTimeout mid-test — a watchdog armed with the
+// (faked) globals would itself be swallowed by the fake clock and die in the
+// useRealTimers() teardown, exactly when it needs to fire (see the
+// transaction watchdog below). The module-load capture is immune.
+const moduleSetTimeout: typeof globalThis.setTimeout = globalThis.setTimeout.bind(globalThis);
+const moduleClearTimeout: typeof globalThis.clearTimeout = globalThis.clearTimeout.bind(globalThis);
+
+// Transaction watchdog: fake-indexeddb schedules EVERY IndexedDB event
+// (transaction start, request success, transaction commit) through
+// setImmediate. vitest's useFakeTimers() replaces setImmediate with the fake
+// clock, and useRealTimers() DISCARDS still-pending fake-immediate callbacks.
+// A transaction whose start/commit task is pending across that switch is
+// therefore never started and never finished: it stays "active" forever and —
+// because transactions serialize on the database — every later transaction
+// with an overlapping scope stalls behind it, deadlocking the whole mirror
+// tier until the process restarts (observed as the App.test.tsx
+// "Hook timed out" afterEach flakes around fake-timer tests).
+//
+// The watchdog aborts such zombie transactions after STALL_WATCHDOG_MS of
+// REAL time (module-captured timer, immune to the fake clock) and settles
+// the surrounding promise, unblocking the database's transaction queue. The
+// aborted tx made NO changes (abort rolls back), so settling as "not
+// written / not read" is accurate; resolve/reject are first-call-wins, so a
+// tx that completes normally after an abort attempt cannot double-settle.
+const STALL_WATCHDOG_MS = 500;
+
+const armTxWatchdog = (tx: IDBTransaction, settle: () => void): (() => void) => {
+    const handle = moduleSetTimeout(() => {
+        try {
+            // Marks the tx finished synchronously inside fake-indexeddb —
+            // this is what releases the database's transaction queue.
+            tx.abort();
+        } catch {
+            // Already committing/finished — the tx was healthy after all.
+        }
+        settle();
+    }, STALL_WATCHDOG_MS);
+    return () => moduleClearTimeout(handle);
+};
+
 // Feature test: is a usable IndexedDB present? (jsdom: no; SSR: no; private
 // Safari: yes — IndexedDB works there even when localStorage throws, which is
 // exactly why this tier exists).
@@ -172,6 +213,21 @@ export const storyCacheGet = (): Promise<PersistableStoryEntryShape[] | null> =>
             (db) =>
                 new Promise<PersistableStoryEntryShape[] | null>((resolve, reject) => {
                     const tx = db.transaction(STORE_NAME, 'readonly');
+                    // Zombie-tx watchdog (see armTxWatchdog): a readonly tx
+                    // stranded by the fake-timer teardown would block every
+                    // later overlapping tx — settle as "nothing cached"
+                    // (equivalent to the tier's unavailable fallback).
+                    const cancelWatchdog = armTxWatchdog(tx, () => resolve(null));
+                    const done = (value: PersistableStoryEntryShape[] | null) => {
+                        cancelWatchdog();
+                        db.close();
+                        resolve(value);
+                    };
+                    const fail = (error: unknown) => {
+                        cancelWatchdog();
+                        db.close();
+                        reject(error);
+                    };
                     const store = tx.objectStore(STORE_NAME);
                     const keysRequest = store.getAllKeys(storyKeyRange());
                     keysRequest.onsuccess = () => {
@@ -179,14 +235,8 @@ export const storyCacheGet = (): Promise<PersistableStoryEntryShape[] | null> =>
                         if (keys.length === 0) {
                             // No per-story keys → try the legacy single-blob key.
                             const legacy = store.get(LEGACY_RECORDS_KEY);
-                            legacy.onsuccess = () => {
-                                db.close();
-                                resolve(legacy.result ?? null);
-                            };
-                            legacy.onerror = () => {
-                                db.close();
-                                reject(legacy.error ?? new Error('IndexedDB legacy get failed'));
-                            };
+                            legacy.onsuccess = () => done(legacy.result ?? null);
+                            legacy.onerror = () => fail(legacy.error ?? new Error('IndexedDB legacy get failed'));
                             return;
                         }
                         // Read every per-story entry, preserving the key order
@@ -199,21 +249,12 @@ export const storyCacheGet = (): Promise<PersistableStoryEntryShape[] | null> =>
                             get.onsuccess = () => {
                                 results[index] = get.result;
                                 pending--;
-                                if (pending === 0) {
-                                    db.close();
-                                    resolve(results);
-                                }
+                                if (pending === 0) done(results);
                             };
-                            get.onerror = () => {
-                                db.close();
-                                reject(get.error ?? new Error('IndexedDB get failed'));
-                            };
+                            get.onerror = () => fail(get.error ?? new Error('IndexedDB get failed'));
                         });
                     };
-                    keysRequest.onerror = () => {
-                        db.close();
-                        reject(keysRequest.error ?? new Error('IndexedDB getAllKeys failed'));
-                    };
+                    keysRequest.onerror = () => fail(keysRequest.error ?? new Error('IndexedDB getAllKeys failed'));
                 })
         )
         .catch(() => null);
@@ -252,62 +293,68 @@ export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<bo
             traceLog(`set SKIPPED gen=${generation} (current ${queueGeneration})`);
             return Promise.resolve(false);
         }
-        return dbPromise.then(
-            (db) =>
-                db
-                    ? new Promise<boolean>((resolve, reject) => {
-                          const tx = db.transaction(STORE_NAME, 'readwrite');
-                          const store = tx.objectStore(STORE_NAME);
-                          // First list the EXISTING per-story keys (source of
-                          // truth for both the skip check and orphan cleanup);
-                          // all puts/deletes are issued from its onsuccess,
-                          // inside the same transaction.
-                          const keysRequest = store.getAllKeys(storyKeyRange());
-                          keysRequest.onsuccess = () => {
-                              const existingKeys = new Set(
-                                  (keysRequest.result as IDBValidKey[]).map((k) => String(k))
-                              );
-                              const incomingKeys = new Set<string>();
-                              records.forEach((entry) => {
-                                  const key = STORY_KEY_PREFIX + entry.storyId;
-                                  incomingKeys.add(key);
-                                  const signature = JSON.stringify(entry);
-                                  const unchanged =
-                                      existingKeys.has(key) && mirrorSignatures.get(entry.storyId) === signature;
-                                  mirrorSignatures.set(entry.storyId, signature);
-                                  if (unchanged) return;
-                                  store.put(entry, key);
-                              });
-                              // Orphan cleanup: mirrored keys not present in the
-                              // incoming full set belong to deleted stories.
-                              existingKeys.forEach((key) => {
-                                  if (incomingKeys.has(key)) return;
-                                  mirrorSignatures.delete(key.slice(STORY_KEY_PREFIX.length));
-                                  store.delete(key);
-                              });
-                              // The pre-per-story blob is dead weight once the
-                              // per-story keys exist — remove it on every sync.
-                              store.delete(LEGACY_RECORDS_KEY);
-                          };
-                          keysRequest.onerror = () => {
-                              reject(keysRequest.error ?? new Error('IndexedDB getAllKeys failed'));
-                          };
-                          tx.oncomplete = () => {
-                              db.close();
-                              resolve(true);
-                          };
-                          tx.onerror = () => {
-                              db.close();
-                              reject(tx.error ?? new Error('IndexedDB put failed'));
-                          };
-                          tx.onabort = () => {
-                              db.close();
-                              reject(tx.error ?? new Error('IndexedDB put aborted'));
-                          };
-                      })
-                    : Promise.resolve(false)
-        );
-    });
+        return dbPromise.then((db) => {
+            if (!db) return Promise.resolve(false);
+            return new Promise<boolean>((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                // Zombie-tx watchdog (see armTxWatchdog): settle as "not
+                // written" and abort the tx so the database's transaction
+                // queue cannot deadlock behind it.
+                const cancelWatchdog = armTxWatchdog(tx, () => resolve(false));
+                const store = tx.objectStore(STORE_NAME);
+                // First list the EXISTING per-story keys (source of
+                // truth for both the skip check and orphan cleanup);
+                // all puts/deletes are issued from its onsuccess,
+                // inside the same transaction.
+                const keysRequest = store.getAllKeys(storyKeyRange());
+                keysRequest.onsuccess = () => {
+                    const existingKeys = new Set((keysRequest.result as IDBValidKey[]).map((k) => String(k)));
+                    const incomingKeys = new Set<string>();
+                    records.forEach((entry) => {
+                        const key = STORY_KEY_PREFIX + entry.storyId;
+                        incomingKeys.add(key);
+                        const signature = JSON.stringify(entry);
+                        const unchanged =
+                            existingKeys.has(key) && mirrorSignatures.get(entry.storyId) === signature;
+                        mirrorSignatures.set(entry.storyId, signature);
+                        if (unchanged) return;
+                        store.put(entry, key);
+                    });
+                    // Orphan cleanup: mirrored keys not present in the
+                    // incoming full set belong to deleted stories.
+                    existingKeys.forEach((key) => {
+                        if (incomingKeys.has(key)) return;
+                        mirrorSignatures.delete(key.slice(STORY_KEY_PREFIX.length));
+                        store.delete(key);
+                    });
+                    // The pre-per-story blob is dead weight once the
+                    // per-story keys exist — remove it on every sync.
+                    store.delete(LEGACY_RECORDS_KEY);
+                };
+                keysRequest.onerror = () => {
+                    cancelWatchdog();
+                    reject(keysRequest.error ?? new Error('IndexedDB getAllKeys failed'));
+                };
+                tx.oncomplete = () => {
+                    cancelWatchdog();
+                    db.close();
+                    resolve(true);
+                };
+                tx.onerror = () => {
+                    cancelWatchdog();
+                    db.close();
+                    reject(tx.error ?? new Error('IndexedDB put failed'));
+                };
+                tx.onabort = () => {
+                    cancelWatchdog();
+                    db.close();
+                    reject(tx.error ?? new Error('IndexedDB put aborted'));
+                };
+            });
+        });
+        // Never rejects (documented contract): a rejected op would surface as
+        // an unhandled rejection in the fire-and-forget mirror caller.
+    }).catch(() => false);
 };
 
 // Purge the mirror (story deletion writes the emptied records array through
@@ -317,27 +364,31 @@ export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<bo
 export const storyCacheClear = (): Promise<boolean> => {
     const dbPromise = openDatabase().catch(() => null);
     return enqueue(() =>
-        dbPromise.then(
-            (db) =>
-                db
-                    ? new Promise<boolean>((resolve, reject) => {
-                          const tx = db.transaction(STORE_NAME, 'readwrite');
-                          const store = tx.objectStore(STORE_NAME);
-                          // Remove every per-story key AND the legacy blob key.
-                          store.delete(storyKeyRange());
-                          store.delete(LEGACY_RECORDS_KEY);
-                          tx.oncomplete = () => {
-                              db.close();
-                              resolve(true);
-                          };
-                          tx.onerror = () => {
-                              db.close();
-                              reject(tx.error ?? new Error('IndexedDB delete failed'));
-                          };
-                      })
-                    : Promise.resolve(false)
-        )
-    );
+        dbPromise.then((db) => {
+            if (!db) return Promise.resolve(false);
+            return new Promise<boolean>((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                // Zombie-tx watchdog (see armTxWatchdog) — settle as "not
+                // cleared" and abort so the tx queue cannot deadlock.
+                const cancelWatchdog = armTxWatchdog(tx, () => resolve(false));
+                const store = tx.objectStore(STORE_NAME);
+                // Remove every per-story key AND the legacy blob key.
+                store.delete(storyKeyRange());
+                store.delete(LEGACY_RECORDS_KEY);
+                tx.oncomplete = () => {
+                    cancelWatchdog();
+                    db.close();
+                    resolve(true);
+                };
+                tx.onerror = () => {
+                    cancelWatchdog();
+                    db.close();
+                    reject(tx.error ?? new Error('IndexedDB delete failed'));
+                };
+            });
+        })
+        // Never rejects (same contract as storyCacheSet).
+    ).catch(() => false);
 };
 
 // Test isolation: vitest runs every test file in a fresh worker, but MULTIPLE
@@ -347,10 +398,13 @@ export const storyCacheClear = (): Promise<boolean> => {
 // records from "recovering" into the next test's empty-localStorage boot).
 // In the browser this is never called; the cache is meant to persist.
 //
-// HANG GUARD: the reset races the writeQueue with a 2s timeout. A queued put
-// whose completion was swallowed by a fake-timer teardown (vitest
-// useFakeTimers/useRealTimers transitions) would otherwise block the queue
-// forever and time out the afterEach hook.
+// HANG GUARD: the reset races the writeQueue with a timeout. A queued op
+// stranded by a fake-timer teardown (vitest useFakeTimers/useRealTimers
+// transitions — see the transaction watchdog above) would otherwise block
+// the queue forever and time out the afterEach hook. With the watchdog the
+// stranded op self-heals in ~STALL_WATCHDOG_MS (the tx is aborted and the
+// queue unblocks), so the races below rarely engage; they remain as a
+// backstop with generous margins.
 export const storyCacheResetForTests = async (): Promise<void> => {
     // Bump the generation FIRST: every put enqueued before this point becomes
     // stale and is skipped when its turn in the queue arrives. This is the
@@ -365,14 +419,14 @@ export const storyCacheResetForTests = async (): Promise<void> => {
     mirrorSignatures.clear();
     traceLog(`reset begin gen=${queueGeneration}`);
     // Drain: wait for the current queue tail so the clear below runs after
-    // every pending op. The writeQueue can STALL for seconds under
-    // fake-timer/act conditions (observed ~3.2s stalls in App.test.tsx's
-    // fake-timer tests), so the bail-out here must NOT be treated as "the
-    // queue is empty" — it only means "stop waiting". The direct-clear pass
-    // at the end handles whatever the queued clear missed.
+    // every pending op. The writeQueue can STALL under fake-timer/act
+    // conditions (the transaction watchdog above now aborts such stalls in
+    // ~500ms, but a bail-out is kept as a backstop) — bailing here must NOT
+    // be treated as "the queue is empty", only "stop waiting". The
+    // direct-clear pass at the end handles whatever the queued clear missed.
     const drained = await Promise.race([
         writeQueue.catch(() => undefined).then(() => true),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1500))
     ]);
     traceLog(drained ? 'reset drain done (settled)' : 'reset drain BAILED (queue stalled)');
     // Clear + verify via the queue (in-order with any remaining ops).
@@ -395,12 +449,18 @@ export const storyCacheResetForTests = async (): Promise<void> => {
                     const db = await openDatabase();
                     await new Promise<void>((resolve, reject) => {
                         const tx = db.transaction(STORE_NAME, 'readwrite');
+                        // Zombie-tx watchdog (see armTxWatchdog) — settle as
+                        // done; the verification read below re-checks and
+                        // re-clears on the next pass if the tx was aborted.
+                        const cancelWatchdog = armTxWatchdog(tx, () => resolve());
                         tx.objectStore(STORE_NAME).clear();
                         tx.oncomplete = () => {
+                            cancelWatchdog();
                             db.close();
                             resolve();
                         };
                         tx.onerror = () => {
+                            cancelWatchdog();
                             db.close();
                             reject(tx.error ?? new Error('IndexedDB clear failed'));
                         };
@@ -419,7 +479,7 @@ export const storyCacheResetForTests = async (): Promise<void> => {
                 return true;
             }
         }),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000))
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))
     ]);
     traceLog(cleared ? 'reset queued clear done' : 'reset queued clear BAILED');
     // Sever the queue: the remaining old-chain ops are all generation-stale
@@ -435,12 +495,16 @@ export const storyCacheResetForTests = async (): Promise<void> => {
             const db = await openDatabase();
             await new Promise<void>((resolve, reject) => {
                 const tx = db.transaction(STORE_NAME, 'readwrite');
+                // Zombie-tx watchdog (see armTxWatchdog).
+                const cancelWatchdog = armTxWatchdog(tx, () => resolve());
                 tx.objectStore(STORE_NAME).clear();
                 tx.oncomplete = () => {
+                    cancelWatchdog();
                     db.close();
                     resolve();
                 };
                 tx.onerror = () => {
+                    cancelWatchdog();
                     db.close();
                     reject(tx.error ?? new Error('IndexedDB clear failed'));
                 };

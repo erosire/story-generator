@@ -7,6 +7,7 @@
 // lives in src/App.tsx.
 
 export { BootstrapLayer } from './bootstrap';
+export { BackgroundCacheLayer } from './backgroundCache';
 export { Dashboard } from './dashboard';
 export type { DashboardProps } from './dashboard';
 export { HeaderControls } from './header';

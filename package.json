@@ -1,6 +1,6 @@
 {
     "name": "@erosire/story-generator",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "description": "Story Generator for Deployment",
     "type": "module",
     "main": "src/main.tsx",

@@ -959,9 +959,11 @@ describe('StoryGeneratorApp', () => {
     // Each tile shows a small disk icon (data-testid "story-cached-<storyId>")
     // when the story's content is cached in this browser (entry.data non-null
     // — hydrated from localStorage or fetched into the store this session).
-    // Server-metadata-only entries (data === null, never fetched here) render
-    // WITHOUT the icon.
-    it('shows the cached-locally icon on stories whose data is cached and omits it on metadata-only stories', async () => {
+    // Server-metadata-only entries (data === null) start with the cloud-off
+    // "not saved locally" variant — and are then PROGRESSIVELY FETCHED in the
+    // background (BackgroundCacheLayer), so the icon flips to the disk once
+    // the fetch lands and the data is cached.
+    it('shows the cached-locally icon on cached stories and background-fetches uncached ones', async () => {
         const fetchMock = globalThis.fetch as any;
         // One server story with NO cached data (metadata-only, never fetched
         // in this browser) and one cache-only story holding full chapter data
@@ -1019,18 +1021,22 @@ describe('StoryGeneratorApp', () => {
         // The icon is labelled for accessibility / hover tooltip.
         expect(screen.getByTestId('story-cached-cached-icon-1').getAttribute('title')).toBe('Cached locally');
 
-        // After the server list sync, the metadata-only story appears WITHOUT
-        // the disk icon — its data is still null (never fetched in this
-        // browser), so nothing of it is cached locally. It now carries the
-        // cloud-off "not saved locally" variant instead (same testid slot).
+        // After the server list sync, the metadata-only story appears with
+        // the cloud-off "not saved locally" variant (its data is null —
+        // nothing cached in this browser yet). Same testid slot.
         await waitFor(() => {
             expect(screen.getByTestId('story-tab-meta-only-1')).toBeDefined();
         });
-        const metaIcon = screen.queryByTestId('story-cached-meta-only-1');
-        expect(metaIcon).not.toBeNull();
-        expect(metaIcon!.getAttribute('title')).toBe(
-            'Not saved locally — open this story once while the server is reachable to cache it'
-        );
+
+        // The background cache layer then PROGRESSIVELY fetches the uncached
+        // story (no user interaction — the whole point) — its payload lands
+        // in the store, the records-persist effect caches it, and the icon
+        // flips to the disk "Cached locally" variant on its own.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-cached-meta-only-1').getAttribute('title')).toBe('Cached locally');
+        });
+        // …and the fetched payload is durable in the per-story records cache.
+        expect(readRecordsCacheRaw()).toContain('"storyId":"meta-only-1"');
     });
 
     // The icon appears on a story that had NO cached data once its content is
