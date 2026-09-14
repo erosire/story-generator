@@ -598,6 +598,18 @@ describe('saveRecordsToStorage (synchronous offline cache, per-story keys)', () 
             // A metadata-only save is a successful save — no write-failed
             // state.
             expect(didLastSaveFail()).toBe(false);
+
+            // Re-saving the SAME (unchanged) store entries must not re-bloat
+            // the shed story's key back to full fidelity: the fingerprint
+            // skip recognizes both stories as already-cached-unchanged and
+            // keeps the shed (trimmed) state on disk. The shed state
+            // persists until the next boot's mirror upgrade pass restores
+            // it, not on every poll tick.
+            const oldKeyAfterShed = localStorage.getItem('storyGenerator:story:shed-old-1');
+            const activeKeyAfterShed = localStorage.getItem('storyGenerator:story:shed-new-1');
+            saveRecordsToStorage([ancient, active]);
+            expect(localStorage.getItem('storyGenerator:story:shed-old-1')).toBe(oldKeyAfterShed);
+            expect(localStorage.getItem('storyGenerator:story:shed-new-1')).toBe(activeKeyAfterShed);
         } finally {
             mock.restore();
         }
@@ -720,6 +732,109 @@ describe('saveRecordsToStorage (synchronous offline cache, per-story keys)', () 
         ]);
 
         setItem.mockRestore();
+    });
+
+    it('skips unchanged stories entirely — no rewrite when the updated timestamp is unchanged', () => {
+        // The optimization contract: a story that is already cached and
+        // whose updated timestamp (and every other persisted field) is
+        // unchanged IS the cache — the save must not re-serialize its
+        // multi-MB chapter payload and must not write its key again. The
+        // second save below passes a DEEP-EQUAL but distinct copy (new
+        // object identities, as a poll merge would produce) — the
+        // fingerprint skip must treat it as unchanged.
+        const chapters = [
+            {
+                chapterNumber: '1',
+                chapterIndex: 0,
+                title: 'Skip Chapter',
+                plotpoints: ['plot'],
+                expanded: true,
+                canReExpand: true,
+                revisions: [{ content: '## Skip Chapter\n\nskip body', wordCount: 3, generationTimeMs: 100 }]
+            }
+        ];
+        const entry = makeEntry({
+            storyId: 'skip-1',
+            lastUpdatedAt: '2026-08-15T10:00:00.000Z',
+            data: { chapters, meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-15T10:00:00.000Z' } }
+        });
+
+        saveRecordsToStorage([entry]);
+        const written = localStorage.getItem('storyGenerator:story:skip-1');
+        expect(written).not.toBeNull();
+
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi.spyOn(storageProto, 'setItem');
+        const stringify = vi.spyOn(JSON, 'stringify');
+        try {
+            // Same state, fresh object identities (what every poll merge /
+            // list sync produces for an untouched story).
+            saveRecordsToStorage([
+                makeEntry({
+                    storyId: 'skip-1',
+                    lastUpdatedAt: '2026-08-15T10:00:00.000Z',
+                    data: {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'Skip Chapter',
+                                plotpoints: ['plot'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [{ content: '## Skip Chapter\n\nskip body', wordCount: 3, generationTimeMs: 100 }]
+                            }
+                        ],
+                        meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-15T10:00:00.000Z' }
+                    }
+                })
+            ]);
+
+            // No write for the unchanged story…
+            const keyWrites = setItem.mock.calls.filter(([key]) => key === 'storyGenerator:story:skip-1');
+            expect(keyWrites).toEqual([]);
+            // …and no multi-MB re-serialization either — the whole point of
+            // the fingerprint skip (the exact-compare fallback would still
+            // have paid the JSON.stringify of the full payload).
+            const bigSerializations = stringify.mock.calls.filter(([value]) =>
+                String(value).includes('skip body')
+            );
+            expect(bigSerializations).toEqual([]);
+            // The cached payload is untouched.
+            expect(localStorage.getItem('storyGenerator:story:skip-1')).toBe(written);
+
+            // A CHANGED updated timestamp repaints the key (fingerprint miss
+            // → the full write path runs).
+            saveRecordsToStorage([
+                makeEntry({
+                    storyId: 'skip-1',
+                    lastUpdatedAt: '2026-08-15T11:00:00.000Z',
+                    data: {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'Skip Chapter',
+                                plotpoints: ['plot'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [{ content: '## Skip Chapter\n\nskip body', wordCount: 3, generationTimeMs: 100 }]
+                            }
+                        ],
+                        meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-15T10:00:00.000Z' }
+                    }
+                })
+            ]);
+            expect(
+                setItem.mock.calls.filter(([key]) => key === 'storyGenerator:story:skip-1').length
+            ).toBe(1);
+            expect(localStorage.getItem('storyGenerator:story:skip-1')).toContain(
+                '"lastUpdatedAt":"2026-08-15T11:00:00.000Z"'
+            );
+        } finally {
+            stringify.mockRestore();
+            setItem.mockRestore();
+        }
     });
 
     it('purges per-story keys of stories removed from the records list', () => {

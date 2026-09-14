@@ -194,12 +194,78 @@ const openDatabase = (): Promise<IDBDatabase> =>
 // Key range covering every per-story key ('story:*') and nothing else.
 const storyKeyRange = (): IDBKeyRange => IDBKeyRange.bound(STORY_KEY_PREFIX, STORY_KEY_PREFIX + STORY_KEY_UPPER);
 
-// Last-mirrored payload signature per storyId — the change detector that lets
-// storyCacheSet skip re-putting stories whose data did not change (a poll tick
-// for ONE story must not rewrite the other stories' mirror entries). Paired
-// with the ACTUAL key listing from getAllKeys: a signature match only skips
-// the put when the key still exists in IndexedDB, so a wiped mirror self-heals
-// on the next sync.
+// Structural shape the fingerprint reads — deliberately loose (structural
+// only, no type imports): both the store's PersistableStoryEntry and this
+// module's PersistableStoryEntryShape satisfy it.
+export type StoryFingerprintShape = {
+    storyId: string;
+    storyName?: string;
+    title: string;
+    storyline: string;
+    chapterRequested: number;
+    chapterCompleted: number;
+    lastActionedAt?: string;
+    lastUpdatedAt?: string;
+    dataStale?: boolean;
+    status: string;
+    isRemote: boolean;
+    missingFromServer?: boolean;
+    data: {
+        chapters?: Array<{
+            chapterIndex?: number;
+            expanded?: boolean;
+            revisions?: unknown[];
+        }>;
+    } | null;
+};
+
+// Cheap structural fingerprint of a story's cache-worthy state. The skip
+// signal for BOTH cache tiers: an equal fingerprint means "already cached
+// and the updated timestamp (and everything else persisted) is unchanged —
+// do not write again". Equal fingerprints imply equal payloads because:
+//   - every SERVER write bumps the story's lastUpdatedAt (the plotpoint.json
+//     mtime the cached payload reflects), and the client only ever stores
+//     server payloads — equal timestamps ⇒ equal chapter content;
+//   - revision content is never mutated in place: revisions are only added
+//     (expand/rewrite) or removed (delete), which changes the per-chapter
+//     revision counts captured in `structure`;
+//   - everything else persisted is either tiny (carried in the head fields)
+//     or server-derived (status, chapterRequested/Completed).
+// Stringifying this compact tuple is O(entry metadata), never O(chapter
+// bytes) — the multi-MB serialization is exactly what the fingerprint lets
+// both tiers skip on a no-change poll tick.
+export const storyCacheFingerprint = (entry: StoryFingerprintShape): string => {
+    const chapters = entry.data?.chapters ?? [];
+    const structure = chapters
+        .map((ch) => `${ch.chapterIndex ?? ''}:${ch.expanded ? 1 : 0}:${ch.revisions?.length ?? 0}`)
+        .join(',');
+    return [
+        entry.lastUpdatedAt ?? '',
+        entry.lastActionedAt ?? '',
+        entry.dataStale ? 1 : 0,
+        entry.status ?? '',
+        entry.chapterRequested ?? 0,
+        entry.chapterCompleted ?? 0,
+        entry.storyline ?? '',
+        entry.title ?? '',
+        entry.storyName ?? '',
+        entry.missingFromServer ? 1 : 0,
+        entry.isRemote ? 1 : 0,
+        entry.data ? 1 : 0,
+        chapters.length,
+        structure
+    ].join('|');
+};
+
+// Last-mirrored fingerprint per storyId — the change detector that lets
+// storyCacheSet skip re-putting stories whose data did not change (a poll
+// tick for ONE story must not rewrite the other stories' mirror entries, and
+// an unchanged story must not pay the multi-MB structured-clone at all).
+// Committed ONLY after the sync transaction completes (a failed/aborted put
+// must not poison the fingerprint — the next sync would wrongly skip it).
+// Paired with the ACTUAL key listing from getAllKeys: a fingerprint match
+// only skips the put when the key still exists in IndexedDB, so a wiped
+// mirror self-heals on the next sync.
 const mirrorSignatures = new Map<string, string>();
 
 // Read the persisted records payload — ALL per-story entries, ordered
@@ -266,9 +332,12 @@ export const storyCacheGet = (): Promise<PersistableStoryEntryShape[] | null> =>
 // Write/sync the records payload — PER STORY. The caller (saveRecordsToStorage)
 // always passes the COMPLETE records array, so this is a full-set sync:
 //   - each entry is put under its own 'story:<storyId>' key,
-//   - entries whose serialized payload did not change AND whose key still
-//     exists in IndexedDB are SKIPPED (a poll tick for one story must not
-//     rewrite the other stories' mirror entries),
+//   - entries whose cheap FINGERPRINT (storyCacheFingerprint — updated
+//     timestamp + structure, never the multi-MB bytes) did not change AND
+//     whose key still exists in IndexedDB are SKIPPED entirely (no
+//     structured-clone, no write — a poll tick for one story must not
+//     rewrite the other stories' mirror entries, and an unchanged story must
+//     not pay the clone cost at all),
 //   - previously-mirrored story keys ABSENT from the array are DELETED
 //     (the story was removed — e.g. deleteStory — so it must not resurrect),
 //   - the legacy single-blob 'records' key is deleted (superseded layout).
@@ -314,35 +383,46 @@ export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<bo
                 keysRequest.onsuccess = () => {
                     const existingKeys = new Set((keysRequest.result as IDBValidKey[]).map((k) => String(k)));
                     const incomingKeys = new Set<string>();
+                    // Fingerprints for the entries this sync PUTS (skipped
+                    // entries keep their previous fingerprint — the payload
+                    // is provably the same). Committed to mirrorSignatures
+                    // only on tx.oncomplete so a failed/aborted tx cannot
+                    // poison the skip cache.
+                    const putFingerprints = new Map<string, string>();
+                    const deleteIds: string[] = [];
                     records.forEach((entry) => {
                         const key = STORY_KEY_PREFIX + entry.storyId;
                         incomingKeys.add(key);
-                        const signature = JSON.stringify(entry);
+                        const fingerprint = storyCacheFingerprint(entry);
                         const unchanged =
-                            existingKeys.has(key) && mirrorSignatures.get(entry.storyId) === signature;
-                        mirrorSignatures.set(entry.storyId, signature);
+                            existingKeys.has(key) && mirrorSignatures.get(entry.storyId) === fingerprint;
                         if (unchanged) return;
+                        putFingerprints.set(entry.storyId, fingerprint);
                         store.put(entry, key);
                     });
                     // Orphan cleanup: mirrored keys not present in the
                     // incoming full set belong to deleted stories.
                     existingKeys.forEach((key) => {
                         if (incomingKeys.has(key)) return;
-                        mirrorSignatures.delete(key.slice(STORY_KEY_PREFIX.length));
+                        deleteIds.push(key.slice(STORY_KEY_PREFIX.length));
                         store.delete(key);
                     });
                     // The pre-per-story blob is dead weight once the
                     // per-story keys exist — remove it on every sync.
                     store.delete(LEGACY_RECORDS_KEY);
+                    tx.oncomplete = () => {
+                        // Commit the fingerprint changes only now — the tx
+                        // provably landed.
+                        putFingerprints.forEach((fingerprint, storyId) => mirrorSignatures.set(storyId, fingerprint));
+                        deleteIds.forEach((storyId) => mirrorSignatures.delete(storyId));
+                        cancelWatchdog();
+                        db.close();
+                        resolve(true);
+                    };
                 };
                 keysRequest.onerror = () => {
                     cancelWatchdog();
                     reject(keysRequest.error ?? new Error('IndexedDB getAllKeys failed'));
-                };
-                tx.oncomplete = () => {
-                    cancelWatchdog();
-                    db.close();
-                    resolve(true);
                 };
                 tx.onerror = () => {
                     cancelWatchdog();

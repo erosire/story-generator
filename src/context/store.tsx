@@ -31,7 +31,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '../config';
 import { deleteStory as deleteStoryApi, type ActiveJob, type StoryMeta } from '../api';
-import { storyCacheGet, storyCacheSet } from './storyCache';
+import { storyCacheGet, storyCacheSet, storyCacheFingerprint } from './storyCache';
 
 // ── localStorage helpers ──────────────────────────────────────────────
 const STORAGE_KEY_STORY = 'storyGenerator:lastStoryId';
@@ -143,6 +143,10 @@ export const clearExpandedChapters = (storyId: string) => {
 export const deleteStoryRecordFromStorage = (storyId: string) => {
     try {
         localStorage.removeItem(storyStorageKey(storyId));
+        // The key is gone — drop the fingerprint/rung state with it so a
+        // later save for a re-created storyId cannot skip against stale
+        // persistence state.
+        forgetPersistedStory(storyId);
     } catch {
         // ignore
     }
@@ -517,12 +521,46 @@ const oldestFirst = (a: PersistableStoryEntry, b: PersistableStoryEntry): number
     return timeOf(a) - timeOf(b);
 };
 
+// Per-story persistence state — WHAT IS CURRENTLY IN THE STORY'S KEY. The
+// fingerprint is the cheap structural signature (storyCacheFingerprint —
+// updated timestamp + persisted fields + chapter structure, never the
+// multi-MB chapter bytes); the rung is the shed level the key was written
+// at. Together they let an unchanged story be skipped for the cost of one
+// small fingerprint build + one key-existence read — no multi-MB
+// JSON.stringify, no setItem — which is the whole point: a generating
+// story's poll ticks and the periodic list syncs fire saveRecordsToStorage
+// every few seconds, and every OTHER story would otherwise pay a full
+// serialization on each of those just to be compared and discarded.
+//
+// The fingerprint is only TRUSTED when the key still exists
+// (localStorage.getItem(key) !== null — cheap): a map entry can go stale
+// when the key is removed out-of-band (test localStorage.clear(),
+// migration/self-heal rewriting keys), and the null check makes the module
+// self-heal by falling back to the exact write path. The maps are also
+// cleaned up wherever a key is deliberately removed (orphan cleanup,
+// deleteStory).
+const persistedFingerprints = new Map<string, string>();
+const persistedRungs = new Map<string, number>();
+
+/** Drop the persistence-state entries for one story (key removed). */
+const forgetPersistedStory = (storyId: string): void => {
+    persistedFingerprints.delete(storyId);
+    persistedRungs.delete(storyId);
+};
+
 /**
  * Write ONE story's persistable record to its own localStorage key
  * ('storyGenerator:story:<storyId>') at a given minimum shed rung. Writes
  * only when the payload actually changed (cheap string comparison against
  * the stored value) so a poll tick for one story never rewrites the other
  * stories' keys.
+ *
+ * UNCHANGED-STORY SKIP: when the entry's fingerprint matches what the key
+ * already holds (see persistedFingerprints), the story IS the cache — return
+ * immediately without serializing the chapter payload or writing anything.
+ * `allowSkip=false` (make-room shedding) forces the write: the caller is
+ * deliberately DOWNGRADING the key to a lighter rung even though the store
+ * entry itself did not change.
  *
  * QUOTA LADDER: each rung from `minRung` up is serialized lazily and
  * ATTEMPTED against the real localStorage.setItem, so a payload that exceeds
@@ -534,8 +572,18 @@ const oldestFirst = (a: PersistableStoryEntry, b: PersistableStoryEntry): number
  * the caller decides whether make-room shedding can help, see
  * saveRecordsToStorage pass 2).
  */
-const saveStoryAtRung = (entry: PersistableStoryEntry, minRung: number): number => {
+const saveStoryAtRung = (entry: PersistableStoryEntry, minRung: number, allowSkip = true): number => {
     const key = storyStorageKey(entry.storyId);
+    const fingerprint = storyCacheFingerprint(entry);
+    // Already cached, updated timestamp (and everything persisted) unchanged
+    // → nothing to write. The rung the key holds is tracked alongside.
+    if (
+        allowSkip &&
+        persistedFingerprints.get(entry.storyId) === fingerprint &&
+        localStorage.getItem(key) !== null
+    ) {
+        return persistedRungs.get(entry.storyId) ?? 0;
+    }
     for (let rung = Math.max(0, minRung); rung <= 2; rung++) {
         let incoming: string;
         try {
@@ -549,7 +597,9 @@ const saveStoryAtRung = (entry: PersistableStoryEntry, minRung: number): number 
                 localStorage.setItem(key, incoming);
             }
             // Write accepted (or unchanged) — this rung is the story's new
-            // cache content; stop shedding.
+            // cache content; record its state and stop shedding.
+            persistedFingerprints.set(entry.storyId, fingerprint);
+            persistedRungs.set(entry.storyId, rung);
             return rung;
         } catch {
             // QuotaExceededError (or storage unavailable) — shed further.
@@ -571,7 +621,14 @@ const removeOrphanStoryKeys = (validIds: Set<string>): void => {
                 doomed.push(key);
             }
         }
-        doomed.forEach((key) => localStorage.removeItem(key));
+        doomed.forEach((key) => {
+            localStorage.removeItem(key);
+            // The key is gone — its fingerprint/rung state is stale. Without
+            // this a re-created storyId could be skipped against a key that
+            // no longer exists (the skip's null guard would catch it, but
+            // keeping the maps in lockstep is the cheap, explicit path).
+            forgetPersistedStory(key.slice(STORAGE_KEY_STORY_PREFIX.length));
+        });
     } catch {
         // Best effort — an orphaned key is harmless (it belongs to a story
         // no longer in the store and is simply never read again).
@@ -586,7 +643,12 @@ const removeOrphanStoryKeys = (validIds: Set<string>): void => {
  *
  * PASS 1 — per-story quota ladder: every story saves at its own lightest
  * rung (full → trimmed revisions → metadata-only). A story that sheds itself
- * degrades only ITS OWN cached data.
+ * degrades only ITS OWN cached data. Stories whose cheap fingerprint
+ * (storyCacheFingerprint — updated timestamp + persisted fields + chapter
+ * structure) matches what their key already holds are SKIPPED entirely: no
+ * multi-MB serialization, no read-modify-write — already cached + unchanged
+ * timestamp = nothing to do. Only stories whose fingerprint changed (new
+ * chapter landed, user action, staleness flip) pay the serialization.
  *
  * PASS 2 — make room (LAST RESORT): localStorage quota is ORIGIN-WIDE (~5MB
  * shared by every key), so a story can fail ALL of its own rungs purely
@@ -672,7 +734,10 @@ export const saveRecordsToStorage = (records: StoryEntry[]): void => {
                     headroom = true;
                     // Degrade the other story ONE rung further (trim first,
                     // metadata-only only if trimming was not enough).
-                    const shedRung = saveStoryAtRung(other, currentRung + 1);
+                    // allowSkip=false: the store entry did NOT change — the
+                    // fingerprint skip would keep the key at its current
+                    // rung, but shedding is exactly the point here.
+                    const shedRung = saveStoryAtRung(other, currentRung + 1, false);
                     if (shedRung >= 0) savedRungs.set(other.storyId, shedRung);
                     // Space changed — give the failed story its FULL ladder
                     // back (it deserves a chance at full fidelity, not just
