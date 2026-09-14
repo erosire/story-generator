@@ -7,14 +7,20 @@
 //   - selected: the currently active story entry (same reference as one in records)
 //   - config: API base URL + poll interval (overridable for tests)
 //
-// PERSISTENCE (two-tier):
-//   - localStorage (synchronous) — the instant first paint. Written on every
-//     records change; quota-limited (~5MB) so large caches shed weight.
-//   - IndexedDB (durable mirror, ./storyCache.ts) — the mobile-survival copy.
-//     iOS Safari private mode wipes localStorage on tab close and ITP evicts
-//     it under pressure; IndexedDB has orders-of-magnitude larger quotas and
-//     survives eviction. Every records write is mirrored (fire-and-forget)
-//     and BootstrapLayer rehydrates the durable copy at boot.
+// PERSISTENCE (two-tier, PER STORY):
+//   - localStorage (synchronous) — the instant first paint. One key per story
+//     ('storyGenerator:story:<storyId>'). Written on every records change,
+//     but each story's write only touches ITS OWN key and change-detects
+//     against the stored value, so a background job's poll ticks never
+//     rewrite other stories. Quota-limited (~5MB): a story that no longer
+//     fits sheds ITS OWN weight (revisions → metadata-only), never another
+//     story's data.
+//   - IndexedDB (durable mirror, ./storyCache.ts) — the mobile-survival copy,
+//     keyed 'story:<storyId>' the same way. iOS Safari private mode wipes
+//     localStorage on tab close and ITP evicts it under pressure; IndexedDB
+//     has orders-of-magnitude larger quotas and survives eviction. Every
+//     records write is mirrored per story (fire-and-forget, unchanged
+//     stories skipped) and BootstrapLayer rehydrates the durable copy at boot.
 //
 // Unlike localContextStore, this distribution package cannot import @presource/react
 // (it is not in package.json deps — see distribution/story-generator/package.json).
@@ -30,13 +36,31 @@ import { storyCacheGet, storyCacheSet } from './storyCache';
 // ── localStorage helpers ──────────────────────────────────────────────
 const STORAGE_KEY_STORY = 'storyGenerator:lastStoryId';
 const STORAGE_KEY_EXPANDED_PREFIX = 'storyGenerator:expanded:';
+// LEGACY single-blob records key (the ENTIRE records array as one value).
+// Kept only for the migration read in loadRecordsFromStorage — the layout is
+// now PER STORY (see STORAGE_KEY_STORY_PREFIX below) and the blob is removed
+// on first load.
 const STORAGE_KEY_RECORDS = 'storyGenerator:records';
+// PER-STORY records keys: 'storyGenerator:story:<storyId>' → one story's
+// PersistableStoryEntry. WHY PER STORY: a story's background job (plotline
+// generation / chapter expansion) streams poll updates into the store every
+// ~2s, and each of those re-persists. With the old single blob EVERY story's
+// cache entry was rewritten on every tick — and once the blob outgrew the
+// ~5MB quota, the weight-shedding ladder NULLLED OTHER STORIES' cached
+// chapter data to fit (the reported bug: one story generating = every other
+// story's cache cleared). With one key per storyId, a story's progress only
+// ever rewrites its own key, and quota shedding (see saveSingleStoryToStorage)
+// can only ever shed the story that caused it.
+const STORAGE_KEY_STORY_PREFIX = 'storyGenerator:story:';
 // The last-selected LLM client id. NOTE: this is a client-side convenience
 // only (remembers the user's dropdown choice between browser sessions). The
 // server never persists clientId with a story — it travels with every
 // generation payload (POST create/fork, PATCH expand/rewrite), which is why
 // the store keeps it in `config` rather than per-story records.
 const STORAGE_KEY_CLIENT_ID = 'storyGenerator:clientId';
+
+// localStorage key for ONE story's persistable record.
+const storyStorageKey = (storyId: string): string => STORAGE_KEY_STORY_PREFIX + storyId;
 
 /** Read the last-selected storyId from localStorage. Returns null if absent. */
 export const getLastStoryId = (): string | null => {
@@ -110,9 +134,24 @@ export const clearExpandedChapters = (storyId: string) => {
     }
 };
 
-// ── Records persistence (synchronous, quota-resilient) ────────────────
-// Persists the full story records array to localStorage so the dashboard
-// loads instantly with cached data even if the server is unreachable.
+/**
+ * Remove ONE story's cached record key (called when the story is deleted).
+ * The next full save would also purge it (orphan-key cleanup), but deleting
+ * the key here means the story is gone from the cache the moment the delete
+ * action runs — even if the tab closes before the next persist effect fires.
+ */
+export const deleteStoryRecordFromStorage = (storyId: string) => {
+    try {
+        localStorage.removeItem(storyStorageKey(storyId));
+    } catch {
+        // ignore
+    }
+};
+
+// ── Records persistence (synchronous, quota-resilient, PER STORY) ──────
+// Persists the story records to localStorage — one key per story
+// ('storyGenerator:story:<storyId>') — so the dashboard loads instantly with
+// cached data even if the server is unreachable.
 //
 // SYNCHRONOUS BY CONTRACT: the offline-viewing requirement is "any story
 // loaded from the server (viewed) is immediately cached for viewing without
@@ -123,16 +162,16 @@ export const clearExpandedChapters = (storyId: string) => {
 // synchronously inside the provider's records-changed effect, so the cache
 // is durable the moment fetched data lands in the store.
 //
-// QUOTA RESILIENCE: the cache holds FULL chapter content (every revision's
-// markdown). Chapter bodies are large (MIN_WORDS_PER_CHAPTER = 3000, target
-// 15000 — see server generation-config.ts), and every re-expand/rewrite
-// ACCUMULATES another full revision, so a handful of stories can exceed the
-// browser's ~5MB localStorage quota. A failed write previously threw and was
-// swallowed silently — the WHOLE cache never persisted (the write is
-// all-or-nothing) and the offline dashboard came up empty. The write now
-// sheds weight and retries (see saveRecordsToStorage): the newest stories
-// keep full content, older ones keep only their latest revision, then
-// metadata only — the story LIST always survives offline.
+// PER-STORY ISOLATION (the reason for the one-key-per-story layout): a story
+// with a background job (plotline generation, chapter expansion) streams poll
+// updates into the store every ~2s, and each update re-persists. With the
+// old single-blob cache ('storyGenerator:records'), EVERY story's entry was
+// rewritten on every tick — and once the blob exceeded the ~5MB quota, the
+// weight-shedding ladder DROPPED OTHER STORIES' cached chapter data to fit
+// (one story generating ⇒ every other story's offline cache wiped). Per
+// story, the quota ladder (saveSingleStoryToStorage) can only shed the story
+// that caused the write: full content → latest revision per chapter →
+// metadata only — that story's LIST entry always survives offline.
 
 // Minimal subset of StoryEntry we actually persist. Omits transient fields
 // that don't survive across sessions (error, isProcessing, serverProcessing).
@@ -162,41 +201,93 @@ const toPersistable = (entry: StoryEntry): PersistableStoryEntry => ({
 });
 
 /**
+ * Rehydrate one persisted (PersistableStoryEntry) record into a full
+ * StoryEntry — shared by the per-story localStorage read, the legacy-blob
+ * migration, and the IndexedDB mirror recovery so all three apply identical
+ * defaults to legacy/transient fields.
+ */
+const rehydratePersistable = (entry: PersistableStoryEntry): StoryEntry => ({
+    ...entry,
+    createdDate: entry.createdDate || new Date(0).toISOString(),
+    chapterRequested: entry.chapterRequested || 0,
+    chapterCompleted: entry.chapterCompleted || 0,
+    status: entry.status || 'generating',
+    // Cache-only flag persists across reloads so the story still renders
+    // (and deletes locally) before the next successful list sync.
+    missingFromServer: entry.missingFromServer ?? false,
+    // Staleness flag persists across reloads: a cached payload older
+    // than the server's last write must still trigger a refresh after
+    // the browser restarts. Legacy cached entries lack the field →
+    // not stale until the next list sync computes the delta.
+    dataStale: entry.dataStale ?? false,
+    // Transient live-job flag starts false on rehydrate — the server's
+    // in-memory job registry is the only source of truth and is
+    // re-synced by the next list fetch (BootstrapLayer / sidebar
+    // auto-refresh).
+    serverProcessing: false,
+    isProcessing: false,
+    error: ''
+});
+
+/** Read every per-story record key ('storyGenerator:story:*'). */
+const readPerStoryPersistables = (): PersistableStoryEntry[] => {
+    const entries: PersistableStoryEntry[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith(STORAGE_KEY_STORY_PREFIX)) continue;
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) continue;
+            const parsed = JSON.parse(raw);
+            // A corrupted/non-object key is skipped, not fatal — one bad
+            // story must not take down the whole cached dashboard.
+            if (parsed && typeof parsed === 'object' && parsed.storyId) {
+                entries.push(parsed as PersistableStoryEntry);
+            }
+        } catch {
+            // Corrupted JSON in this one story's key — skip it.
+        }
+    }
+    return entries;
+};
+
+/**
  * Synchronous read of cached records from localStorage.
  * Used on initial mount to hydrate the store instantly before the server
  * round-trip completes. Returns [] on any error (SSR, corrupted data, etc.).
+ *
+ * PER-STORY LAYOUT: each story lives under its own key
+ * ('storyGenerator:story:<storyId>'), so stories are hydrated independently.
+ * LEGACY MIGRATION: when no per-story keys exist but the old single-blob
+ * 'storyGenerator:records' key does (a pre-upgrade cache), the blob is read,
+ * re-keyed per story, and removed — one-time, synchronous, best-effort.
  */
 export const loadRecordsFromStorage = (): StoryEntry[] => {
     try {
+        const perStory = readPerStoryPersistables();
+        if (perStory.length > 0) {
+            return perStory.map(rehydratePersistable);
+        }
+        // ── Legacy single-blob fallback + migration ──────────────────────
         const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        // Rehydrate with default transient fields (isProcessing=false, error='').
-        // Legacy entries from localStorage may lack createdDate — fall back to epoch
-        // so they sort to the bottom (server will supply the real value on refresh).
-        return parsed.map((entry: PersistableStoryEntry) => ({
-            ...entry,
-            createdDate: entry.createdDate || new Date(0).toISOString(),
-            chapterRequested: entry.chapterRequested || 0,
-            chapterCompleted: entry.chapterCompleted || 0,
-            status: entry.status || 'generating',
-            // Cache-only flag persists across reloads so the story still renders
-            // (and deletes locally) before the next successful list sync.
-            missingFromServer: entry.missingFromServer ?? false,
-            // Staleness flag persists across reloads: a cached payload older
-            // than the server's last write must still trigger a refresh after
-            // the browser restarts. Legacy cached entries lack the field →
-            // not stale until the next list sync computes the delta.
-            dataStale: entry.dataStale ?? false,
-            // Transient live-job flag starts false on rehydrate — the server's
-            // in-memory job registry is the only source of truth and is
-            // re-synced by the next list fetch (BootstrapLayer / sidebar
-            // auto-refresh).
-            serverProcessing: false,
-            isProcessing: false,
-            error: ''
-        }));
+        const entries = (parsed as PersistableStoryEntry[]).map(rehydratePersistable);
+        // Re-key the blob into per-story entries so future saves only touch
+        // the story that changed, then remove the superseded blob. Best
+        // effort: a failed write (private mode) leaves the blob in place and
+        // the migration simply retries on the next boot.
+        try {
+            entries.forEach((entry) => {
+                localStorage.setItem(storyStorageKey(entry.storyId), JSON.stringify(toPersistable(entry)));
+            });
+            localStorage.removeItem(STORAGE_KEY_RECORDS);
+        } catch {
+            // Storage unavailable — the hydrated session still works; the
+            // blob migrates on a later boot when storage is writable again.
+        }
+        return entries;
     } catch {
         return [];
     }
@@ -363,7 +454,9 @@ export const mergeServerStoryList = (
 
 // Handle for the pending idle write — allows coalescing rapid updates.
 let pendingIdleHandle: number | null = null;
-let pendingRecords: PersistableStoryEntry[] | null = null;
+// Raw entries (not yet persistable-stripped) — the deferred write routes
+// through saveRecordsToStorage, which does the toPersistable mapping itself.
+let pendingRecords: StoryEntry[] | null = null;
 
 // Session-scoped cache-health flag (see saveRecordsToStorage). Module-level
 // because the save is synchronous/static while the consumer is React state.
@@ -374,76 +467,129 @@ let lastSaveFailed = false;
 export const didLastSaveFail = (): boolean => lastSaveFailed;
 
 /**
- * Serialize a records array for the localStorage cache. Returns ONLY the
- * full-fidelity payload (pass 0) — the ladder rungs are applied by
- * saveRecordsToStorage lazily and validated against the REAL setItem.
- *
- * REAL QUOTA CONTRACT: a payload that JSON.stringify's fine can still exceed
- * the browser's ~5MB localStorage quota, so rung selection must happen at
- * write time, not build time (the original eager ladder never engaged its
- * lighter rungs — the first quota failure fell through to the
- * all-metadata-only retry and WIPED every cached chapter body).
+ * Serialize one entry's chapter payload with its revision history trimmed to
+ * the LATEST revision per chapter. A quota-shedding rung — the dropdown's
+ * default selection is the last index, so the visible body survives even
+ * when revision history is dropped.
  */
-const buildCachePayload = (records: PersistableStoryEntry[]): string => {
-    // Pass 0 only: the full-fidelity payload. Serialization errors (circular
-    // refs cannot occur here — the store shape is plain data — but the
-    // try/catch keeps a poisoned entry from breaking the whole cache) surface
-    // to the caller, which skips the write rather than corrupting the cache.
-    return JSON.stringify(records);
-};
-
-// Recency rank for the shedding ladder. The NEWEST stories must survive
-// quota shedding — the user is most likely to read offline what they just
-// viewed/actioned. Keyed by lastActionedAt (client-owned user-action stamp,
-// see StoryEntry.lastActionedAt) falling back to createdDate; ISO 8601
-// strings sort correctly as strings. NEWEST → rank 0.
-const recencyRank = (entry: PersistableStoryEntry): number => {
-    const key = entry.lastActionedAt || entry.createdDate || '';
-    // Empty key parses to NaN → -NaN = NaN; NaN comparisons in the ladder
-    // sort behave like "oldest" (all NaN ranks tie), which is the safe
-    // default for entries missing both timestamps.
-    return -Date.parse(key || '0');
+const trimToLatestRevisions = (entry: PersistableStoryEntry): PersistableStoryEntry => {
+    if (!entry.data) return entry;
+    return {
+        ...entry,
+        data: {
+            ...entry.data,
+            chapters: (entry.data.chapters ?? []).map((ch) => {
+                const revisions = ch.revisions ?? [];
+                return revisions.length > 1
+                    ? { ...ch, revisions: [revisions[revisions.length - 1]] }
+                    : ch;
+            })
+        }
+    };
 };
 
 /**
- * Synchronous write of records to localStorage. Writes only when the payload
- * actually changed (cheap string comparison against the stored value).
+ * Write ONE story's persistable record to its own localStorage key
+ * ('storyGenerator:story:<storyId>'). Writes only when the payload actually
+ * changed (cheap string comparison against the stored value) so a poll tick
+ * for one story never rewrites the other stories' keys.
  *
- * QUOTA RESILIENCE (the real ladder — see buildCachePayload): each rung is
- * serialized lazily and ATTEMPTED against the real localStorage.setItem, so a
- * payload that exceeds the quota falls through to the next-lighter rung
- * instead of wiping the cache down to metadata-only in one step:
- *   1. full fidelity (all revisions on every entry)
- *   2. the newest half (by USER-RECENCY, see recencyRank) keeps full data;
- *      older entries trimmed to their LATEST revision per chapter
- *   3. the newest half keeps data; older entries become metadata-only
- *      (data:null)
- *   4. every entry metadata-only
- * The first rung that setItem accepts wins. If even the metadata-only rung
- * fails (storage disabled / private mode), give up silently — the in-memory
- * store keeps working for this session and the previous cache payload (if
- * any) stays readable.
+ * PER-STORY QUOTA LADDER: each rung is serialized lazily and ATTEMPTED
+ * against the real localStorage.setItem, so a payload that exceeds the quota
+ * falls through to the next-lighter rung instead of dropping everything in
+ * one step. The rungs shed THIS STORY ONLY — other stories' keys are never
+ * touched (that is the whole point of the per-story layout):
+ *   1. full fidelity (all revisions)
+ *   2. latest revision per chapter
+ *   3. metadata-only (data: null) — the story list always survives offline
+ * If even the metadata-only rung fails (storage disabled / private mode),
+ * returns false — the in-memory store keeps working for this session and the
+ * IndexedDB mirror (which never sheds) holds the full payload for recovery.
+ */
+const saveSingleStoryToStorage = (entry: PersistableStoryEntry): boolean => {
+    const key = storyStorageKey(entry.storyId);
+    const attempts: Array<() => string> = [
+        // Rung 1: full fidelity — every revision of every chapter.
+        () => JSON.stringify(entry),
+        // Rung 2: revision history trimmed to the latest per chapter.
+        () => JSON.stringify(trimToLatestRevisions(entry)),
+        // Rung 3: metadata-only (tiny — almost always fits).
+        () => JSON.stringify({ ...entry, data: null })
+    ];
+    for (const buildAttempt of attempts) {
+        let incoming: string;
+        try {
+            incoming = buildAttempt();
+        } catch {
+            // Serialization failed (poisoned record) — shed to the next rung.
+            continue;
+        }
+        try {
+            if (localStorage.getItem(key) !== incoming) {
+                localStorage.setItem(key, incoming);
+            }
+            // Write accepted (or unchanged) — this rung is the story's new
+            // cache content; stop shedding.
+            return true;
+        } catch {
+            // QuotaExceededError (or storage unavailable) — shed THIS story
+            // further and retry. Other stories are unaffected.
+        }
+    }
+    return false;
+};
+
+/** Remove every per-story key whose storyId is absent from `records`. */
+const removeOrphanStoryKeys = (validIds: Set<string>): void => {
+    try {
+        // Collect first, remove after — removing keys while iterating
+        // localStorage shifts the indices under the cursor.
+        const doomed: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (!key || !key.startsWith(STORAGE_KEY_STORY_PREFIX)) continue;
+            if (!validIds.has(key.slice(STORAGE_KEY_STORY_PREFIX.length))) {
+                doomed.push(key);
+            }
+        }
+        doomed.forEach((key) => localStorage.removeItem(key));
+    } catch {
+        // Best effort — an orphaned key is harmless (it belongs to a story
+        // no longer in the store and is simply never read again).
+    }
+};
+
+/**
+ * Synchronous write of the records to localStorage — PER STORY. Each entry
+ * goes to its own key ('storyGenerator:story:<storyId>'), so one story's
+ * progress (a generating/expanding job re-persists every poll tick) only
+ * ever rewrites that story's key.
  *
- * INDEXEDDB MIRROR (see ./storyCache.ts): the FULL-FIDELITY payload is
- * ALWAYS mirrored to IndexedDB fire-and-forget, regardless of which
- * localStorage rung won. localStorage is ~5MB and wiped entirely by iOS
- * Safari private mode / ITP 7-day eviction; IndexedDB has orders-of-
- * magnitude larger quotas and survives both. The mirror therefore holds the
- * UNSHED cache, and upgradeRecordsFromIdbMirror restores that richness at
- * boot when the localStorage copy is poorer than the mirror.
+ * ORPHAN CLEANUP: keys for stories no longer in `records` (deleted) are
+ * removed, so deleting a story purges its cache without a full-blob rewrite.
+ *
+ * INDEXEDDB MIRROR (see ./storyCache.ts): the FULL-FIDELITY array is ALWAYS
+ * mirrored to IndexedDB fire-and-forget, regardless of which localStorage
+ * rung won. localStorage is ~5MB and wiped entirely by iOS Safari private
+ * mode / ITP 7-day eviction; IndexedDB has orders-of-magnitude larger quotas
+ * and survives both. The mirror therefore holds the UNSHED cache, and
+ * upgradeRecordsFromIdbMirror restores that richness at boot when the
+ * localStorage copy is poorer than the mirror.
  */
 export const saveRecordsToStorage = (records: StoryEntry[]): void => {
     const serializable = records.map(toPersistable);
 
-    // Session-scoped cache-health flag: true when NO rung could write
-    // localStorage (storage unavailable — iOS private mode, disabled
-    // storage). Read by the provider's persist effect → store.cacheWriteFailed
-    // → the sidebar's "not saved" tile state. Reset optimistically at the
-    // start of each save.
+    // Session-scoped cache-health flag: true when ANY story could not write
+    // its localStorage key (storage unavailable — iOS private mode, disabled
+    // storage, a single story too big for a hard quota). Read by the
+    // provider's persist effect → store.cacheWriteFailed → the sidebar's
+    // "not saved" tile state. Reset optimistically at the start of each save.
     lastSaveFailed = false;
     // Mirror the FULL payload to IndexedDB FIRST (fire-and-forget) — the
     // durable tier never sheds, so even when localStorage must degrade the
-    // mirror keeps every revision for the next boot's upgrade pass.
+    // mirror keeps every revision for the next boot's upgrade pass. The
+    // mirror sync is per story internally (unchanged stories skipped), so a
+    // poll tick for one story does not re-put the others.
     void storyCacheSet(serializable).then((ok) => {
         if (!ok) {
             // Logged, not thrown — the localStorage tier is independent.
@@ -451,83 +597,16 @@ export const saveRecordsToStorage = (records: StoryEntry[]): void => {
         }
     });
 
-    // Ladder rungs, lightest-touch first. Built lazily — each payload is only
-    // serialized when the previous rung's write attempt failed, so a
-    // comfortably-fitting cache pays for exactly one JSON.stringify.
-    // keepFull = how many NEWEST entries stay at full fidelity; entries with
-    // rank >= keepFull (rank 0 = newest) are the shed targets.
-    const keepFull = Math.max(1, Math.ceil(serializable.length / 2));
-    // NEWEST-FIRST ordering by user recency (the sidebar's own sort key) —
-    // rungs 2/3 protect the newest stories and shed the oldest ones.
-    const byRecency = [...serializable].sort((a, b) => recencyRank(a) - recencyRank(b));
-    const attempts: Array<() => string> = [
-        // Rung 1: full fidelity — every entry keeps its complete data.
-        () => buildCachePayload(serializable),
-        // Rung 2: keep the newest `keepFull` entries whole (rank < keepFull);
-        // trim the older entries to their LATEST revision per chapter (the
-        // dropdown's default selection is the last index, so the visible body
-        // survives even when history is dropped).
-        () =>
-            JSON.stringify(
-                serializable.map((entry) => {
-                    const rank = byRecency.indexOf(entry);
-                    if (rank < keepFull) return entry;
-                    if (!entry.data) return entry;
-                    return {
-                        ...entry,
-                        data: {
-                            ...entry.data,
-                            chapters: (entry.data.chapters ?? []).map((ch) => {
-                                const revisions = ch.revisions ?? [];
-                                return revisions.length > 1
-                                    ? { ...ch, revisions: [revisions[revisions.length - 1]] }
-                                    : ch;
-                            })
-                        }
-                    };
-                })
-            ),
-        // Rung 3: keep only the newest `keepFull` entries' data; the rest
-        // become metadata-only records (data: null). The list always survives.
-        () =>
-            JSON.stringify(
-                serializable.map((entry) =>
-                    byRecency.indexOf(entry) < keepFull ? entry : { ...entry, data: null }
-                )
-            ),
-        // Rung 4: metadata-only for every entry (tiny — almost always fits).
-        () => JSON.stringify(serializable.map((entry) => ({ ...entry, data: null })))
-    ];
-
-    // Try each rung in order against the REAL storage. The first one that
-    // setItem accepts wins; serialization of a rung itself throwing (poisoned
-    // record) falls through to the next, lighter rung the same way.
-    for (const buildAttempt of attempts) {
-        let incoming: string;
-        try {
-            incoming = buildAttempt();
-        } catch {
-            // Serialization failed — fall through to the next, lighter rung.
-            continue;
-        }
-        try {
-            const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
-            if (raw !== incoming) {
-                localStorage.setItem(STORAGE_KEY_RECORDS, incoming);
-            }
-            // Write accepted (or unchanged) — this rung is the cache's new
-            // content; stop shedding.
-            return;
-        } catch {
-            // QuotaExceededError (or storage unavailable) — shed weight and
-            // retry with the next rung.
-        }
-    }
-    // Every rung failed (storage fully unavailable — e.g. iOS private mode).
-    // The full payload was already mirrored to IndexedDB above, so the next
-    // session can recover the cache via loadRecordsFromIdbMirror. Flag the
-    // failure so the UI can tell the user this story is NOT saved locally.
-    lastSaveFailed = true;
+    // Per-story writes: a story whose key write fails sheds ITS OWN weight
+    // only — every other story's cached data stays exactly as it was.
+    let anyStoryFailed = false;
+    serializable.forEach((entry) => {
+        if (!saveSingleStoryToStorage(entry)) anyStoryFailed = true;
+    });
+    // Purge keys of stories removed from the records list (deleted) so a
+    // deleted story can never resurrect from a stale key on the next boot.
+    removeOrphanStoryKeys(new Set(serializable.map((entry) => entry.storyId)));
+    lastSaveFailed = anyStoryFailed;
 };
 
 /**
@@ -543,33 +622,40 @@ export const loadRecordsFromIdbMirror = async (): Promise<StoryEntry[] | null> =
     const mirrored = await storyCacheGet();
     if (!mirrored || mirrored.length === 0) return null;
     try {
-        // Self-heal the localStorage tier: write the recovered payload back
-        // so subsequent synchronous saves start from this state. Failure is
-        // fine (private mode will keep failing) — the returned records still
-        // hydrate the store for THIS session.
-        const raw = JSON.stringify(mirrored);
-        try {
-            if (localStorage.getItem(STORAGE_KEY_RECORDS) !== raw) {
-                localStorage.setItem(STORAGE_KEY_RECORDS, raw);
+        // Self-heal the localStorage tier PER STORY: write each recovered
+        // record back to its own key so subsequent synchronous saves start
+        // from this state. Failure is fine (private mode will keep failing)
+        // — the returned records still hydrate the store for THIS session.
+        mirrored.forEach((entry) => {
+            try {
+                const raw = JSON.stringify(entry);
+                if (localStorage.getItem(storyStorageKey(entry.storyId)) !== raw) {
+                    localStorage.setItem(storyStorageKey(entry.storyId), raw);
+                }
+            } catch {
+                // localStorage still unavailable — the in-memory hydration
+                // below still recovers the session.
             }
+        });
+        // The superseded legacy blob (if any) has been re-keyed per story —
+        // remove it so it cannot resurrect stale stories on the next boot.
+        try {
+            localStorage.removeItem(STORAGE_KEY_RECORDS);
         } catch {
-            // localStorage still unavailable — the in-memory hydration below
-            // still recovers the session.
+            // Best effort.
         }
         // Rehydrate with the same defaults loadRecordsFromStorage applies
-        // (transient flags reset, legacy fields defaulted).
-        return mirrored.map((entry) => ({
-            ...entry,
-            createdDate: entry.createdDate || new Date(0).toISOString(),
-            chapterRequested: entry.chapterRequested || 0,
-            chapterCompleted: entry.chapterCompleted || 0,
-            status: entry.status || 'generating',
-            missingFromServer: entry.missingFromServer ?? false,
-            dataStale: entry.dataStale ?? false,
-            serverProcessing: false,
-            isProcessing: false,
-            error: ''
-        })) as StoryEntry[];
+        // (transient flags reset, legacy fields defaulted), then order
+        // NEWEST-FIRST by the sidebar's sort key (lastActionedAt falling
+        // back to createdDate) — storyCacheGet returns key-lexicographic
+        // order, which is meaningless for the store's records ordering.
+        return mirrored
+            .map((entry) => rehydratePersistable(entry as PersistableStoryEntry))
+            .sort(
+                (a, b) =>
+                    Date.parse(b.lastActionedAt || b.createdDate || '0') -
+                    Date.parse(a.lastActionedAt || a.createdDate || '0')
+            );
     } catch {
         return null;
     }
@@ -579,10 +665,11 @@ export const loadRecordsFromIdbMirror = async (): Promise<StoryEntry[] | null> =
  * Upgrade the localStorage cache from the IndexedDB mirror when the mirror
  * holds RICHER content (per story).
  *
- * WHY: the localStorage ladder (saveRecordsToStorage) sheds weight under
- * quota — older stories lose revisions or their whole chapter payload. The
- * IndexedDB mirror NEVER sheds, so after a shed session the mirror holds
- * chapters the localStorage copy no longer does. At boot, per storyId:
+ * WHY: the localStorage quota ladder (saveSingleStoryToStorage) sheds weight
+ * under quota — a story that no longer fits loses revisions or its whole
+ * chapter payload. The IndexedDB mirror NEVER sheds, so after a shed session
+ * the mirror holds chapters the localStorage copy no longer does. At boot,
+ * per storyId:
  *   - localStorage entry has NO data and the mirror HAS data → take the
  *     mirror's data (chapter bodies restored).
  *   - both have data → take whichever entry has MORE revisions per chapter
@@ -639,11 +726,12 @@ export const upgradeRecordsFromIdbMirror = async (records: StoryEntry[]): Promis
  * routes through it — the offline-cache contract requires the SYNCHRONOUS
  * saveRecordsToStorage above (a deferred write can be lost when the tab
  * closes before the idle callback fires, which is exactly the
- * "server unreachable → empty list" bug this module fixes).
+ * "server unreachable → empty list" bug this module fixes). The deferred
+ * write path itself routes through the per-story saveRecordsToStorage so
+ * both entrypoints share one cache layout.
  */
 export const scheduleSaveRecordsToStorage = (records: StoryEntry[]): void => {
-    const serializable = records.map(toPersistable);
-    pendingRecords = serializable;
+    pendingRecords = records;
 
     // If a write is already scheduled, the new payload replaces it — no extra work.
     if (pendingIdleHandle !== null) return;
@@ -654,12 +742,9 @@ export const scheduleSaveRecordsToStorage = (records: StoryEntry[]): void => {
         const toWrite = pendingRecords;
         pendingRecords = null;
         try {
-            // Only write if data actually changed (cheap JSON comparison).
-            const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
-            const incoming = JSON.stringify(toWrite);
-            if (raw !== incoming) {
-                localStorage.setItem(STORAGE_KEY_RECORDS, incoming);
-            }
+            // Same per-story write path as the synchronous contract — one
+            // key per story, change-detected, quota-shed per story.
+            saveRecordsToStorage(toWrite);
         } catch {
             // Storage full or unavailable — silently ignore.
         }
@@ -994,9 +1079,11 @@ export const StoryStoreProvider: React.FC<{
     // reported failure (server unreachable later → empty story list, because
     // the viewed story never reached localStorage). The synchronous write
     // makes every fetch that lands in the store durable immediately.
-    // Writes are quota-resilient (weight-shedding ladder in
-    // saveRecordsToStorage / buildCachePayload) so large chapter caches
-    // degrade to metadata-only instead of silently never persisting.
+    // Writes are PER STORY (one key per storyId, change-detected) and quota-
+    // resilient (per-story shedding ladder in saveSingleStoryToStorage) — a
+    // generating story's poll ticks rewrite only its own key, and a story
+    // that exceeds the quota sheds only its own weight, never another
+    // story's cached chapters.
     //
     // CACHE-HEALTH INDICATION: after each save, the write-failure flag is
     // mirrored into store.cacheWriteFailed so the sidebar can warn the user
@@ -1071,8 +1158,12 @@ export const StoryStoreProvider: React.FC<{
                     if (status !== 404) throw err;
                 }
             }
-            // Purge the per-story UI preference cache alongside the record.
+            // Purge the per-story UI preference cache + the story's own
+            // record key alongside the record (the next full save's orphan
+            // cleanup would also catch the record key, but this makes the
+            // purge immediate).
             clearExpandedChapters(storyId);
+            deleteStoryRecordFromStorage(storyId);
             setStore((prev) => ({
                 ...prev,
                 records: prev.records.filter((r) => r.storyId !== storyId),

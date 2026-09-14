@@ -11,11 +11,20 @@
 //     mobile — the full chapter-revision cache fits without shedding.
 //
 // DESIGN:
-//   - Single object store 'kv', key 'records', value = the same
-//     PersistableStoryEntry[] JSON shape the localStorage cache holds.
+//   - Single object store 'kv', ONE KEY PER STORY ('story:<storyId>'), value =
+//     that story's PersistableStoryEntry (the same JSON shape the localStorage
+//     cache holds per story). PER-STORY KEYING is deliberate: a story's
+//     background job (plotline generation / chapter expansion) rewrites its
+//     cache entry every poll tick — with the old single-blob layout EVERY
+//     story's mirror payload was rewritten (and any write failure / quota
+//     shed wiped the WHOLE cache). With one key per storyId, one story's
+//     progress can never touch another story's cached data.
 //   - Mirror tier: every saveRecordsToStorage ALSO fires storyCacheSet
 //     (fire-and-forget; IndexedDB failures are logged, never thrown — the
-//     synchronous localStorage tier remains the primary path).
+//     synchronous localStorage tier remains the primary path). storyCacheSet
+//     receives the COMPLETE records array and syncs the key set to it:
+//     unchanged stories are skipped (signature comparison + key existence),
+//     stories no longer in the array have their keys deleted.
 //   - Recovery tier: BootstrapLayer calls storyCacheGet on mount; when
 //     localStorage came up empty (private-mode wipe, eviction, quota) but
 //     IndexedDB still holds records, they are restored into localStorage AND
@@ -61,11 +70,19 @@ const traceLog = (message: string): void => {
 };
 
 // Database + store constants. A version bump would require an upgrade path —
-// the schema is a single key/value pair, so v1 is all we ever need.
+// the schema is a flat key/value store, so v1 is all we ever need.
 const DB_NAME = 'storyGenerator';
 const DB_VERSION = 1;
 const STORE_NAME = 'kv';
-const RECORDS_KEY = 'records';
+// Per-story key layout: 'story:<storyId>'. The old single-blob key
+// ('records' → the entire PersistableStoryEntry[] payload) is kept ONLY for
+// the legacy fallback read in storyCacheGet and is deleted by the first
+// storyCacheSet sync after the layout switch.
+const STORY_KEY_PREFIX = 'story:';
+// Upper bound for the 'story:*' key range ('\uffff' sorts after every ASCII
+// character, so the range covers every per-story key and nothing else).
+const STORY_KEY_UPPER = '\uffff';
+const LEGACY_RECORDS_KEY = 'records';
 
 // Pending-write serialization: IndexedDB transactions from rapid successive
 // saves could otherwise land OUT OF ORDER (put A → put B → clear could become
@@ -129,38 +146,98 @@ const openDatabase = (): Promise<IDBDatabase> =>
         request.onblocked = () => reject(new Error('IndexedDB open blocked'));
     });
 
-// Read the persisted records payload. Resolves null when absent/unavailable —
-// callers treat null as "nothing cached in this tier".
+// Key range covering every per-story key ('story:*') and nothing else.
+const storyKeyRange = (): IDBKeyRange => IDBKeyRange.bound(STORY_KEY_PREFIX, STORY_KEY_PREFIX + STORY_KEY_UPPER);
+
+// Last-mirrored payload signature per storyId — the change detector that lets
+// storyCacheSet skip re-putting stories whose data did not change (a poll tick
+// for ONE story must not rewrite the other stories' mirror entries). Paired
+// with the ACTUAL key listing from getAllKeys: a signature match only skips
+// the put when the key still exists in IndexedDB, so a wiped mirror self-heals
+// on the next sync.
+const mirrorSignatures = new Map<string, string>();
+
+// Read the persisted records payload — ALL per-story entries, ordered
+// lexicographically by their storage key (stable, deterministic order).
+// Resolves null when nothing is cached in this tier.
+//
+// LEGACY FALLBACK: payloads persisted before the per-story layout live under
+// the old single-blob key ('records'). When no per-story keys exist, that blob
+// is returned so the recovery path (loadRecordsFromIdbMirror) can rehydrate —
+// the next storyCacheSet sync then re-keys the payload per story and deletes
+// the legacy blob.
 export const storyCacheGet = (): Promise<PersistableStoryEntryShape[] | null> =>
     openDatabase()
         .then(
             (db) =>
                 new Promise<PersistableStoryEntryShape[] | null>((resolve, reject) => {
                     const tx = db.transaction(STORE_NAME, 'readonly');
-                    const request = tx.objectStore(STORE_NAME).get(RECORDS_KEY);
-                    request.onsuccess = () => {
-                        db.close();
-                        resolve(request.result ?? null);
+                    const store = tx.objectStore(STORE_NAME);
+                    const keysRequest = store.getAllKeys(storyKeyRange());
+                    keysRequest.onsuccess = () => {
+                        const keys = keysRequest.result as IDBValidKey[];
+                        if (keys.length === 0) {
+                            // No per-story keys → try the legacy single-blob key.
+                            const legacy = store.get(LEGACY_RECORDS_KEY);
+                            legacy.onsuccess = () => {
+                                db.close();
+                                resolve(legacy.result ?? null);
+                            };
+                            legacy.onerror = () => {
+                                db.close();
+                                reject(legacy.error ?? new Error('IndexedDB legacy get failed'));
+                            };
+                            return;
+                        }
+                        // Read every per-story entry, preserving the key order
+                        // (results are written back by index — completion order
+                        // of the parallel gets must not shuffle the array).
+                        const results: PersistableStoryEntryShape[] = new Array(keys.length);
+                        let pending = keys.length;
+                        keys.forEach((key, index) => {
+                            const get = store.get(key);
+                            get.onsuccess = () => {
+                                results[index] = get.result;
+                                pending--;
+                                if (pending === 0) {
+                                    db.close();
+                                    resolve(results);
+                                }
+                            };
+                            get.onerror = () => {
+                                db.close();
+                                reject(get.error ?? new Error('IndexedDB get failed'));
+                            };
+                        });
                     };
-                    request.onerror = () => {
+                    keysRequest.onerror = () => {
                         db.close();
-                        reject(request.error ?? new Error('IndexedDB get failed'));
+                        reject(keysRequest.error ?? new Error('IndexedDB getAllKeys failed'));
                     };
                 })
         )
         .catch(() => null);
 
-// Write the records payload. Resolves true when durably written, false when
-// the tier is unavailable or the write failed (never rejects — fire-and-forget
-// callers cannot await-catch meaningfully). Serialized through the write queue
-// so a rapid save→save→reset sequence cannot reorder puts after a clear; a
-// stale-generation put (enqueued before a reset) is skipped entirely.
+// Write/sync the records payload — PER STORY. The caller (saveRecordsToStorage)
+// always passes the COMPLETE records array, so this is a full-set sync:
+//   - each entry is put under its own 'story:<storyId>' key,
+//   - entries whose serialized payload did not change AND whose key still
+//     exists in IndexedDB are SKIPPED (a poll tick for one story must not
+//     rewrite the other stories' mirror entries),
+//   - previously-mirrored story keys ABSENT from the array are DELETED
+//     (the story was removed — e.g. deleteStory — so it must not resurrect),
+//   - the legacy single-blob 'records' key is deleted (superseded layout).
+// Resolves true when the sync completed, false when the tier is unavailable
+// or the write failed (never rejects — fire-and-forget callers cannot
+// await-catch meaningfully). Serialized through the write queue so a rapid
+// save→save→reset sequence cannot reorder puts after a clear; a
+// stale-generation sync (enqueued before a reset) is skipped entirely.
 //
 // OPEN HOISTED OUT OF THE QUEUE: openDatabase() is issued SYNCHRONOUSLY at
 // call time and the queued op only awaits the ready connection. This keeps
-// the put's IndexedDB open() request ordered BEFORE any concurrent
+// the sync's IndexedDB open() request ordered BEFORE any concurrent
 // storyCacheGet() (recovery reads are NOT queued), so fake-indexeddb creates
-// the put's transaction first and the read observes the write. Queueing the
+// the sync's transaction first and the read observes the write. Queueing the
 // open inside the op reversed that ordering and broke the store.test.ts
 // "recover right after save" tests (the read raced ahead of the queued put).
 export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<boolean> => {
@@ -171,7 +248,7 @@ export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<bo
     const dbPromise = openDatabase().catch(() => null);
     return enqueue(() => {
         if (generation !== queueGeneration) {
-            // A reset happened after this put was enqueued — discard it.
+            // A reset happened after this sync was enqueued — discard it.
             traceLog(`set SKIPPED gen=${generation} (current ${queueGeneration})`);
             return Promise.resolve(false);
         }
@@ -180,7 +257,41 @@ export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<bo
                 db
                     ? new Promise<boolean>((resolve, reject) => {
                           const tx = db.transaction(STORE_NAME, 'readwrite');
-                          tx.objectStore(STORE_NAME).put(records, RECORDS_KEY);
+                          const store = tx.objectStore(STORE_NAME);
+                          // First list the EXISTING per-story keys (source of
+                          // truth for both the skip check and orphan cleanup);
+                          // all puts/deletes are issued from its onsuccess,
+                          // inside the same transaction.
+                          const keysRequest = store.getAllKeys(storyKeyRange());
+                          keysRequest.onsuccess = () => {
+                              const existingKeys = new Set(
+                                  (keysRequest.result as IDBValidKey[]).map((k) => String(k))
+                              );
+                              const incomingKeys = new Set<string>();
+                              records.forEach((entry) => {
+                                  const key = STORY_KEY_PREFIX + entry.storyId;
+                                  incomingKeys.add(key);
+                                  const signature = JSON.stringify(entry);
+                                  const unchanged =
+                                      existingKeys.has(key) && mirrorSignatures.get(entry.storyId) === signature;
+                                  mirrorSignatures.set(entry.storyId, signature);
+                                  if (unchanged) return;
+                                  store.put(entry, key);
+                              });
+                              // Orphan cleanup: mirrored keys not present in the
+                              // incoming full set belong to deleted stories.
+                              existingKeys.forEach((key) => {
+                                  if (incomingKeys.has(key)) return;
+                                  mirrorSignatures.delete(key.slice(STORY_KEY_PREFIX.length));
+                                  store.delete(key);
+                              });
+                              // The pre-per-story blob is dead weight once the
+                              // per-story keys exist — remove it on every sync.
+                              store.delete(LEGACY_RECORDS_KEY);
+                          };
+                          keysRequest.onerror = () => {
+                              reject(keysRequest.error ?? new Error('IndexedDB getAllKeys failed'));
+                          };
                           tx.oncomplete = () => {
                               db.close();
                               resolve(true);
@@ -200,7 +311,8 @@ export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<bo
 };
 
 // Purge the mirror (story deletion writes the emptied records array through
-// the normal set path, so an explicit delete is only needed for completeness).
+// the normal set path — its orphan cleanup deletes the story's key — so an
+// explicit per-story delete is only needed for completeness).
 // Same open-hoisting rationale as storyCacheSet above.
 export const storyCacheClear = (): Promise<boolean> => {
     const dbPromise = openDatabase().catch(() => null);
@@ -210,7 +322,10 @@ export const storyCacheClear = (): Promise<boolean> => {
                 db
                     ? new Promise<boolean>((resolve, reject) => {
                           const tx = db.transaction(STORE_NAME, 'readwrite');
-                          tx.objectStore(STORE_NAME).delete(RECORDS_KEY);
+                          const store = tx.objectStore(STORE_NAME);
+                          // Remove every per-story key AND the legacy blob key.
+                          store.delete(storyKeyRange());
+                          store.delete(LEGACY_RECORDS_KEY);
                           tx.oncomplete = () => {
                               db.close();
                               resolve(true);
@@ -242,6 +357,12 @@ export const storyCacheResetForTests = async (): Promise<void> => {
     // PRIMARY protection — a pre-reset put can never write, no matter when
     // its queued op eventually runs (even minutes later after a queue stall).
     queueGeneration++;
+    // Drop the mirror-signature cache: after a reset the store is empty, so
+    // the next sync must re-put EVERY story even if its payload signature
+    // matches a pre-reset mirror write (the keys no longer exist — the
+    // existence half of the skip check covers this, but clearing keeps the
+    // two structures in lockstep).
+    mirrorSignatures.clear();
     traceLog(`reset begin gen=${queueGeneration}`);
     // Drain: wait for the current queue tail so the clear below runs after
     // every pending op. The writeQueue can STALL for seconds under

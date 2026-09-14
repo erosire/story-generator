@@ -41,6 +41,23 @@ import { injectGlobalStyles } from './styles/global';
 const BASE_URL = 'http://test.local/v1/storyboard/generations';
 const POLL_INTERVAL_MS = 10;
 
+// Read the CURRENT per-story records cache layout ('storyGenerator:story:<storyId>'
+// keys — one key per story, see saveRecordsToStorage in src/context/store.tsx)
+// as one concatenated string, so assertions can check "some cached story
+// payload contains X" without knowing which story key holds it. The legacy
+// single-blob key ('storyGenerator:records') is intentionally NOT included —
+// it only exists pre-migration and is removed on first load.
+const readRecordsCacheRaw = (): string => {
+    const chunks: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('storyGenerator:story:')) {
+            chunks.push(localStorage.getItem(key) ?? '');
+        }
+    }
+    return chunks.join('\n');
+};
+
 const mockResponse = (status: number, body: unknown) =>
     ({
         ok: status >= 200 && status < 300,
@@ -2757,7 +2774,7 @@ describe('StoryGeneratorApp', () => {
         // The records cache no longer contains the story, the surviving story
         // is still cached, and the per-story expanded key is removed.
         await waitFor(() => {
-            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            const raw = readRecordsCacheRaw();
             expect(raw).not.toContain('local-only-1');
             expect(raw).toContain('server-1');
         });
@@ -2835,7 +2852,7 @@ describe('StoryGeneratorApp', () => {
             expect(screen.queryByTestId('story-tab-gone-server-1')).toBeNull();
         });
         await waitFor(() => {
-            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            const raw = readRecordsCacheRaw();
             expect(raw).not.toContain('gone-server-1');
         });
     });
@@ -2927,7 +2944,7 @@ describe('StoryGeneratorApp', () => {
         // …and the fetched data lands in the localStorage records cache (so the
         // next page load shows it instantly, before any server check).
         await waitFor(() => {
-            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            const raw = readRecordsCacheRaw();
             expect(raw).toContain('"storyId":"cache-data-1"');
             expect(raw).toContain('Fetched Chapter');
             expect(raw).toContain('fetched body');
@@ -3084,7 +3101,7 @@ describe('StoryGeneratorApp', () => {
         // The records cache (auto-persisted) contains BOTH stories — the
         // filter never reached the store.
         await waitFor(() => {
-            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            const raw = readRecordsCacheRaw();
             expect(raw).toContain('"storyId":"sel-a"');
             expect(raw).toContain('"storyId":"sel-b"');
         });
@@ -3179,7 +3196,7 @@ describe('StoryGeneratorApp', () => {
         // The refreshed payload (with its T2 timestamp) lands back in the
         // records cache — the next reload serves the fresh copy instantly.
         await waitFor(() => {
-            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            const raw = readRecordsCacheRaw();
             expect(raw).toContain('fresh server body');
             expect(raw).toContain('"lastUpdatedAt":"2026-08-10T11:00:00.000Z"');
             expect(raw).toContain('"dataStale":false');
@@ -3370,7 +3387,7 @@ describe('StoryGeneratorApp', () => {
         // The refreshed payload (with its T2 timestamp) lands back in the
         // records cache — the next reload serves the fresh copy instantly.
         await waitFor(() => {
-            const raw = localStorage.getItem('storyGenerator:records') ?? '';
+            const raw = readRecordsCacheRaw();
             expect(raw).toContain('fresh clicked body');
             expect(raw).toContain('"lastUpdatedAt":"2026-08-12T11:00:00.000Z"');
             expect(raw).toContain('"dataStale":false');
@@ -3491,7 +3508,7 @@ describe('StoryGeneratorApp', () => {
 
         // The cache itself was not damaged by the offline session: the
         // records key still holds both stories with their content.
-        const raw = localStorage.getItem('storyGenerator:records') ?? '';
+        const raw = readRecordsCacheRaw();
         expect(raw).toContain('"storyId":"offline-a"');
         expect(raw).toContain('"storyId":"offline-b"');
         expect(raw).toContain('offline body A');
@@ -3546,7 +3563,7 @@ describe('StoryGeneratorApp', () => {
 
         // …and is ALREADY in localStorage at that moment (synchronous write —
         // no waitFor-on-idle needed; the assertion runs on the next tick).
-        const raw = localStorage.getItem('storyGenerator:records') ?? '';
+        const raw = readRecordsCacheRaw();
         expect(raw).toContain('"storyId":"sync-cache-1"');
         expect(raw).toContain('sync cached body');
     });

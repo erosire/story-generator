@@ -14,11 +14,11 @@
 //      the key), recover the records from the DURABLE INDEXEDDB MIRROR
 //      (storyCacheGet — see src/context/storyCache.ts) and self-heal
 //      localStorage with the recovered payload before hydrating.
-//   1c. If localStorage HAS records but the mirror is RICHER (the quota
-//      ladder shed chapters from localStorage while the un-shed mirror kept
-//      them), UPGRADE the records from the mirror per story
-//      (upgradeRecordsFromIdbMirror) before hydrating — cached chapters
-//      that were shed come back.
+//   1c. If localStorage HAS records but the mirror is RICHER (the per-story
+//      quota ladder shed chapters from a story's localStorage key while the
+//      un-shed mirror kept them), UPGRADE the records from the mirror per
+//      story (upgradeRecordsFromIdbMirror) before hydrating — cached
+//      chapters that were shed come back.
 //   2. Then call fetchStoryList(config.baseUrl) to check the server for
 //      updates, and merge via mergeServerStoryList (src/context/store.tsx):
 //      server metadata refreshes cached entries, new server stories are
@@ -80,13 +80,14 @@ export const BootstrapLayer: React.FC = React.memo(() => {
 
         // ── Step 1c: Upgrade from the IndexedDB mirror when the mirror is
         // RICHER ────────────────────────────────────────────────────────────
-        // The localStorage ladder sheds weight under quota (older stories lose
-        // revisions or their whole chapter payload), but the IndexedDB mirror
-        // NEVER sheds — it always holds the full-fidelity payload. After a
-        // shed session the mirror holds chapters the localStorage copy lost;
-        // this pass restores them per story before hydration. Async, so the
-        // hydration + server check are chained after it. When localStorage is
-        // EMPTY this is skipped — step 1b's full recovery already returns the
+        // The per-story localStorage quota ladder sheds weight under quota
+        // (a story that no longer fits loses revisions or its whole chapter
+        // payload — ONLY that story), but the IndexedDB mirror NEVER sheds —
+        // it always holds the full-fidelity payload. After a shed session
+        // the mirror holds chapters the localStorage copy lost; this pass
+        // restores them per story before hydration. Async, so the hydration
+        // + server check are chained after it. When localStorage is EMPTY
+        // this is skipped — step 1b's full recovery already returns the
         // un-shed mirror payload.
         const hydrateAndCheckServer = (records: StoryEntry[], cacheWarning?: string) => {
             if (records.length > 0) {

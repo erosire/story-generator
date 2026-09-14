@@ -235,18 +235,25 @@ describe('lastUpdatedAt / dataStale (static-memory staleness)', () => {
     });
 });
 
-// ── Offline cache durability (saveRecordsToStorage) ─────────────────────
+// ── Offline cache durability (saveRecordsToStorage, per-story keys) ────
 // The offline-viewing contract: a story fetched from the server must be in
 // localStorage the moment it lands in the store, so a later session with the
 // server unreachable still shows the full story list and chapter content.
-// These tests pin the synchronous write, its change-detection, and the
-// quota-shedding ladder.
-describe('saveRecordsToStorage (synchronous offline cache)', () => {
+//
+// PER-STORY LAYOUT: each story persists to its own key
+// ('storyGenerator:story:<storyId>') — a story's background job (generate /
+// expand) re-persists every poll tick, and the per-story keying guarantees
+// that can never rewrite, shed, or drop ANOTHER story's cached data (the
+// old single-blob layout wiped the whole cache when the blob outgrew the
+// quota). These tests pin the per-story write, its change detection, the
+// per-story quota ladder, the cross-story isolation, and the legacy-blob
+// migration.
+describe('saveRecordsToStorage (synchronous offline cache, per-story keys)', () => {
     beforeEach(() => {
         localStorage.clear();
     });
 
-    it('writes the full records payload synchronously', () => {
+    it('writes each story to its own per-story key synchronously', () => {
         const entry = makeEntry({
             storyId: 'offline-story-1',
             data: { chapters: [], meta: null }
@@ -254,44 +261,42 @@ describe('saveRecordsToStorage (synchronous offline cache)', () => {
 
         saveRecordsToStorage([entry]);
 
-        const raw = localStorage.getItem('storyGenerator:records');
+        const raw = localStorage.getItem('storyGenerator:story:offline-story-1');
         expect(raw).not.toBeNull();
         const parsed = JSON.parse(raw!);
-        expect(parsed).toEqual([
-            {
-                id: 1,
-                storyId: 'offline-story-1',
-                storyName: undefined,
-                title: 'Story A',
-                storyline: '',
-                chapterRequested: 1,
-                chapterCompleted: 0,
-                createdDate: '2026-08-01T00:00:00.000Z',
-                lastActionedAt: undefined,
-                lastUpdatedAt: undefined,
-                dataStale: undefined,
-                status: 'generating',
-                data: { chapters: [], meta: null },
-                isRemote: true,
-                missingFromServer: undefined
-            }
-        ]);
+        expect(parsed).toEqual({
+            id: 1,
+            storyId: 'offline-story-1',
+            storyName: undefined,
+            title: 'Story A',
+            storyline: '',
+            chapterRequested: 1,
+            chapterCompleted: 0,
+            createdDate: '2026-08-01T00:00:00.000Z',
+            lastActionedAt: undefined,
+            lastUpdatedAt: undefined,
+            dataStale: undefined,
+            status: 'generating',
+            data: { chapters: [], meta: null },
+            isRemote: true,
+            missingFromServer: undefined
+        });
     });
 
-    it('skips the write when the payload is unchanged', () => {
+    it('skips the write when a story payload is unchanged', () => {
         const entry = makeEntry({ storyId: 'offline-story-1', data: { chapters: [], meta: null } });
         saveRecordsToStorage([entry]);
-        const first = localStorage.getItem('storyGenerator:records');
+        const first = localStorage.getItem('storyGenerator:story:offline-story-1');
 
         // Second call with identical records must not rewrite the value —
         // the raw string stays byte-identical (and no quota churn happens).
         saveRecordsToStorage([entry]);
-        expect(localStorage.getItem('storyGenerator:records')).toBe(first);
+        expect(localStorage.getItem('storyGenerator:story:offline-story-1')).toBe(first);
     });
 
-    it('rewrites when the payload changes (e.g. newly fetched chapter data)', () => {
+    it('rewrites only the changed story key (e.g. newly fetched chapter data)', () => {
         saveRecordsToStorage([makeEntry({ storyId: 'offline-story-1', data: null })]);
-        const before = localStorage.getItem('storyGenerator:records');
+        const before = localStorage.getItem('storyGenerator:story:offline-story-1');
         expect(before).not.toContain('Cached Chapter');
 
         // The user views the story and fresh data lands in the store.
@@ -315,25 +320,79 @@ describe('saveRecordsToStorage (synchronous offline cache)', () => {
             })
         ]);
 
-        const after = localStorage.getItem('storyGenerator:records')!;
+        const after = localStorage.getItem('storyGenerator:story:offline-story-1')!;
         expect(after).not.toBe(before);
         // The fetched chapter content is IN the cache — this is what a later
         // offline session reads via loadRecordsFromStorage.
         expect(after).toContain('offline body');
     });
 
-    it('sheds older entries to metadata-only when the payload exceeds the quota', () => {
-        // Simulate the real-world quota: setItem throws for LARGE payloads
-        // (full chapter content > ~5MB) but succeeds for small ones — exactly
-        // how the browser behaves, and why the shedding ladder exists.
+    it('saving one story never rewrites another story’s cached key', () => {
+        // THE per-story isolation regression: story A is mid-generation and
+        // streams new chapter data on every poll tick; story B sits finished
+        // in the cache. A's progress must not touch B's key (with the old
+        // single-blob layout every tick rewrote the WHOLE cache).
+        const storyA = makeEntry({ id: 1, storyId: 'progress-a', data: { chapters: [], meta: null } });
+        const storyB = makeEntry({
+            id: 2,
+            storyId: 'progress-b',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Finished Chapter',
+                        plotpoints: ['plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: '## Finished Chapter\n\nfinished body', wordCount: 2, generationTimeMs: 100 }]
+                    }
+                ],
+                meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            }
+        });
+
+        saveRecordsToStorage([storyA, storyB]);
+        const bBefore = localStorage.getItem('storyGenerator:story:progress-b');
+        const aBefore = localStorage.getItem('storyGenerator:story:progress-a');
+
+        // A's job lands new chapter data — a save triggered by A's progress.
+        saveRecordsToStorage([
+            {
+                ...storyA,
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Streaming Chapter',
+                            plotpoints: ['plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Streaming Chapter\n\nstreaming body', wordCount: 2, generationTimeMs: 100 }]
+                        }
+                    ],
+                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+                }
+            },
+            storyB
+        ]);
+
+        // A's key changed; B's key is byte-for-byte UNTOUCHED.
+        expect(localStorage.getItem('storyGenerator:story:progress-a')).not.toBe(aBefore);
+        expect(localStorage.getItem('storyGenerator:story:progress-b')).toBe(bBefore);
+    });
+
+    it('sheds ONLY the oversized story to metadata-only; other stories keep full data', () => {
+        // REGRESSION for the reported bug ("story generating ⇒ every other
+        // story's cache cleared"): the old single-blob quota ladder nulled
+        // OTHER entries' data when the blob exceeded the quota. Per story,
+        // the shed can only ever hit the story that caused the write.
         //
-        // jsdom quirk: localStorage's methods live on the prototype one level
-        // ABOVE the Storage.prototype the instance reports — spy on
-        // Object.getPrototypeOf(localStorage) so the override is actually
-        // reachable through the `localStorage` global the store code uses.
-        // vitest quirk: mockImplementation REPLACES the real method entirely
-        // (it does not wrap/call through), so the mock must explicitly
-        // delegate to the captured original for the under-quota case.
+        // Simulated quota: setItem throws for payloads > 2000 chars. story-big
+        // carries two 2500-char revisions (full AND latest-only both exceed
+        // the limit → it sheds to metadata-only); story-small's key is tiny
+        // and must keep its full chapter data.
         const QUOTA_LIMIT = 2000;
         const storageProto = Object.getPrototypeOf(localStorage) as Storage;
         const originalSetItem = storageProto.setItem;
@@ -348,75 +407,74 @@ describe('saveRecordsToStorage (synchronous offline cache)', () => {
                 return originalSetItem.call(this, key, value);
             });
 
-        // Many entries so the shedding ladder has something to shed. The
-        // entries carry full chapter content (two revisions each) so the
-        // pass-0/pass-1 payloads exceed QUOTA_LIMIT while the metadata-only
-        // ladder rungs fit under it.
-        const entries = Array.from({ length: 6 }, (_, i) =>
-            makeEntry({
-                id: i + 1,
-                storyId: `story-${i}`,
-                data: {
-                    chapters: [
-                        {
-                            chapterNumber: '1',
-                            chapterIndex: 0,
-                            title: `Chapter of ${i}`,
-                            plotpoints: ['p'],
-                            expanded: true,
-                            canReExpand: true,
-                            revisions: [
-                                { content: `old rev ${i}`, wordCount: 1, generationTimeMs: 1 },
-                                { content: `latest rev ${i}`, wordCount: 1, generationTimeMs: 2 }
-                            ]
-                        }
-                    ],
-                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
-                }
-            })
-        );
+        const bigEntry = makeEntry({
+            id: 1,
+            storyId: 'story-big',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Big Chapter',
+                        plotpoints: ['p'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [
+                            { content: 'x'.repeat(2500) + ' old', wordCount: 1, generationTimeMs: 1 },
+                            { content: 'x'.repeat(2500) + ' latest', wordCount: 1, generationTimeMs: 2 }
+                        ]
+                    }
+                ],
+                meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            }
+        });
+        const smallEntry = makeEntry({
+            id: 2,
+            storyId: 'story-small',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Small Chapter',
+                        plotpoints: ['p'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [{ content: 'small body', wordCount: 2, generationTimeMs: 1 }]
+                    }
+                ],
+                meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            }
+        });
 
-        saveRecordsToStorage(entries);
+        saveRecordsToStorage([bigEntry, smallEntry]);
 
-        // The ladder shed enough weight to fit under the (simulated) quota —
-        // SOMETHING was written.
-        const raw = localStorage.getItem('storyGenerator:records');
-        expect(raw).not.toBeNull();
-        const parsed = JSON.parse(raw!) as StoryEntry[];
-        expect(parsed.length).toBe(6);
-        // Every entry shed to metadata-only (data: null) — the LIST survives
-        // offline even when the full content does not fit.
-        parsed.forEach((e) => expect(e.data).toBeNull());
+        // Both stories survive (the LIST always persists offline).
+        expect(localStorage.getItem('storyGenerator:story:story-big')).not.toBeNull();
+        expect(localStorage.getItem('storyGenerator:story:story-small')).not.toBeNull();
+
+        // The oversized story shed to metadata-only (rung 3).
+        const big = JSON.parse(localStorage.getItem('storyGenerator:story:story-big')!) as StoryEntry;
+        expect(big.data).toBeNull();
+
+        // The small story kept its FULL data — it was never touched by the
+        // other story's quota failure.
+        const small = JSON.parse(localStorage.getItem('storyGenerator:story:story-small')!) as StoryEntry;
+        expect(small.data!.chapters[0].revisions).toEqual([
+            { content: 'small body', wordCount: 2, generationTimeMs: 1 }
+        ]);
 
         setItem.mockRestore();
     });
 
-    it('engages the intermediate ladder rungs: trims revisions before dropping chapter content', () => {
-        // REGRESSION for the "cached chapters disappear offline" bug: the
-        // previous implementation built its ladder eagerly against
-        // JSON.stringify (which never throws for quota size) and only
-        // discovered the quota failure at setItem time — where its catch
-        // fell straight through to the all-metadata-only retry, wiping EVERY
-        // cached chapter body in one step. The fix validates each rung
-        // against the REAL setItem, so the lighter rungs actually engage:
-        // rung 2 (latest-revision-only for older entries) must be accepted
-        // when it fits, keeping the newest stories at FULL fidelity and the
-        // older ones readable with their latest revision.
-        // Two entries, each with two revisions carrying a padded body so the
-        // rung sizes have real spread. The array is ordered NEWEST-FIRST
-        // (mirroring production: mergeServerStoryList seeds server entries in
-        // createdDate-descending order). keepFull = max(1, ceil(2/2)) = 1, so
-        // rung 2 keeps entry 0 (the newest, story-new) whole and trims entry
-        // 1 (story-old) to its latest revision; rung 3 would additionally
-        // null entry 1's data. Measured serialized sizes for this fixture:
-        //   rung 1 (both full)                                   = 2257 chars
-        //   rung 2 (entry 0 full, entry 1 latest-revision-only)  = 1903 chars
-        //   rung 3 (entry 0 full, entry 1 metadata-only)         = 1326 chars
-        // QUOTA_LIMIT = 2100 sits between rung 1 and rung 2, so rung 2 is the
-        // first accepted rung — the exact persisted shape is asserted below.
-        // (The padded revision bodies make each rung's size deterministic:
-        // 'x'.repeat(300)+' latest' serializes to exactly 321 chars, etc.)
-        const QUOTA_LIMIT = 2100;
+    it('engages the intermediate rung: trims revisions before dropping chapter content', () => {
+        // Per-story ladder ordering: full fidelity → latest-revision-only →
+        // metadata-only. One story with two 400-char revisions: the FULL
+        // payload exceeds QUOTA_LIMIT (1000) but the trimmed payload fits —
+        // rung 2 must engage, keeping the chapter body with its LATEST
+        // revision (the dropdown's default selection) instead of dropping
+        // the data outright.
+        const QUOTA_LIMIT = 1000;
         const storageProto = Object.getPrototypeOf(localStorage) as Storage;
         const originalSetItem = storageProto.setItem;
         const setItem = vi
@@ -428,87 +486,81 @@ describe('saveRecordsToStorage (synchronous offline cache)', () => {
                 return originalSetItem.call(this, key, value);
             });
 
-        // Two entries, each with two revisions carrying a padded body (the
-        // padding is what spreads the rung sizes apart — see the measured
-        // sizes in the QUOTA_LIMIT comment above).
-        const entries = [
-            // Index 0 = the NEWEST story (production ordering is
-            // createdDate-descending) — rung 2 keeps it at full fidelity.
-            makeEntry({
-                id: 2,
-                storyId: 'story-new',
-                data: {
-                    chapters: [
-                        {
-                            chapterNumber: '1',
-                            chapterIndex: 0,
-                            title: 'New Chapter',
-                            plotpoints: ['p'],
-                            expanded: true,
-                            canReExpand: true,
-                            revisions: [
-                                { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
-                                { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
-                            ]
-                        }
-                    ],
-                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-02T00:00:00.000Z' }
-                }
-            }),
-            // Index 1 = the older story — rung 2 trims it to its latest revision.
+        saveRecordsToStorage([
             makeEntry({
                 id: 1,
-                storyId: 'story-old',
+                storyId: 'story-rungs',
                 data: {
                     chapters: [
                         {
                             chapterNumber: '1',
                             chapterIndex: 0,
-                            title: 'Old Chapter',
+                            title: 'Rung Chapter',
                             plotpoints: ['p'],
                             expanded: true,
                             canReExpand: true,
                             revisions: [
-                                { content: 'x'.repeat(300) + ' old', wordCount: 3, generationTimeMs: 1 },
-                                { content: 'x'.repeat(300) + ' latest', wordCount: 3, generationTimeMs: 2 }
+                                { content: 'x'.repeat(400) + ' old', wordCount: 1, generationTimeMs: 1 },
+                                { content: 'x'.repeat(400) + ' latest', wordCount: 1, generationTimeMs: 2 }
                             ]
                         }
                     ],
                     meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
                 }
             })
-        ];
-
-        saveRecordsToStorage(entries);
-
-        const raw = localStorage.getItem('storyGenerator:records');
-        expect(raw).not.toBeNull();
-        const parsed = JSON.parse(raw!) as StoryEntry[];
-        expect(parsed.length).toBe(2);
-
-        // Rung 2 engaged, NOT rung 3/4: the newest entry (rank 0 by user
-        // recency — createdDate story-new > story-old) keeps BOTH revisions
-        // (full fidelity), and the older entry keeps its LATEST revision body
-        // (chapter content survives — only the older revision was shed).
-        expect(parsed.find((e) => e.storyId === 'story-new')!.data!.chapters[0].revisions).toEqual([
-            { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
-            { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
         ]);
-        expect(parsed.find((e) => e.storyId === 'story-old')!.data!.chapters[0].revisions).toEqual([
-            { content: 'x'.repeat(300) + ' latest', wordCount: 3, generationTimeMs: 2 }
+
+        const parsed = JSON.parse(localStorage.getItem('storyGenerator:story:story-rungs')!) as StoryEntry;
+        // Rung 2 engaged, NOT rung 3: the data survives with only the LATEST
+        // revision (the older revision was shed).
+        expect(parsed.data).not.toBeNull();
+        expect(parsed.data!.chapters[0].revisions).toEqual([
+            { content: 'x'.repeat(400) + ' latest', wordCount: 1, generationTimeMs: 2 }
         ]);
 
         setItem.mockRestore();
     });
 
+    it('purges per-story keys of stories removed from the records list', () => {
+        // Deleting a story removes it from `records`; the next save must
+        // purge its cache key so it cannot resurrect after a reload.
+        const storyA = makeEntry({ id: 1, storyId: 'purge-a' });
+        const storyB = makeEntry({ id: 2, storyId: 'purge-b' });
+        saveRecordsToStorage([storyA, storyB]);
+        expect(localStorage.getItem('storyGenerator:story:purge-b')).not.toBeNull();
+
+        saveRecordsToStorage([storyA]);
+        expect(localStorage.getItem('storyGenerator:story:purge-a')).not.toBeNull();
+        expect(localStorage.getItem('storyGenerator:story:purge-b')).toBeNull();
+    });
+
+    it('migrates the legacy single-blob records key into per-story keys on load', () => {
+        // A cache persisted before the per-story layout: one 'records' blob
+        // holding the whole array. The first load re-keys it per story and
+        // removes the superseded blob.
+        const legacyEntry = makeEntry({ id: 7, storyId: 'legacy-1', data: { chapters: [], meta: null } });
+        localStorage.setItem('storyGenerator:records', JSON.stringify([legacyEntry]));
+
+        const records = loadRecordsFromStorage();
+        expect(records.length).toBe(1);
+        expect(records[0].storyId).toBe('legacy-1');
+
+        // Migration happened: per-story key written, legacy blob removed.
+        expect(localStorage.getItem('storyGenerator:story:legacy-1')).not.toBeNull();
+        expect(localStorage.getItem('storyGenerator:records')).toBeNull();
+
+        // A subsequent load reads from the per-story key (no re-migration).
+        expect(loadRecordsFromStorage().length).toBe(1);
+    });
+
     it('gives up silently when storage is entirely unavailable', () => {
-        // Both attempts fail (e.g. storage disabled / private mode edge) —
+        // All rungs fail (e.g. storage disabled / private mode edge) —
         // the call must not throw (the in-memory store keeps working).
         // Spy on the prototype ABOVE the instance (jsdom quirk — see the
         // quota test above). The getItem spy is the load-bearing one here:
-        // saveRecordsToStorage reads the current value BEFORE writing, so a
-        // failing getItem short-circuits the write path entirely (the catch
-        // swallows it) — the contract under test is "never throws".
+        // saveSingleStoryToStorage reads the current value BEFORE writing,
+        // so a failing getItem short-circuits the write path entirely (the
+        // catch swallows it) — the contract under test is "never throws".
         const storageProto = Object.getPrototypeOf(localStorage) as Storage;
         const setItem = vi.spyOn(storageProto, 'setItem').mockImplementation(() => {
             throw new DOMException('SecurityError', 'SecurityError');
@@ -575,10 +627,10 @@ describe('IndexedDB mirror (saveRecordsToStorage / loadRecordsFromIdbMirror)', (
     });
 
     it('mirrors the FULL-fidelity payload even when localStorage had to shed (mirror is richer)', async () => {
-        // Same quota simulation as the ladder test above: the full payload
-        // exceeds the limit, the shed rung fits in localStorage. The MIRROR
-        // must carry the UNSHED full payload — it is the recovery source for
-        // upgradeRecordsFromIdbMirror at the next boot.
+        // Quota simulation: setItem throws for payloads > 2100 chars. The
+        // MIRROR must always carry the UNSHED full payload — it is the
+        // recovery source for upgradeRecordsFromIdbMirror at the next boot,
+        // regardless of which per-story rung localStorage had to accept.
         const QUOTA_LIMIT = 2100;
         const storageProto = Object.getPrototypeOf(localStorage) as Storage;
         const originalSetItem = storageProto.setItem;
@@ -645,9 +697,8 @@ describe('IndexedDB mirror (saveRecordsToStorage / loadRecordsFromIdbMirror)', (
         });
         const mirrored = (await storyCacheGet())!;
         expect(mirrored.length).toBe(2);
-        // The mirror is RICHER than the shed localStorage rung: BOTH entries
-        // keep BOTH revisions in the mirror (full fidelity), while localStorage
-        // (asserted in the ladder test) trimmed the older entry.
+        // The mirror holds BOTH entries at FULL fidelity (every revision) —
+        // the durable tier never sheds, whatever localStorage had to do.
         expect(mirrored[0].data!.chapters[0].revisions).toEqual([
             { content: 'y'.repeat(300) + ' old', wordCount: 4, generationTimeMs: 1 },
             { content: 'y'.repeat(300) + ' latest', wordCount: 4, generationTimeMs: 2 }
