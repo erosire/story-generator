@@ -960,10 +960,11 @@ describe('StoryGeneratorApp', () => {
     // when the story's content is cached in this browser (entry.data non-null
     // — hydrated from localStorage or fetched into the store this session).
     // Server-metadata-only entries (data === null) start with the cloud-off
-    // "not saved locally" variant — and are then PROGRESSIVELY FETCHED in the
-    // background (BackgroundCacheLayer), so the icon flips to the disk once
-    // the fetch lands and the data is cached.
-    it('shows the cached-locally icon on cached stories and background-fetches uncached ones', async () => {
+    // "not saved locally" variant — and stay that way until the story is
+    // VIEWED: there is NO progressive background prefetch (the background
+    // cache layer was removed — only the story being viewed is cached), so
+    // the icon flips to the disk only via the selection catch-up GET.
+    it('shows the cached-locally icon on cached stories and fetches the viewed one on selection', async () => {
         const fetchMock = globalThis.fetch as any;
         // One server story with NO cached data (metadata-only, never fetched
         // in this browser) and one cache-only story holding full chapter data
@@ -1027,11 +1028,28 @@ describe('StoryGeneratorApp', () => {
         await waitFor(() => {
             expect(screen.getByTestId('story-tab-meta-only-1')).toBeDefined();
         });
+        // Give any would-be background prefetch a beat to fire — with the
+        // progressive prefetch removed the story must stay metadata-only
+        // until the user actually views it.
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 50));
+        });
+        expect(screen.getByTestId('story-cached-meta-only-1').getAttribute('title')).toBe(
+            'Not saved locally — open this story once while the server is reachable to cache it'
+        );
+        // No per-story GET for the un-viewed story: only the LIST was fetched.
+        const prefetchGets = fetchMock.mock.calls.filter(
+            ([url]: any[]) => String(url) === `${BASE_URL}/meta-only-1`
+        );
+        expect(prefetchGets).toEqual([]);
 
-        // The background cache layer then PROGRESSIVELY fetches the uncached
-        // story (no user interaction — the whole point) — its payload lands
+        // Viewing the story (tile click → selectionNonce bump → the content
+        // feature's forced catch-up GET) is what caches it: the payload lands
         // in the store, the records-persist effect caches it, and the icon
-        // flips to the disk "Cached locally" variant on its own.
+        // flips to the disk "Cached locally" variant.
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('story-tab-meta-only-1'));
+        });
         await waitFor(() => {
             expect(screen.getByTestId('story-cached-meta-only-1').getAttribute('title')).toBe('Cached locally');
         });

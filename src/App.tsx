@@ -30,7 +30,7 @@ import { FullScreen } from '@reloaded/headless';
 import { ThemeProvider } from '@mui/material';
 import { muiTheme, styled, theme } from './styles';
 import { StoryStoreProvider, type StoryStore } from './context';
-import { BackgroundCacheLayer, BootstrapLayer, Dashboard, HeaderControls, StorySidebar, StoryContent, StoryInput } from './features';
+import { BootstrapLayer, Dashboard, HeaderControls, StorySidebar, StoryContent, StoryInput } from './features';
 
 // Outer theme wrapper — sets the font + text color for the whole dashboard.
 // Background is transparent so the FullScreen surface shows through.
@@ -82,11 +82,6 @@ export const StoryGeneratorApp: React.FC<AppProps> = React.memo(
             <ThemeProvider theme={muiTheme}>
                 <StoryStoreProvider configOverrides={configOverrides} initialStore={initialStore}>
                     <BootstrapLayer />
-                    {/* Background cache fill — progressively GETs every story
-                        whose data is not cached yet (one at a time, staggered)
-                        so the dashboard becomes offline-readable without the
-                        user opening each story. Renders nothing. */}
-                    <BackgroundCacheLayer />
                     {/* @reloaded/headless FullScreen + the dashboard's flat surface
                         treatment merged on top (solid near-black, no scroll). */}
                     <FullScreen style={{ backgroundColor: theme.bg, overflow: 'hidden' }}>
