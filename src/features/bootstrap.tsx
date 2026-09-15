@@ -190,23 +190,91 @@ export const BootstrapLayer: React.FC = React.memo(() => {
             hydrateAndCheckServer(cachedRecords);
             // localStorage has records → try to UPGRADE them from the
             // un-shed mirror (restore shed chapters). Async: when the mirror
-            // holds richer payloads, re-hydrate with the upgraded records
-            // (the setStore guard only skips when records are ALREADY
-            // present, so pass upgraded records directly through a second
-            // setStore that replaces the freshly hydrated ones).
+            // holds richer payloads, overlay the restored chapters into the
+            // ALREADY-HYDRATED records per storyId.
+            //
+            // WHY AN OVERLAY (not the old wholesale replace + early return):
+            // the old guard `if (prev.records.length > 0) return prev;` made
+            // this pass dead code — hydrateAndCheckServer above populates
+            // records SYNCHRONOUSLY, so records were always non-empty before
+            // this async mirror read resolved, the upgrade never applied, and
+            // a reload (especially offline) degraded every quota-shed story to
+            // metadata-only (cloud-off icon) even though the mirror still held
+            // its chapters (the reported "says it cached, offline reload shows
+            // cloud icon" bug).
+            //
+            // Overlay rules per storyId (see upgradeRecordsFromIdbMirror for
+            // how `upgraded` is produced from the mirror):
+            //   - current entry has NO data (rung-2 metadata-only shed) and
+            //     the mirror holds chapters → restore the mirror's data on
+            //     top of the entry's CURRENT metadata (a list sync may have
+            //     already merged fresher metadata before this async pass ran).
+            //   - current entry is STILL the boot-hydration object and the
+            //     mirror has richer revisions (rung-1 trim) → wholesale
+            //     upgrade (revision history restored).
+            //   - anything else (a fresh fetch/list sync already replaced the
+            //     hydrated entry) → leave the current state alone; fresher
+            //     data must never be downgraded to the mirror's older copy.
             upgradeRecordsFromIdbMirror(cachedRecords)
                 .then((upgraded) => {
                     if (upgraded) {
                         setStore((prev) => {
-                            if (prev.records.length > 0) return prev;
-                            const lastStoryId = getLastStoryId();
-                            const selected = lastStoryId
-                                ? upgraded.find((m) => m.storyId === lastStoryId) ?? upgraded[0]
-                                : upgraded[0] ?? null;
+                            const hydratedById = new Map(cachedRecords.map((e) => [e.storyId, e]));
+                            const upgradedByStoryId = new Map(upgraded.map((e) => [e.storyId, e]));
+                            let changed = false;
+                            const records = prev.records.map((entry) => {
+                                const upgradedEntry = upgradedByStoryId.get(entry.storyId);
+                                if (!upgradedEntry) return entry;
+                                const mirrorData = upgradedEntry.data;
+                                if (!mirrorData) return entry;
+                                if (!entry.data) {
+                                    // Rung-2 metadata-only shed → restore the
+                                    // mirror's chapter payload.
+                                    changed = true;
+                                    const restored: StoryEntry = { ...entry, data: mirrorData };
+                                    // Staleness guard: the restored payload
+                                    // reflects the mirror write (stamped
+                                    // upgradedEntry.lastUpdatedAt). If the
+                                    // entry's stamp has since moved PAST it
+                                    // (a newer list sync / fetch merged in),
+                                    // the restored copy predates a server
+                                    // write — flag it stale so the next view
+                                    // re-fetches instead of showing the old
+                                    // payload as fresh. Equal/unknown stamps
+                                    // leave the flag alone.
+                                    if (
+                                        entry.lastUpdatedAt &&
+                                        upgradedEntry.lastUpdatedAt &&
+                                        entry.lastUpdatedAt !== upgradedEntry.lastUpdatedAt
+                                    ) {
+                                        restored.dataStale = true;
+                                    }
+                                    return restored;
+                                }
+                                // Still the pure hydration object → the
+                                // boot snapshot stands, take the wholesale
+                                // upgraded entry (richer revision history).
+                                if (hydratedById.get(entry.storyId) === entry) {
+                                    changed = true;
+                                    return upgradedEntry;
+                                }
+                                // A newer fetch/sync replaced the entry —
+                                // its state beats the mirror copy.
+                                return entry;
+                            });
+                            if (!changed) return prev;
+                            // Re-point the selection by storyId — a restored
+                            // entry is a new object, the stale reference
+                            // would render the pre-restore copy.
+                            const selected = prev.selected
+                                ? records.find((r) => r.storyId === prev.selected!.storyId) ?? prev.selected
+                                : prev.selected;
                             return {
                                 ...prev,
-                                records: upgraded,
-                                selected: selected ?? prev.selected,
+                                records,
+                                selected,
+                                // Surface the restore event to the sidebar's
+                                // cache chip (informational; see store.cacheWarning).
                                 cacheWarning:
                                     'Restored cached chapters from local app storage that the browser cache had shed.'
                             };

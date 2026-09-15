@@ -35,7 +35,10 @@ import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoryGeneratorApp } from './App';
 import { cancelPendingStorageWrites } from './context/store';
-import { storyCacheResetForTests } from './context/storyCache';
+// storyCacheResetForTests wipes the fake IndexedDB mirror between tests;
+// storyCacheSet seeds a mirror payload the way saveRecordsToStorage's
+// fire-and-forget mirror call would (see src/context/storyCache.ts).
+import { storyCacheResetForTests, storyCacheSet } from './context/storyCache';
 import { injectGlobalStyles } from './styles/global';
 
 const BASE_URL = 'http://test.local/v1/storyboard/generations';
@@ -3590,5 +3593,167 @@ describe('StoryGeneratorApp', () => {
         const raw = readRecordsCacheRaw();
         expect(raw).toContain('"storyId":"sync-cache-1"');
         expect(raw).toContain('sync cached body');
+    });
+
+    // ── Offline RELOAD regression: the tile said "Cached locally" while the
+    // app was open, but after disconnecting the network and reloading, the
+    // same tile showed the cloud-off "Not saved locally" icon instead.
+    //
+    // Root cause reproduced here: the browser-storage quota ladder shed the
+    // story's OWN localStorage key to metadata-only (data: null — rung 2 in
+    // saveStoryAtRung) while the in-memory store kept the chapters, so the
+    // disk icon showed all through the online session, and at the next boot
+    // the hydrated entry booted WITHOUT data. The un-shed IndexedDB mirror
+    // STILL held the chapters — upgradeRecordsFromIdbMirror restores them —
+    // but the boot pass throwing the restored payload away is exactly the
+    // regression: BootstrapLayer's upgrade setStore used to bail out via
+    // `prev.records.length > 0 → return prev`, and records are ALWAYS already
+    // hydrated by the time that async pass resolves, so the upgrade never
+    // applied and the offline reload degraded the tile to metadata-only.
+    it('restores shed cached chapters from the IndexedDB mirror on an offline reload', async () => {
+        // The shed localStorage state a quota-ladder session leaves behind:
+        // the story is listed with its metadata but its chapter payload was
+        // shed to data: null. (The online session still SHOWED the disk icon
+        // — the in-memory store carried the data.)
+        const shedEntry = {
+            id: 77,
+            storyId: 'mirror-shed-1',
+            storyName: 'Mirror Shed Tale',
+            title: 'Mirror Shed Tale',
+            storyline: 'shed storyline',
+            chapterRequested: 1,
+            chapterCompleted: 1,
+            createdDate: '2026-08-12T09:00:00.000Z',
+            lastUpdatedAt: '2026-08-12T09:00:00.000Z',
+            status: 'completed',
+            data: null,
+            isRemote: false
+        };
+        localStorage.setItem('storyGenerator:story:mirror-shed-1', JSON.stringify(shedEntry));
+        // The un-shed mirror copy every saveRecordsToStorage also writes.
+        await storyCacheSet([
+            {
+                ...shedEntry,
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Shed Chapter',
+                            plotpoints: ['shed plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [
+                                { content: '## Shed Chapter\n\nmirror-restored body', wordCount: 3, generationTimeMs: 500 }
+                            ]
+                        }
+                    ],
+                    meta: {
+                        storyline: 'shed storyline',
+                        chapterCount: 1,
+                        createdAt: '2026-08-12T09:00:00.000Z',
+                        lastUpdatedAt: '2026-08-12T09:00:00.000Z'
+                    }
+                }
+            } as any
+        ]);
+
+        // OFFLINE: every fetch rejects (network disconnected before reload).
+        (globalThis.fetch as any).mockImplementation(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // The story still lists (the metadata-only cache entry survives — the
+        // known bug: it lists but as "not saved locally").
+        expect(screen.getByTestId('story-tab-mirror-shed-1')).toBeDefined();
+
+        // AFTER the IndexedDB mirror upgrade pass, the story must show the
+        // disk "Cached locally" icon AND the restored chapter content.
+        await waitFor(() => {
+            expect(screen.getByTestId('story-cached-mirror-shed-1').getAttribute('title')).toBe('Cached locally');
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('mirror-restored body');
+        });
+
+        // The informational cache chip explains the restore.
+        await waitFor(() => {
+            expect(screen.getByTestId('cache-warning').textContent).toContain('Restored cached chapters');
+        });
+
+        // The synchronous localStorage tier self-heals from the restored
+        // store records (the records-persist effect re-writes the per-story
+        // key with the restored data), so a SUBSEQUENT reload stays rich.
+        await waitFor(() => {
+            expect(localStorage.getItem('storyGenerator:story:mirror-shed-1')).toContain('mirror-restored body');
+        });
+    });
+
+    // ── End-to-end reload contract: an online session caches a viewed story,
+    // then reloads OFFLINE (network disconnected before reload). The tile must
+    // keep the disk "Cached locally" icon (not the cloud-off variant) and the
+    // cached chapter content must render without any server round-trip.
+    it('caches a viewed story while online and still shows it cached after an offline reload', async () => {
+        const fetchMock = globalThis.fetch as any;
+        // ONLINE session: the list exposes the story; the per-story GET
+        // returns a fully expanded chapter for the selection catch-up.
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                { storyId: 'reload-cache-1', storyName: 'Reload Tale', chapterRequested: 1, chapterCompleted: 1, createdDate: '2026-08-13T09:00:00Z', status: 'completed' }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: 'Reload Chapter',
+                                plotpoints: ['reload plot'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [{ content: '## Reload Chapter\n\nreload cached body', wordCount: 3, generationTimeMs: 400 }]
+                            }
+                        ],
+                        meta: { storyline: 'reload storyline', chapterCount: 1, createdAt: '2026-08-13T09:00:00Z' }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+        await waitFor(() => {
+            expect(screen.getByTestId('story-tab-reload-cache-1')).toBeDefined();
+        });
+        // Viewing the story caches it: icon flips to the disk variant and the
+        // payload is synchronously durable in the per-story records key.
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('story-tab-reload-cache-1'));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('story-cached-reload-cache-1').getAttribute('title')).toBe('Cached locally');
+        });
+        expect(localStorage.getItem('storyGenerator:story:reload-cache-1')).toContain('reload cached body');
+
+        // ── RELOAD with the network disconnected ──────────────────────────
+        cleanup();
+        fetchMock.mockImplementation(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // INSTANT (cache-first): the story lists with the disk icon and the
+        // cached chapter content — identical cache state to before reload.
+        expect(screen.getByTestId('story-tab-reload-cache-1')).toBeDefined();
+        expect(screen.getByTestId('story-cached-reload-cache-1').getAttribute('title')).toBe('Cached locally');
+        await waitFor(() => {
+            expect(screen.getByTestId('chapter-0-content').textContent).toContain('reload cached body');
+        });
     });
 });
