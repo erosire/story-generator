@@ -43,10 +43,14 @@ describe('generation sampling defaults', () => {
     it('defines the exact SGLang-compatible defaults', () => {
         // top_k: -1 is the SGLang/vLLM sentinel for "top-k filtering disabled"
         // (full vocabulary considered); it is intentionally negative, not an error.
+        // max_tokens: 32768 is the explicit completion limit every story client
+        // inherits (long-form expansion would otherwise hit backend default
+        // caps and silently truncate mid-chapter).
         expect(DEFAULT_SAMPLING_PARAMS).toEqual({
             temperature: 1.0,
             top_p: 0.95,
             top_k: -1,
+            max_tokens: 32768,
             min_p: 0.0,
             presence_penalty: 0.0,
             frequency_penalty: 0.0,
@@ -58,10 +62,13 @@ describe('generation sampling defaults', () => {
         // The ninfer backend behind QWEN3_8_CLIENT rejects top_k: -1 (HTTP 400
         // "top_k must be nonnegative"); top_k: 0 is the vLLM-style sentinel for
         // "consider all tokens" — same behavior as -1, compliant encoding.
+        // max_tokens: 32768 is inherited from DEFAULT_SAMPLING_PARAMS via the
+        // spread, so the ninfer client gets the same completion limit.
         expect(QWEN3_8_SAMPLING_PARAMS).toEqual({
             temperature: 1.0,
             top_p: 0.95,
             top_k: 0,
+            max_tokens: 32768,
             min_p: 0.0,
             presence_penalty: 0.0,
             frequency_penalty: 0.0,
@@ -97,11 +104,12 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
-            // GLM53 routes through the Token Router gateway (was
-            // 'telnyx/glm-5.3', then 'merge/glm-5.3' — retargeted again in
-            // generation-config.ts when the GLM deployment moved to the
-            // token-router provider).
-            model: 'token-router/glm-5.3',
+            // GLM53 routes through the Vultr gateway — the deployment has been
+            // retargeted repeatedly ('telnyx/glm-5.3' → 'merge/glm-5.3' →
+            // 'token-router/glm-5.3' → 'vultr/glm-5.3', the value committed in
+            // bc075ea "Fixed Story Generator"). This expectation pins the
+            // CURRENT generation-config.ts value; retarget again => update here.
+            model: 'vultr/glm-5.3',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({

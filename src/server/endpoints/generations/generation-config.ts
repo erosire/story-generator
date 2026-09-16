@@ -122,8 +122,14 @@ export const DATABASE_BASE_DIR = 'storyboard';
 // SGLang-compatible defaults for the GLM-5.2 API. These values are attached to
 // every story-generation client so plotpoint, validation, chapter expansion,
 // retry, fork, and rewrite requests all use the same sampling behavior.
-// `max_tokens` is intentionally omitted because the deployment leaves the
-// completion limit unset unless a caller supplies one explicitly.
+// `max_tokens: 32768` is the explicit completion limit for EVERY story client:
+// EXPAND_TIMEOUT_MS (15 min) + TARGET_WORD_COUNT_PROMPT (4000 words) mean a
+// single chapter easily exceeds backends' own default completion caps (e.g.
+// SGLang /v1/chat/completions defaults to 32/64k only when left unset, and
+// Telnyx caps at provider defaults), causing silent mid-chapter truncation
+// that the expandChapter loop mistakes for a stalled/short response. Setting
+// it here means every selectable client in CLIENTS inherits it via the clone
+// sampling override — no per-call body needs to repeat it.
 export const DEFAULT_SAMPLING_PARAMS = {
     temperature: 1.0,
     top_p: 0.95,
@@ -139,6 +145,14 @@ export const DEFAULT_SAMPLING_PARAMS = {
     // by simple-client.ts (SimpleClientSamplingParams, line 80); passthrough
     // asserted at simple-client.test.ts:1348 / :1398.
     top_k: -1,
+    // OpenAI Chat Completions completion-limit field; flows into stream(),
+    // structure() and format() request bodies via the defaultSampling spread
+    // (simple-client.ts lines 919/982/1191/1526). Backend translation is
+    // already handled by the provider layer: the Telnyx gateway strips
+    // max_tokens for function-tool bodies (telnyx-shared.ts
+    // toTelnyxRequestBody, Telnyx error 10015 workaround) and Lightning maps
+    // it to Responses-API max_output_tokens (lightning-client.ts:203).
+    max_tokens: 32768,
     min_p: 0.0,
     presence_penalty: 0.0,
     frequency_penalty: 0.0,
@@ -192,7 +206,7 @@ export const CLIENTS = {
     // Uses QWEN3_8_SAMPLING_PARAMS (top_k: 0) because the ninfer backend
     // rejects the SGLang-style top_k: -1 sentinel; all other values unchanged.
     Qwen27B: QWEN3_8_CLIENT.clone({ sampling: QWEN3_8_SAMPLING_PARAMS }),
-    GLM53: TELNYX_CLIENT.clone({ model: 'token-router/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    GLM53: TELNYX_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Makora: MAKORA_CLIENT.clone({ model: 'zai-org/GLM-5.3-Flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     // Router: OPENROUTER_CLIENT.clone({ model: 'deepseek/deepseek-v4-flash-0731', sampling: DEFAULT_SAMPLING_PARAMS }),
     GLMFLASH: TELNYX_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
