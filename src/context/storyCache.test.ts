@@ -216,6 +216,47 @@ describe('storyCache (IndexedDB durable mirror, per-story keys)', () => {
         const read = await storyCacheGet();
         expect(read).toEqual(records);
     });
+
+    // â”€â”€ browser safety: the bundle must not touch the Node `process` global
+    // Vite does NOT polyfill `process` in browser builds. The trace helper
+    // (traceLog â†’ STORY_CACHE_TRACE check) read process.env UNGUARDED, so the
+    // store's save effect (saveRecordsToStorage â†’ storyCacheSet â†’ traceLog)
+    // threw `ReferenceError: process is not defined` and crashed
+    // <StoryStoreProvider> on page load. This test simulates the browser by
+    // hiding the global while the save path runs.
+    it('works when `process` is undefined (browser bundle has no Node globals)', async () => {
+        // Narrow interface so `process` is deletable under TS strict rules.
+        interface ProcessHost {
+            process?: NodeJS.Process;
+        }
+        const host = globalThis as unknown as ProcessHost;
+        // Snapshot FIRST: the original property on globalThis is Node's lazy
+        // getter — the snapshot is what gets re-installed in the finally.
+        const savedProcess = host.process;
+        delete host.process;
+        // NOT awaited inside the sans-process window: traceLog runs
+        // synchronously at the storyCacheSet call site (before the write
+        // queue is entered), so a regression re-introduces an immediate
+        // ReferenceError here. The finally restores `process` either way —
+        // the vitest runner itself needs it back.
+        let savedPromise: Promise<boolean>;
+        try {
+            savedPromise = storyCacheSet([makeRecord({ storyId: 'browser-1' })]);
+        } finally {
+            // Re-install as a plain value descriptor — sufficient for every
+            // subsequent `typeof process`/reference in the test environment
+            // (the lazy-getter semantics are irrelevant outside Node's boot).
+            Object.defineProperty(host, 'process', {
+                value: savedProcess,
+                writable: true,
+                configurable: true
+            });
+        }
+        expect(await savedPromise).toBe(true);
+        // The write must have landed through the normal (non-trace) path.
+        const read = await storyCacheGet();
+        expect(read).toEqual([makeRecord({ storyId: 'browser-1' })]);
+    });
 });
 
 // â”€â”€ storyCacheFingerprint (the cheap change detector) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

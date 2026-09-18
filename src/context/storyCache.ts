@@ -58,8 +58,20 @@
 // vitest's per-test stdout buffering — console output printed between tests
 // (afterEach) gets attributed to the wrong test block, which made a cross-test
 // mirror leak impossible to attribute. Only active when STORY_CACHE_TRACE=1.
+//
+// BROWSER GUARD: `process` is a Node global. Vite does NOT polyfill it in the
+// browser bundle, so an unguarded `process.env` read here threw `ReferenceError:
+// process is not defined` inside the store's save effect (saveRecordsToStorage
+// → storyCacheSet → traceLog) and crashed <StoryStoreProvider> on load. Tracing
+// is a vitest/Node-only diagnostic: resolve to "disabled" whenever `process` is
+// absent (browser, SSR sandbox). Cross-reference: store.tsx saveRecordsToStorage
+// (~line 694) and App.tsx <StoryStoreProvider> are the browser call sites.
 const traceLog = (message: string): void => {
-    if (process.env.STORY_CACHE_TRACE !== '1') return;
+    // `typeof process` is safe in every environment; only the bare `process`
+    // reference throws. Optional-chained env access covers exotic Node builds
+    // where `process.env` itself is undefined.
+    const tracingEnabled = typeof process !== 'undefined' && process.env?.STORY_CACHE_TRACE === '1';
+    if (!tracingEnabled) return;
     try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const fs = require('node:fs') as typeof import('node:fs');
