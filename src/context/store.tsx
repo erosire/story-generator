@@ -29,7 +29,7 @@
 // pattern (read + mutate triggers re-render).
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { LOCAL_AREA_NETWORK_HOST_NAME, LOCAL_AREA_NETWORK_STORYBOARD_PORT } from '../config';
+import { LOCAL_AREA_NETWORK_STORYBOARD_PORT, resolveStoryboardApiHostName } from '../config';
 import { deleteStory as deleteStoryApi, type ActiveJob, type StoryMeta } from '../api';
 import { storyCacheGet, storyCacheSet, storyCacheFingerprint } from './storyCache';
 
@@ -1056,7 +1056,7 @@ export type StoryStore = {
     records: StoryEntry[];
     selected: StoryEntry | null;
     config: {
-        baseUrl: string; // e.g. 'http://192.168.8.128:5252/v1/storyboard/generations'
+        baseUrl: string; // e.g. 'http://localhost:5252/v1/storyboard/generations' (LAN host instead when the UI itself is not loaded from localhost — see resolveStoryboardApiHostName in ../config)
         // Poll cadence for the per-chapter completion pollers (re-expand /
         // rewrite). The MAIN story poll loop no longer uses this interval:
         // it polls at activePollIntervalMs while a background job runs and
@@ -1158,8 +1158,15 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // service-route*.ts in src/server/endpoints/generations declares. Dial it
     // directly instead of the underload gateway (DATABASE_PORT 5000): the
     // gateway would only 307-redirect /v1/storyboard/* to 5252 anyway.
+    // HOST RESOLUTION (resolveStoryboardApiHostName, ../config): the host
+    // mirrors the ORIGIN the UI was loaded from — UI served from localhost
+    // (the dev server, vite.config.ts server.port 8000) dials the API at
+    // http://localhost:5252 (same machine); UI served from any other host
+    // falls back to the LAN constant. Previously the host was pinned to
+    // LOCAL_AREA_NETWORK_HOST_NAME (192.168.8.128) unconditionally, which
+    // forced even localhost-loaded sessions onto the machine's LAN interface.
     // Override via config in production by wrapping with a different provider value.
-        baseUrl: `http://${LOCAL_AREA_NETWORK_HOST_NAME}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,
+        baseUrl: `http://${resolveStoryboardApiHostName()}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,
     // Poll every 10s. The generation-create-new-story handler writes plotpoint.md
     // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
     // so 10s gives a smooth progressive reveal without hammering the server.
