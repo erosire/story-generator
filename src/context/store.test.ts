@@ -27,6 +27,7 @@ import {
     mergeServerStoryList,
     saveRecordsToStorage,
     didLastSaveFail,
+    getLastSaveFailedStoryIds,
     type StoryEntry
 } from './store';
 import { storyCacheGet, storyCacheResetForTests } from './storyCache';
@@ -675,6 +676,8 @@ describe('saveRecordsToStorage (synchronous offline cache, per-story keys)', () 
             expect(localStorage.getItem('storyGenerator:story:hopeless-1')).toBeNull();
             // ...and only then the write-failure state is flagged.
             expect(didLastSaveFail()).toBe(true);
+            expect(getLastSaveFailedStoryIds()).toEqual(['hopeless-1']);
+            expect(getLastSaveFailedStoryIds()).not.toContain('shed-old-2');
         } finally {
             setItem.mockRestore();
         }
@@ -867,6 +870,182 @@ describe('saveRecordsToStorage (synchronous offline cache, per-story keys)', () 
 
         // A subsequent load reads from the per-story key (no re-migration).
         expect(loadRecordsFromStorage().length).toBe(1);
+    });
+
+    it('migrates a legacy blob near quota without requiring old and new copies to coexist', () => {
+        const legacyEntry = {
+            id: 8,
+            storyId: 'legacy-near-quota',
+            title: 'Legacy Near Quota',
+            storyline: 'quota migration',
+            chapterRequested: 1,
+            chapterCompleted: 1,
+            createdDate: '2026-08-01T00:00:00.000Z',
+            dataStale: false,
+            status: 'completed' as const,
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Quota Chapter',
+                        plotpoints: ['plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [
+                            { content: `## Quota Chapter\n\n${'x'.repeat(600)}`, wordCount: 1, generationTimeMs: 1 }
+                        ]
+                    }
+                ],
+                meta: { storyline: 'quota migration', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+            },
+            isRemote: true,
+            missingFromServer: false
+        };
+        const legacyRaw = JSON.stringify([legacyEntry]);
+        // The blob fits exactly. A duplicate per-story value cannot coexist
+        // with it, but that same value fits once the blob allocation is freed.
+        const mock = installOriginQuotaMock(legacyRaw.length);
+        try {
+            localStorage.setItem('storyGenerator:records', legacyRaw);
+
+            const records = loadRecordsFromStorage();
+
+            expect(records.map((entry) => entry.storyId)).toEqual(['legacy-near-quota']);
+            expect(records[0].data!.chapters[0].revisions![0].content).toContain('x'.repeat(100));
+            expect(localStorage.getItem('storyGenerator:records')).toBeNull();
+            expect(localStorage.getItem('storyGenerator:story:legacy-near-quota')).toContain('Quota Chapter');
+        } finally {
+            mock.restore();
+        }
+    });
+
+    it('unions a partial migration and preserves the richer copy for duplicate story IDs', () => {
+        const legacyRich = makeEntry({
+            id: 11,
+            storyId: 'partial-legacy-rich',
+            title: 'Legacy title',
+            data: bigChapters('legacy-rich')
+        });
+        const currentMetadata = makeEntry({
+            id: 12,
+            storyId: 'partial-legacy-rich',
+            title: 'Current metadata title',
+            data: null
+        });
+        const currentRich = makeEntry({
+            id: 13,
+            storyId: 'partial-current-rich',
+            title: 'Current rich title',
+            data: bigChapters('current-rich')
+        });
+        const currentOnly = makeEntry({ id: 14, storyId: 'partial-current-only', title: 'Current only' });
+        const legacyOnly = makeEntry({ id: 15, storyId: 'partial-legacy-only', title: 'Legacy only' });
+
+        localStorage.setItem(
+            'storyGenerator:story:partial-legacy-rich',
+            JSON.stringify(currentMetadata)
+        );
+        localStorage.setItem(
+            'storyGenerator:story:partial-current-rich',
+            JSON.stringify(currentRich)
+        );
+        localStorage.setItem(
+            'storyGenerator:story:partial-current-only',
+            JSON.stringify(currentOnly)
+        );
+        localStorage.setItem(
+            'storyGenerator:records',
+            JSON.stringify([
+                legacyRich,
+                makeEntry({ storyId: 'partial-current-rich', title: 'Legacy metadata', data: null }),
+                legacyOnly
+            ])
+        );
+
+        const records = loadRecordsFromStorage();
+        expect(new Set(records.map((entry) => entry.storyId))).toEqual(
+            new Set([
+                'partial-legacy-rich',
+                'partial-current-rich',
+                'partial-current-only',
+                'partial-legacy-only'
+            ])
+        );
+
+        const upgraded = records.find((entry) => entry.storyId === 'partial-legacy-rich')!;
+        expect(upgraded.title).toBe('Current metadata title');
+        expect(upgraded.data!.chapters[0].revisions).toHaveLength(2);
+        expect(upgraded.data!.chapters[0].revisions![0].content).toContain('legacy-rich');
+
+        const retained = records.find((entry) => entry.storyId === 'partial-current-rich')!;
+        expect(retained.title).toBe('Current rich title');
+        expect(retained.data!.chapters[0].revisions![0].content).toContain('current-rich');
+        expect(records.find((entry) => entry.storyId === 'partial-legacy-only')).toBeDefined();
+
+        expect(localStorage.getItem('storyGenerator:records')).toBeNull();
+        expect(localStorage.getItem('storyGenerator:story:partial-legacy-only')).not.toBeNull();
+    });
+
+    it('retains a legacy-only record when conversion of that story key fails', () => {
+        const converted = makeEntry({ id: 16, storyId: 'legacy-converted', title: 'Converted' });
+        const unresolved = makeEntry({ id: 17, storyId: 'legacy-unresolved', title: 'Unresolved' });
+        localStorage.setItem('storyGenerator:records', JSON.stringify([converted, unresolved]));
+
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const originalSetItem = storageProto.setItem;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(function (this: Storage, key: string, value: string) {
+                if (key === 'storyGenerator:story:legacy-unresolved') {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                return originalSetItem.call(this, key, value);
+            });
+        try {
+            const firstLoad = loadRecordsFromStorage();
+            expect(new Set(firstLoad.map((entry) => entry.storyId))).toEqual(
+                new Set(['legacy-converted', 'legacy-unresolved'])
+            );
+            expect(localStorage.getItem('storyGenerator:story:legacy-converted')).not.toBeNull();
+            expect(localStorage.getItem('storyGenerator:story:legacy-unresolved')).toBeNull();
+
+            const residual = JSON.parse(localStorage.getItem('storyGenerator:records')!) as StoryEntry[];
+            expect(residual.map((entry) => entry.storyId)).toEqual(['legacy-unresolved']);
+
+            // A later boot must still union the successful key with the
+            // residual blob; the failed story can never become hidden merely
+            // because at least one per-story key exists.
+            expect(new Set(loadRecordsFromStorage().map((entry) => entry.storyId))).toEqual(
+                new Set(['legacy-converted', 'legacy-unresolved'])
+            );
+        } finally {
+            setItem.mockRestore();
+        }
+    });
+
+    it('removes a stale legacy allocation before an ordinary new-story save', () => {
+        const staleRaw = JSON.stringify([
+            makeEntry({
+                id: 20,
+                storyId: 'stale-legacy-story',
+                data: bigChapters('z'.repeat(700))
+            })
+        ]);
+        const fresh = makeEntry({ id: 21, storyId: 'fresh-after-legacy', data: { chapters: [], meta: null } });
+        const mock = installOriginQuotaMock(staleRaw.length);
+        try {
+            localStorage.setItem('storyGenerator:records', staleRaw);
+
+            saveRecordsToStorage([fresh]);
+
+            expect(localStorage.getItem('storyGenerator:records')).toBeNull();
+            expect(localStorage.getItem('storyGenerator:story:fresh-after-legacy')).not.toBeNull();
+            expect(didLastSaveFail()).toBe(false);
+            expect(getLastSaveFailedStoryIds()).toEqual([]);
+        } finally {
+            mock.restore();
+        }
     });
 
     it('gives up silently when storage is entirely unavailable', () => {

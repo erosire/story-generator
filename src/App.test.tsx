@@ -967,6 +967,50 @@ describe('StoryGeneratorApp', () => {
     // VIEWED: there is NO progressive background prefetch (the background
     // cache layer was removed — only the story being viewed is cached), so
     // the icon flips to the disk only via the selection catch-up GET.
+    it('scopes a browser-cache write warning to only the story key that failed', () => {
+        const cachedData = { chapters: [], meta: null };
+        const failed = {
+            id: 29,
+            storyId: 'failed-cache-copy',
+            title: 'Failed Cache Copy',
+            storyline: '',
+            chapterRequested: 1,
+            chapterCompleted: 1,
+            createdDate: '2026-08-13T08:00:00.000Z',
+            status: 'completed' as const,
+            data: cachedData,
+            isProcessing: false,
+            error: '',
+            isRemote: true
+        };
+        const saved = {
+            ...failed,
+            id: 30,
+            storyId: 'saved-cache-copy',
+            title: 'Saved Cache Copy'
+        };
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{
+                    records: [failed, saved],
+                    cacheWriteFailed: true,
+                    cacheWriteFailedStoryIds: ['failed-cache-copy']
+                }}
+            />
+        );
+
+        expect(screen.getByTestId('story-cached-failed-cache-copy').getAttribute('title')).toContain(
+            'Browser cache copy write failed for this story'
+        );
+        expect(screen.getByTestId('story-cached-saved-cache-copy').getAttribute('title')).toBe('Cached locally');
+        expect(screen.getByTestId('cache-warning').textContent).toContain('Browser cache copy failed for some stories');
+        expect(screen.getByTestId('cache-warning').textContent).not.toContain(
+            'stories will not be saved on this device'
+        );
+    });
+
     it('shows the cached-locally icon on cached stories and fetches the viewed one on selection', async () => {
         const fetchMock = globalThis.fetch as any;
         // One server story with NO cached data (metadata-only, never fetched

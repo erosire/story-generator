@@ -239,6 +239,30 @@ const rehydratePersistable = (entry: PersistableStoryEntry): StoryEntry => ({
     error: ''
 });
 
+/** True when `candidate` carries chapter data that `current` does not. */
+const hasRicherStoryData = (candidate: StoryData | null, current: StoryData | null): boolean => {
+    if (!candidate) return false;
+    if (!current) return true;
+
+    const currentChapters = current.chapters ?? [];
+    return (candidate.chapters ?? []).some((chapter, index) => {
+        const currentChapter = currentChapters[index];
+        if (!currentChapter) return true;
+        return (chapter.revisions?.length ?? 0) > (currentChapter.revisions?.length ?? 0);
+    });
+};
+
+/**
+ * Merge two cache-layout copies of one story. The per-story layout owns the
+ * metadata, but a richer legacy chapter payload must never be replaced by a
+ * metadata-only or revision-trimmed copy.
+ */
+const mergePersistableCopies = (
+    current: PersistableStoryEntry,
+    legacy: PersistableStoryEntry
+): PersistableStoryEntry =>
+    hasRicherStoryData(legacy.data, current.data) ? { ...current, data: legacy.data } : current;
+
 /** Read every per-story record key ('storyGenerator:story:*'). */
 const readPerStoryPersistables = (): PersistableStoryEntry[] => {
     const entries: PersistableStoryEntry[] = [];
@@ -268,36 +292,54 @@ const readPerStoryPersistables = (): PersistableStoryEntry[] => {
  *
  * PER-STORY LAYOUT: each story lives under its own key
  * ('storyGenerator:story:<storyId>'), so stories are hydrated independently.
- * LEGACY MIGRATION: when no per-story keys exist but the old single-blob
- * 'storyGenerator:records' key does (a pre-upgrade cache), the blob is read,
- * re-keyed per story, and removed — one-time, synchronous, best-effort.
+ * LEGACY MIGRATION: the old single-blob layout is always merged with the
+ * per-story layout. This matters after an interrupted migration: existing
+ * per-story keys must not hide legacy-only stories. The migration removes the
+ * blob before writing replacements so an origin near quota never needs to
+ * hold two complete copies at once. If any story cannot be converted at full
+ * fidelity, its legacy entry is retained for a later retry.
  */
 export const loadRecordsFromStorage = (): StoryEntry[] => {
     try {
         const perStory = readPerStoryPersistables();
-        if (perStory.length > 0) {
+        const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
+        if (!raw) return perStory.map(rehydratePersistable);
+
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(raw);
+        } catch {
+            // A corrupt legacy blob must not hide valid per-story records.
             return perStory.map(rehydratePersistable);
         }
-        // ── Legacy single-blob fallback + migration ──────────────────────
-        const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        const entries = (parsed as PersistableStoryEntry[]).map(rehydratePersistable);
-        // Re-key the blob into per-story entries so future saves only touch
-        // the story that changed, then remove the superseded blob. Best
-        // effort: a failed write (private mode) leaves the blob in place and
-        // the migration simply retries on the next boot.
-        try {
-            entries.forEach((entry) => {
-                localStorage.setItem(storyStorageKey(entry.storyId), JSON.stringify(toPersistable(entry)));
-            });
-            localStorage.removeItem(STORAGE_KEY_RECORDS);
-        } catch {
-            // Storage unavailable — the hydrated session still works; the
-            // blob migrates on a later boot when storage is writable again.
+        if (!Array.isArray(parsed)) return perStory.map(rehydratePersistable);
+
+        // Do not delete a blob containing an unrecognised record. Valid
+        // records can still hydrate this session, while the original value is
+        // kept intact for a future version/manual recovery.
+        const validLegacy = parsed.filter(
+            (entry): entry is PersistableStoryEntry =>
+                !!entry && typeof entry === 'object' && typeof (entry as PersistableStoryEntry).storyId === 'string'
+        );
+        const canMigrate = validLegacy.length === parsed.length;
+        const legacy = validLegacy.map((entry) => toPersistable(rehydratePersistable(entry)));
+
+        const merged = [...perStory];
+        const indexByStoryId = new Map(merged.map((entry, index) => [entry.storyId, index]));
+        legacy.forEach((legacyEntry) => {
+            const index = indexByStoryId.get(legacyEntry.storyId);
+            if (index === undefined) {
+                indexByStoryId.set(legacyEntry.storyId, merged.length);
+                merged.push(legacyEntry);
+                return;
+            }
+            merged[index] = mergePersistableCopies(merged[index], legacyEntry);
+        });
+
+        if (canMigrate) {
+            migrateLegacyRecords(merged, legacy, raw);
         }
-        return entries;
+        return merged.map(rehydratePersistable);
     } catch {
         return [];
     }
@@ -468,13 +510,16 @@ let pendingIdleHandle: number | null = null;
 // through saveRecordsToStorage, which does the toPersistable mapping itself.
 let pendingRecords: StoryEntry[] | null = null;
 
-// Session-scoped cache-health flag (see saveRecordsToStorage). Module-level
+// Session-scoped cache-health state (see saveRecordsToStorage). Module-level
 // because the save is synchronous/static while the consumer is React state.
-// Declared before its use site (saveRecordsToStorage resets it on entry).
-let lastSaveFailed = false;
+// Story IDs are retained so one failed key does not mark every tile failed.
+const lastSaveFailedStoryIds = new Set<string>();
 
 /** True when the last saveRecordsToStorage could not write localStorage. */
-export const didLastSaveFail = (): boolean => lastSaveFailed;
+export const didLastSaveFail = (): boolean => lastSaveFailedStoryIds.size > 0;
+
+/** Story IDs whose localStorage key failed during the last records save. */
+export const getLastSaveFailedStoryIds = (): string[] => [...lastSaveFailedStoryIds];
 
 /**
  * Serialize one entry's chapter payload with its revision history trimmed to
@@ -572,7 +617,12 @@ const forgetPersistedStory = (storyId: string): void => {
  * the caller decides whether make-room shedding can help, see
  * saveRecordsToStorage pass 2).
  */
-const saveStoryAtRung = (entry: PersistableStoryEntry, minRung: number, allowSkip = true): number => {
+const saveStoryAtRung = (
+    entry: PersistableStoryEntry,
+    minRung: number,
+    allowSkip = true,
+    maxRung = 2
+): number => {
     const key = storyStorageKey(entry.storyId);
     const fingerprint = storyCacheFingerprint(entry);
     // Already cached, updated timestamp (and everything persisted) unchanged
@@ -584,7 +634,7 @@ const saveStoryAtRung = (entry: PersistableStoryEntry, minRung: number, allowSki
     ) {
         return persistedRungs.get(entry.storyId) ?? 0;
     }
-    for (let rung = Math.max(0, minRung); rung <= 2; rung++) {
+    for (let rung = Math.max(0, minRung); rung <= Math.min(2, maxRung); rung++) {
         let incoming: string;
         try {
             incoming = JSON.stringify(buildShedRung(entry, rung));
@@ -606,6 +656,68 @@ const saveStoryAtRung = (entry: PersistableStoryEntry, minRung: number, allowSki
         }
     }
     return -1;
+};
+
+/**
+ * Convert the legacy blob without ever requiring it and all replacement keys
+ * to coexist. Full-fidelity writes are required here: entries that cannot be
+ * converted are kept in a smaller residual legacy blob instead of silently
+ * shedding chapter data during migration.
+ */
+const migrateLegacyRecords = (
+    merged: PersistableStoryEntry[],
+    legacy: PersistableStoryEntry[],
+    originalRaw: string
+): void => {
+    const mergedByStoryId = new Map(merged.map((entry) => [entry.storyId, entry]));
+    const targets = [...new Set(legacy.map((entry) => entry.storyId))]
+        .map((storyId) => mergedByStoryId.get(storyId))
+        .filter((entry): entry is PersistableStoryEntry => entry !== undefined);
+    const originals = new Map<string, string | null>();
+    let blobRemoved = false;
+
+    const rollback = () => {
+        try {
+            // Clear converted copies first. The exact original blob then fits
+            // under the same quota it occupied before migration began.
+            targets.forEach((entry) => {
+                localStorage.removeItem(storyStorageKey(entry.storyId));
+                forgetPersistedStory(entry.storyId);
+            });
+            localStorage.setItem(STORAGE_KEY_RECORDS, originalRaw);
+            originals.forEach((raw, storyId) => {
+                if (raw !== null) localStorage.setItem(storyStorageKey(storyId), raw);
+            });
+        } catch {
+            // Best effort under a storage device that became unavailable
+            // mid-operation. The in-memory merged result still hydrates.
+        }
+    };
+
+    try {
+        // Permission preflight that consumes no additional quota. If writes
+        // are disabled, leave the legacy blob untouched and hydrate from it.
+        localStorage.setItem(STORAGE_KEY_RECORDS, originalRaw);
+        targets.forEach((entry) => {
+            originals.set(entry.storyId, localStorage.getItem(storyStorageKey(entry.storyId)));
+        });
+
+        localStorage.removeItem(STORAGE_KEY_RECORDS);
+        blobRemoved = true;
+        if (localStorage.getItem(STORAGE_KEY_RECORDS) !== null) {
+            blobRemoved = false;
+            return;
+        }
+
+        const unresolved = targets.filter((entry) => saveStoryAtRung(entry, 0, false, 0) < 0);
+        if (unresolved.length > 0) {
+            // Keep only entries that still need conversion. A later load
+            // unions these with successful per-story keys and retries.
+            localStorage.setItem(STORAGE_KEY_RECORDS, JSON.stringify(unresolved));
+        }
+    } catch {
+        if (blobRemoved) rollback();
+    }
 };
 
 /** Remove every per-story key whose storyId is absent from `records`. */
@@ -635,6 +747,32 @@ const removeOrphanStoryKeys = (validIds: Set<string>): void => {
     }
 };
 
+/** Remove the legacy allocation before saving the authoritative full record set. */
+const removeLegacyBlob = (): void => {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY_RECORDS);
+        if (!raw) return;
+        const parsed: unknown = JSON.parse(raw);
+        // Preserve unreadable/unknown data rather than guessing that it is
+        // safe to discard. Valid legacy arrays are already represented by the
+        // complete `records` argument at this point.
+        if (
+            !Array.isArray(parsed) ||
+            !parsed.every(
+                (entry) =>
+                    !!entry &&
+                    typeof entry === 'object' &&
+                    typeof (entry as PersistableStoryEntry).storyId === 'string'
+            )
+        ) {
+            return;
+        }
+        localStorage.removeItem(STORAGE_KEY_RECORDS);
+    } catch {
+        // The per-story write path below records any affected story IDs.
+    }
+};
+
 /**
  * Synchronous write of the records to localStorage — PER STORY. Each entry
  * goes to its own key ('storyGenerator:story:<storyId>'), so one story's
@@ -653,8 +791,8 @@ const removeOrphanStoryKeys = (validIds: Set<string>): void => {
  * PASS 2 — make room (LAST RESORT): localStorage quota is ORIGIN-WIDE (~5MB
  * shared by every key), so a story can fail ALL of its own rungs purely
  * because the OTHER cached stories fill the budget — without this pass a
- * full cache would mark the story (and via cacheWriteFailed, every tile) as
- * "cache write failed" even though plenty of shedable content exists. When
+ * full cache would mark the new story as "cache write failed" even though
+ * plenty of shedable content exists. When
  * a story failed its own ladder, the OLDEST cached stories (recency key:
  * lastActionedAt || createdDate — the sidebar's own sort key) are degraded
  * ONE RUNG at a time (trim revision history → metadata-only), retrying the
@@ -665,10 +803,10 @@ const removeOrphanStoryKeys = (validIds: Set<string>): void => {
  * recoverable — the IndexedDB mirror never sheds, and
  * upgradeRecordsFromIdbMirror restores the chapters at the next boot.
  *
- * lastSaveFailed (→ store.cacheWriteFailed → the sidebar's "not saved" tile
- * state) is set ONLY when a story still could not be saved after everything
- * shedable was shed — i.e. storage is genuinely unavailable or truly full.
- * A metadata-only save is a SUCCESSFUL save.
+ * The failed-story ID set (→ store.cacheWriteFailedStoryIds → that story's
+ * warning tile state) is populated ONLY when a story still could not be saved
+ * after everything shedable was shed — i.e. localStorage is unavailable or
+ * truly full. A metadata-only save is a SUCCESSFUL save.
  *
  * ORPHAN CLEANUP: keys for stories no longer in `records` (deleted) are
  * removed, so deleting a story purges its cache without a full-blob rewrite.
@@ -683,9 +821,10 @@ const removeOrphanStoryKeys = (validIds: Set<string>): void => {
  */
 export const saveRecordsToStorage = (records: StoryEntry[]): void => {
     const serializable = records.map(toPersistable);
+    const validIds = new Set(serializable.map((entry) => entry.storyId));
 
-    // Reset the cache-health flag optimistically at the start of each save.
-    lastSaveFailed = false;
+    // Reset per-story cache health optimistically at the start of each save.
+    lastSaveFailedStoryIds.clear();
     // Mirror the FULL payload to IndexedDB FIRST (fire-and-forget) — the
     // durable tier never sheds, so even when localStorage must degrade the
     // mirror keeps every revision for the next boot's upgrade pass. The
@@ -697,6 +836,12 @@ export const saveRecordsToStorage = (records: StoryEntry[]): void => {
             console.warn('[storyCache] IndexedDB mirror write failed (localStorage copy retained)');
         }
     });
+
+    // Any blob left by an old or interrupted migration is dead allocation at
+    // this point: `records` is the complete, merged store set. Free it before
+    // per-story writes so stale duplicate bytes cannot force every rung over
+    // the origin quota.
+    removeLegacyBlob();
 
     // ── Pass 1: every story saves at its own lightest rung ────────────────
     // savedRungs tracks the rung each story's key currently holds (needed by
@@ -755,14 +900,14 @@ export const saveRecordsToStorage = (records: StoryEntry[]): void => {
                 // unavailable or truly full. The in-memory store keeps
                 // working for this session and the IndexedDB mirror (which
                 // never sheds) holds the full payload for recovery.
-                lastSaveFailed = true;
+                lastSaveFailedStoryIds.add(failedEntry.storyId);
             }
         }
     }
 
     // Purge keys of stories removed from the records list (deleted) so a
     // deleted story can never resurrect from a stale key on the next boot.
-    removeOrphanStoryKeys(new Set(serializable.map((entry) => entry.storyId)));
+    removeOrphanStoryKeys(validIds);
 };
 
 /**
@@ -1094,11 +1239,14 @@ export type StoryStore = {
     // session. Optional because tests seeding initialStore omit it.
     cacheWarning?: string;
     // True when the LAST saveRecordsToStorage could not write localStorage
-    // at all (every ladder rung failed — storage unavailable). The sidebar
-    // turns each tile's cached-locally indicator into a "not saved" warning
-    // state while this is set, because the story the user is viewing is NOT
-    // actually durable. Transient (session-scoped, recomputed on every save).
+    // at all for at least one story (every ladder rung failed). This aggregate
+    // drives the cache-health chip; tile warnings use the scoped ID list below.
     cacheWriteFailed?: boolean;
+    // Story IDs whose localStorage cache-copy write failed in the LAST save.
+    // IndexedDB is asynchronous and may still have accepted its durable copy,
+    // so this state deliberately describes only the synchronous quick-cache
+    // tier. Transient and recomputed on every records save.
+    cacheWriteFailedStoryIds?: string[];
     // Click counter for the sidebar's story tiles. Bumped by EVERY user click
     // on a tile (StorySidebar's itemProps.onClick) — including re-clicks on the
     // already-selected story. The content feature (StoryContent's selection
@@ -1198,6 +1346,8 @@ export const StoryStoreProvider: React.FC<{
         // Registry snapshot starts empty — it is server-process state, re-synced
         // by the first list fetch (BootstrapLayer) like the transient flags.
         activeJobs: initialStore?.activeJobs ?? [],
+        cacheWriteFailed: initialStore?.cacheWriteFailed ?? false,
+        cacheWriteFailedStoryIds: initialStore?.cacheWriteFailedStoryIds ?? [],
         config: {
             ...DEFAULT_CONFIG,
             ...configOverrides,
@@ -1248,11 +1398,9 @@ export const StoryStoreProvider: React.FC<{
     // that exceeds the quota sheds only its own weight, never another
     // story's cached chapters.
     //
-    // CACHE-HEALTH INDICATION: after each save, the write-failure flag is
-    // mirrored into store.cacheWriteFailed so the sidebar can warn the user
-    // that a story is NOT actually saved locally (iOS private mode / storage
-    // disabled). A change flips the store → re-render; when the flag is
-    // already correct the update is a no-op reference-wise (same boolean).
+    // CACHE-HEALTH INDICATION: after each save, failed story IDs are mirrored
+    // into the store. This keeps tile warnings scoped to the keys that failed;
+    // IndexedDB may still have accepted the asynchronous durable mirror copy.
     const didHydrateRef = useRef(false);
     useEffect(() => {
         // Skip the very first render — we don't want to overwrite localStorage
@@ -1268,9 +1416,16 @@ export const StoryStoreProvider: React.FC<{
         if (!didHydrateRef.current) return;
         saveRecordsToStorage(store.records);
         const writeFailed = didLastSaveFail();
-        setStoreState((prev) =>
-            prev.cacheWriteFailed === writeFailed ? prev : { ...prev, cacheWriteFailed: writeFailed }
-        );
+        const failedStoryIds = getLastSaveFailedStoryIds();
+        setStoreState((prev) => {
+            const previousIds = prev.cacheWriteFailedStoryIds ?? [];
+            const sameIds =
+                previousIds.length === failedStoryIds.length &&
+                previousIds.every((storyId, index) => storyId === failedStoryIds[index]);
+            return prev.cacheWriteFailed === writeFailed && sameIds
+                ? prev
+                : { ...prev, cacheWriteFailed: writeFailed, cacheWriteFailedStoryIds: failedStoryIds };
+        });
     }, [store.records]);
     // Unmount latch: flip didHydrateRef.current to false so late microtasks
     // (a fetch resolving after unmount) cannot write the cache/mirror after

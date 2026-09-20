@@ -21,17 +21,16 @@
 //   - cloud-off icon (title "Not saved locally — open once while connected")
 //     — entry.data null: only server metadata is known; the chapters have
 //     never been fetched here, so offline it renders metadata-only.
-//   - warning save-off icon (title "Cache write failed…") — the story HAS
-//     cached content but the browser can no longer WRITE the cache
-//     (store.cacheWriteFailed — iOS private mode / storage disabled): the
-//     visible content is readable but new content will NOT be saved.
+//   - warning save-off icon — this story HAS cached content but its latest
+//     localStorage quick-cache copy failed. The IndexedDB mirror may still
+//     have accepted the full durable copy asynchronously.
 // The icon is informational only — no click behavior, it is rendered inside
 // the tile's select button like the badges.
 //
 // CACHE-HEALTH CHIP (data-testid "cache-warning"): below the load warning, a
-// chip appears when the local cache is degraded — writes failing entirely
-// ("Local saving unavailable…") or a boot recovery/upgrade restored records
-// from the IndexedDB mirror (informational). See store.cacheWarning /
+// chip appears when the local cache is degraded — one or more localStorage
+// quick-cache copies failed, or a boot recovery/upgrade restored records from
+// the IndexedDB mirror (informational). See store.cacheWarning /
 // store.cacheWriteFailed in src/context/store.tsx.
 //
 // The "Stories" header carries a live job-count chip (data-testid
@@ -120,10 +119,11 @@ import { Badge } from '../components';
 const REFRESH_INTERVAL_MS = 30_000;
 
 // Cache-write-failure copy (data-testid "cache-warning" chip). Shown when
-// store.cacheWriteFailed is set — the browser cannot WRITE the local cache
-// (iOS private mode / disabled storage), so stories the user opens are NOT
-// being saved for offline reading even though they display fine.
-const CACHE_WRITE_FAILED_MESSAGE = 'Local saving unavailable — stories will not be saved on this device';
+// store.cacheWriteFailed is set when one or more synchronous localStorage
+// copies fail. IndexedDB persistence is asynchronous, so do not claim that all
+// local persistence was lost.
+const CACHE_WRITE_FAILED_MESSAGE =
+    'Browser cache copy failed for some stories — durable local app storage may still be available';
 
 // How often to auto-refresh while any story is being processed in the
 // background. The list response carries the server's live job-registry flags
@@ -388,9 +388,8 @@ const CachedIcon = styled('span', {
 
 // NOT-SAVED variant of the cached icon — same meta-row slot, warning tint +
 // glyph. Rendered instead of the disk when the story HAS cached content but
-// the browser can no longer WRITE the cache (store.cacheWriteFailed — iOS
-// private mode / disabled storage): what the user sees is cached but the
-// next change will not be saved.
+// its latest localStorage quick-cache write failed. The IndexedDB mirror may
+// still hold the full durable copy.
 const NotSavedIcon = styled('span', {
     display: 'inline-flex',
     alignItems: 'center',
@@ -409,10 +408,8 @@ const NotSavedIcon = styled('span', {
 //   'not-cached'   — entry.data is null (freshly synced remote entry, never
 //                    fetched): NOTHING of its chapters is stored locally, so
 //                    offline it would show as metadata-only. Cloud-off icon.
-//   'write-failed' — the story has cached content BUT the last cache write
-//                    failed (store.cacheWriteFailed — iOS private mode /
-//                    disabled storage): what is on screen is readable now, but
-//                    NEW content cannot be saved. Warning save-off icon.
+//   'write-failed' — the story has cached content BUT its localStorage copy
+//                    failed. IndexedDB may still hold the durable mirror.
 const resolveCacheState = (entry: { data: unknown }, cacheWriteFailed: boolean): 'saved' | 'not-cached' | 'write-failed' => {
     if (entry.data !== null && entry.data !== undefined) {
         return cacheWriteFailed ? 'write-failed' : 'saved';
@@ -667,7 +664,10 @@ export const StorySidebar: React.FC = React.memo(() => {
                 // Cached-locally state — THREE states (see resolveCacheState
                 // above the component): 'saved' (disk icon), 'not-cached'
                 // (cloud-off icon), 'write-failed' (warning save-off icon).
-                const cacheState = resolveCacheState(entry, store.cacheWriteFailed === true);
+                const cacheState = resolveCacheState(
+                    entry,
+                    store.cacheWriteFailedStoryIds?.includes(entry.storyId) === true
+                );
 
                 // Cached-state icon per tile — the three-state resolution
                 // above drives WHICH glyph renders in the title row (testid
@@ -676,8 +676,8 @@ export const StorySidebar: React.FC = React.memo(() => {
                 //   saved        → disk glyph, "Cached locally"
                 //   not-cached   → cloud-off glyph, "Not saved locally — open
                 //                  once while connected to cache it"
-                //   write-failed → warning save-off glyph, "Cache write
-                //                  failed — this story cannot be saved"
+                //   write-failed → warning save-off glyph scoped to THIS
+                //                  story's browser quick-cache copy
                 const cachedIndicator =
                     cacheState === 'saved' ? (
                         <CachedIcon
@@ -690,8 +690,8 @@ export const StorySidebar: React.FC = React.memo(() => {
                     ) : cacheState === 'write-failed' ? (
                         <NotSavedIcon
                             data-testid={`story-cached-${entry.storyId}`}
-                            title="Cache write failed — this story cannot be saved locally (storage unavailable)"
-                            aria-label="Cache write failed — this story cannot be saved locally"
+                            title="Browser cache copy write failed for this story (durable local app storage may still be available)"
+                            aria-label="Browser cache copy write failed for this story"
                         >
                             <SyncDisabledIcon style={{ fontSize: 13, display: 'block' }} />
                         </NotSavedIcon>
@@ -823,12 +823,11 @@ export const StorySidebar: React.FC = React.memo(() => {
                 </LoadWarning>
             )}
             {/* Cache-health chip — shown when the LOCAL cache is degraded:
-                writes failing entirely (iOS private mode / storage disabled —
-                new stories cannot be saved for offline reading) or a boot
+                one or more localStorage quick-cache copies failed, or a boot
                 recovery/upgrade pass restored records from the IndexedDB
-                mirror (informational). Independent of loadWarning (server
-                reachability) — the cache can be broken while the server is
-                fine and vice versa. */}
+                mirror (informational). IndexedDB writes settle asynchronously,
+                so this warning does not claim total local loss. Independent of
+                loadWarning (server reachability). */}
             {(store.cacheWriteFailed || store.cacheWarning) && (
                 <LoadWarning
                     data-testid="cache-warning"
