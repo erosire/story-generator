@@ -32,7 +32,7 @@ import {
     getLastSaveFailedStoryIds,
     type StoryEntry
 } from './store';
-import { storyCacheGet, storyCacheResetForTests } from './storyCache';
+import { storyCacheGet, storyCacheSet, storyCacheResetForTests } from './storyCache';
 
 // Minimal valid StoryEntry factory — only the fields merge/persist code and
 // types require; tests override the fields they assert on.
@@ -1497,5 +1497,225 @@ describe('IndexedDB mirror (saveRecordsToStorage / loadRecordsFromIdbMirror)', (
     it('upgradeRecordsFromIdbMirror returns null when the mirror is empty', async () => {
         const upgraded = await upgradeRecordsFromIdbMirror([makeEntry({ storyId: 'upgrade-4' })]);
         expect(upgraded).toBeNull();
+    });
+
+    // ── T1: MIRROR-ONLY APPEND ──────────────────────────────────────────
+    // The structural "new stories never cache forever" regression: a NEW
+    // story whose localStorage writes failed at EVERY rung (mobile origin
+    // quota exhausted by old cached stories) left no localStorage key, but
+    // saveRecordsToStorage always fires the mirror sync with the complete
+    // records — so the durable mirror DID catch the full payload. On the
+    // next boot the upgrade pass only MAPPED the localStorage records, so
+    // the mirror's copy of the new story was silently dropped: it came back
+    // from the server list as data:null and showed "Not saved locally"
+    // every session, forever. The append fixes that drop.
+    it('upgradeRecordsFromIdbMirror APPENDS mirror-only stories with their data', async () => {
+        const a = makeEntry({
+            id: 1,
+            storyId: 'append-a',
+            title: 'Story A',
+            data: { chapters: [], meta: null }
+        });
+        const b = makeEntry({
+            id: 2,
+            storyId: 'append-b',
+            title: 'Story B',
+            lastUpdatedAt: '2026-08-20T10:00:00.000Z',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Append Chapter',
+                        plotpoints: ['append plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [
+                            { content: '## Append Chapter\n\nappend body', wordCount: 3, generationTimeMs: 100 }
+                        ]
+                    }
+                ],
+                meta: { storyline: 'append storyline', chapterCount: 1, createdAt: '2026-08-20T10:00:00.000Z' }
+            }
+        });
+        // localStorage holds ONLY story A (story B's writes failed at every
+        // rung); the durable mirror caught BOTH full payloads.
+        localStorage.setItem('storyGenerator:story:append-a', JSON.stringify(a));
+        await storyCacheSet([a, b]);
+
+        // The reload: localStorage hydration finds A only…
+        const hydrated = loadRecordsFromStorage();
+        expect(hydrated.map((entry) => entry.storyId)).toEqual(['append-a']);
+
+        // …and the upgrade pass must surface B WITH its cached chapters
+        // instead of silently dropping it.
+        const upgraded = await upgradeRecordsFromIdbMirror(hydrated);
+        expect(upgraded).not.toBeNull();
+        expect(upgraded!.map((entry) => entry.storyId)).toEqual(['append-a', 'append-b']);
+        const appendedB = upgraded!.find((entry) => entry.storyId === 'append-b')!;
+        expect(appendedB.data).not.toBeNull();
+        expect(appendedB.data!.chapters[0].revisions).toEqual([
+            { content: '## Append Chapter\n\nappend body', wordCount: 3, generationTimeMs: 100 }
+        ]);
+        // Appended entries rehydrate through the same defaults the recovery
+        // path applies (transient flags reset, not carried from the mirror).
+        expect(appendedB.isProcessing).toBe(false);
+        expect(appendedB.error).toBe('');
+        expect(appendedB.missingFromServer).toBe(false);
+    });
+
+    // ── T3: RICHER-WINS NEVER-DOWNGRADE ─────────────────────────────────
+    // The boot re-put poison scenario: hydration found a metadata-only
+    // localStorage copy (quota shed) while the mirror still held the
+    // chapters; the persist effect then saved the hydrated data:null
+    // record — the pre-fix mirror sync overwrote the ONLY full copy with
+    // metadata. storyCacheSet must keep the richer stored entry.
+    it('storyCacheSet never downgrades a stored mirror entry to data:null (richer-wins)', async () => {
+        const full = makeEntry({
+            storyId: 'downgrade-guard-1',
+            lastUpdatedAt: '2026-08-20T11:00:00.000Z',
+            data: {
+                chapters: [
+                    {
+                        chapterNumber: '1',
+                        chapterIndex: 0,
+                        title: 'Guard Chapter',
+                        plotpoints: ['guard plot'],
+                        expanded: true,
+                        canReExpand: true,
+                        revisions: [
+                            { content: '## Guard Chapter\n\nguard body', wordCount: 3, generationTimeMs: 100 }
+                        ]
+                    }
+                ],
+                meta: { storyline: 'guard storyline', chapterCount: 1, createdAt: '2026-08-20T11:00:00.000Z' }
+            }
+        });
+        expect(await storyCacheSet([full])).toBe(true);
+
+        // Same story with its data shed to null (unchanged metadata — the
+        // exact record a quota-shed hydration feeds back into the persist
+        // effect on the next boot).
+        const shed = { ...full, data: null };
+        expect(await storyCacheSet([shed])).toBe(true);
+
+        // The mirror still holds the RICH copy — not the metadata-only one.
+        const mirrored = (await storyCacheGet())!;
+        expect(mirrored.length).toBe(1);
+        expect(mirrored[0].storyId).toBe('downgrade-guard-1');
+        expect(mirrored[0].data).not.toBeNull();
+        expect(mirrored[0].data!.chapters[0].revisions).toEqual([
+            { content: '## Guard Chapter\n\nguard body', wordCount: 3, generationTimeMs: 100 }
+        ]);
+
+        // And a LEGITIMATE later change (fresh rich data, new timestamp)
+        // still overwrites — the guard never wedges the mirror stale.
+        const fresh = {
+            ...full,
+            lastUpdatedAt: '2026-08-20T12:00:00.000Z',
+            data: {
+                ...full.data!,
+                chapters: [
+                    {
+                        ...full.data!.chapters[0],
+                        title: 'Guard Chapter v2',
+                        revisions: [
+                            { content: '## Guard Chapter v2\n\nfresher body', wordCount: 3, generationTimeMs: 200 }
+                        ]
+                    }
+                ]
+            }
+        };
+        expect(await storyCacheSet([fresh])).toBe(true);
+        const after = (await storyCacheGet())!;
+        expect(after[0].data!.chapters[0].title).toBe('Guard Chapter v2');
+    });
+
+    // ── T4: CROSS-LOAD CHANGE DETECTION (no boot re-put burst) ──────────
+    // mirrorSignatures is an in-memory map, empty on every fresh page load —
+    // the pre-fix first sync after boot re-put EVERY story as a multi-MB
+    // structured-clone burst (and a slow phone's transaction watchdog could
+    // abort it, silently rolling back the new story's first full put). The
+    // stored-value fingerprint comparison must skip identical payloads with
+    // ZERO puts. Simulated with a FRESH module instance against the SAME
+    // database (fake-indexeddb's factory global survives vi.resetModules).
+    it('storyCacheSet skips identical payloads after a fresh page load (no redundant puts)', async () => {
+        const a = makeEntry({
+            id: 1,
+            storyId: 'crossload-a',
+            lastUpdatedAt: '2026-08-20T10:00:00.000Z',
+            data: { chapters: [], meta: null }
+        });
+        const b = makeEntry({
+            id: 2,
+            storyId: 'crossload-b',
+            lastUpdatedAt: '2026-08-20T11:00:00.000Z',
+            data: { chapters: [], meta: null }
+        });
+        // First session: the sync commits both payloads.
+        expect(await storyCacheSet([a, b])).toBe(true);
+
+        // The "page reload": fresh module (empty in-memory signature map),
+        // same database. Spy on the IDBObjectStore.prototype.put the way
+        // fake-indexeddb implements puts — a skipped put must not be issued.
+        const putSpy = vi.spyOn(IDBObjectStore.prototype, 'put');
+        try {
+            vi.resetModules();
+            const freshCache = await import('./storyCache');
+            expect(await freshCache.storyCacheSet([a, b])).toBe(true);
+            // The stored fingerprints matched the incoming payloads → reads
+            // replaced writes: ZERO puts issued.
+            expect(putSpy).not.toHaveBeenCalled();
+            // …and the mirror payload is intact.
+            const read = await freshCache.storyCacheGet();
+            expect(read!.map((r) => r.storyId).sort()).toEqual(['crossload-a', 'crossload-b']);
+        } finally {
+            putSpy.mockRestore();
+            // Re-baseline the module registry so later dynamic imports never
+            // see the throwaway instance (static bindings are unaffected).
+            vi.resetModules();
+        }
+    });
+});
+
+// ── T6: MID-SESSION STORAGE DEATH ───────────────────────────────────────
+// The fingerprint-skip inside saveStoryAtRung read localStorage.getItem
+// UNGUARDED: a storage device dying mid-session (hardened WebView revoking
+// storage, eviction storm) after a SUCCESSFUL same-session save leaves a
+// persistedFingerprints entry behind, so the next save hit the getItem in
+// the skip condition and the throw escaped saveStoryAtRung — crashing the
+// provider's persist effect and the whole records save. The guarded read
+// must fall through to the quota ladder (whose per-rung catch handles the
+// dead storage) and flag the per-story failure instead of throwing.
+describe('saveRecordsToStorage (mid-session storage death)', () => {
+    beforeEach(() => {
+        localStorage.clear();
+    });
+
+    it('does not throw when storage dies after a successful same-session save (per-story failure flagged)', () => {
+        const entry = makeEntry({ storyId: 'die-mid-session', data: { chapters: [], meta: null } });
+        // First save lands normally — the fingerprint-skip state is primed.
+        saveRecordsToStorage([entry]);
+        expect(localStorage.getItem('storyGenerator:story:die-mid-session')).not.toBeNull();
+
+        // …then the storage device dies mid-session: EVERY access throws.
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const getItem = vi.spyOn(storageProto, 'getItem').mockImplementation(() => {
+            throw new DOMException('SecurityError', 'SecurityError');
+        });
+        const setItem = vi.spyOn(storageProto, 'setItem').mockImplementation(() => {
+            throw new DOMException('SecurityError', 'SecurityError');
+        });
+        try {
+            expect(() => saveRecordsToStorage([entry])).not.toThrow();
+            // The failed save is OBSERVABLE, scoped per story — never a
+            // silent success and never a crash (the in-memory store keeps
+            // the session alive; the mirror tier gets its own chance).
+            expect(didLastSaveFail()).toBe(true);
+            expect(getLastSaveFailedStoryIds()).toEqual(['die-mid-session']);
+        } finally {
+            getItem.mockRestore();
+            setItem.mockRestore();
+        }
     });
 });

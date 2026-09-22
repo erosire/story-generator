@@ -27,7 +27,11 @@
 //      quota ladder shed chapters from a story's localStorage key while the
 //      un-shed mirror kept them), UPGRADE the records from the mirror per
 //      story (upgradeRecordsFromIdbMirror) before hydrating — cached
-//      chapters that were shed come back.
+//      chapters that were shed come back, and stories that exist ONLY in
+//      the mirror (their localStorage writes failed at every rung — a
+//      mobile quota-full origin) are APPENDED instead of dropped, so a
+//      newly fetched story stays "Cached locally" across reloads forever
+//      after its first fetch.
 //   2. Then call fetchStoryList(config.baseUrl) to check the server for
 //      updates, and merge via mergeServerStoryList (src/context/store.tsx):
 //      server metadata refreshes cached entries, new server stories are
@@ -37,18 +41,14 @@
 //      to IndexedDB by saveRecordsToStorage).
 //   3. On fetch error, keep the cached records and set a loadWarning (read
 //      by the dashboard header / sidebar so the user can see the backend is
-//      unreachable). When the failure has the deployed mobile shape — an
-//      HTTPS page dialing the plain-HTTP API — the browser itself blocked
-//      the request (mixed content), and the warning is EXTENDED to name that
-//      cause and the two deployment-level remedies (see MIXED_CONTENT_DIAGNOSIS
-//      below + isMixedContentBlocked in src/config.ts).
+//      unreachable — server unreachable means every fetch rejects).
 //
 // OFFLINE CONTRACT (the reason this layer exists in this shape): the
 // deployment's baseUrl points at a LAN host (src/config.ts —
-// LOCAL_AREA_NETWORK_HOST_NAME:5252). Served from an HTTPS origin (GitHub
-// Pages) or with the server off, EVERY fetch rejects immediately (mixed
-// content / connection refused). In that state this layer's ONLY job is to
-// put the localStorage records cache on screen and leave it alone:
+// LOCAL_AREA_NETWORK_HOST_NAME:5252). With the server unreachable, EVERY
+// fetch rejects immediately (connection refused). In that state this layer's
+// ONLY job is to put the localStorage records cache on screen and leave it
+// alone:
 //   - The catch path NEVER touches records — only loadWarning.
 //   - The sidebar's periodic refresh (features/sidebar.tsx) mirrors this:
 //     its catch is silent for the same reason.
@@ -62,7 +62,6 @@
 import React from 'react';
 import { useStoryStore } from '../context';
 import { fetchStoryList } from '../api';
-import { isMixedContentBlocked } from '../config';
 import { classifyStorageTiers, requestPersistentStorage } from '../context/storyCache';
 import {
     getLastStoryId,
@@ -72,16 +71,6 @@ import {
     mergeServerStoryList,
     type StoryEntry
 } from '../context/store';
-
-// Mixed-content diagnosis appended to the raw fetch error when the session is
-// the deployed mobile shape: an HTTPS page (GitHub Pages) dialing the plain
-// HTTP storyboard API. The browser blocks every such request before it leaves
-// the page, so the raw "Failed to fetch" alone misleads — without this the
-// user cannot tell a down server from a page that can NEVER reach it. The copy
-// names the cause and both deployment-level remedies; the app-side fix (serving
-// either side over a matching scheme) is out of this layer's control by design.
-const MIXED_CONTENT_DIAGNOSIS =
-    'this page is served over HTTPS but the story API uses plain HTTP, which the browser blocks as mixed content — open this dashboard over the same http:// network origin instead, or serve the story API over HTTPS';
 
 // Hidden bootstrap layer. Renders nothing; only effects.
 export const BootstrapLayer: React.FC = React.memo(() => {
@@ -111,14 +100,19 @@ export const BootstrapLayer: React.FC = React.memo(() => {
         // A tiny setItem/removeItem pair distinguishes the private-mode /
         // storage-disabled shapes (every write throws; window.localStorage
         // can be null outright in storage-dead WebViews) from a merely empty
-        // cache — a successful hydration does NOT prove writability because
-        // reads can still work while writes fail (iOS private-mode quota-0).
+        // cache — and, since the quota-full fix, from a genuinely FULL
+        // origin (the probe throws QuotaExceededError, which names the
+        // cause: storage is enabled but the budget is exhausted). A
+        // successful hydration does NOT prove writability because reads can
+        // still work while writes fail (iOS private-mode quota-0).
         // Combined with hasIndexedDB (inside classifyStorageTiers) this is
-        // the storage-writable / localStorage-dead / everything-dead
-        // classification; only the localStorage leg drives a flag (when
-        // everything is dead there is nothing to hydrate anyway), and the
-        // sidebar renders the storage-unavailable copy for it.
-        const storageWritable = classifyStorageTiers().localStorageWritable;
+        // the storage-writable / localStorage-full / localStorage-dead /
+        // everything-dead classification; only the localStorage legs drive
+        // flags (when everything is dead there is nothing to hydrate
+        // anyway), and the sidebar renders the matching copy for each.
+        const storageTiers = classifyStorageTiers();
+        const storageWritable = storageTiers.localStorageWritable;
+        const storageQuotaFull = storageTiers.localStorageQuotaFull;
 
         // ── Step 1: Hydrate from localStorage instantly ──────────────────
         // This makes the dashboard appear immediately with cached data
@@ -159,12 +153,21 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                         // Boot-time storage classification (step 0b): there
                         // ARE records worth saving but localStorage cannot
                         // accept writes — flag it so the sidebar's chip names
-                        // the private-mode/storage-disabled cause instead of
-                        // leaving the session's persistence silently dead.
+                        // the CAUSE instead of leaving the session's
+                        // persistence silently dead. QUOTA-FULL (probe threw
+                        // QuotaExceededError) gets its own flag: the origin's
+                        // budget is exhausted but storage itself works, and
+                        // the durable mirror still accepts payloads — the
+                        // "private/incognito" copy would misname the cause
+                        // and mask the more accurate "storage is full" fix.
                         // Only reachable with records.length > 0, which is
                         // exactly the "only warn when there is something to
-                        // lose" contract; healthy storage never sets it.
-                        ...(storageWritable ? {} : { storageUnavailableAtBoot: true })
+                        // lose" contract; healthy storage never sets either.
+                        ...(storageWritable
+                            ? {}
+                            : storageQuotaFull
+                              ? { storageFullAtBoot: true }
+                              : { storageUnavailableAtBoot: true })
                     };
                 });
             }
@@ -211,17 +214,7 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                     // the user can still see cached data from localStorage and Add a
                     // story locally and POST (the bootstrap failure shouldn't block
                     // the whole UI). Cached records are left intact.
-                    //
-                    // MIXED-CONTENT DIAGNOSIS: on the deployed mobile shape
-                    // (HTTPS page + plain-HTTP API, see ../config.ts) every
-                    // request is blocked by the browser itself — the raw
-                    // "Failed to fetch" never mentions WHY. Append the cause
-                    // and both deployment-level remedies so the warning is
-                    // actionable instead of misleading.
-                    const message = isMixedContentBlocked(baseUrl)
-                        ? `${err.message} — ${MIXED_CONTENT_DIAGNOSIS}`
-                        : err.message;
-                    setStore((prev) => ({ ...prev, loadWarning: message }));
+                    setStore((prev) => ({ ...prev, loadWarning: err.message }));
                     console.warn('[BootstrapLayer] Failed to list existing stories.', err);
                 });
         };
@@ -327,6 +320,31 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                                 // A newer fetch/sync replaced the entry —
                                 // its state beats the mirror copy.
                                 return entry;
+                            });
+                            // ── MIRROR-ONLY APPEND (the "new stories never
+                            // cache forever" fix): upgradeRecordsFromIdbMirror
+                            // now also rehydrates stories that exist ONLY in
+                            // the durable mirror — a NEW story whose
+                            // localStorage writes failed at every rung
+                            // (mobile quota full of old cached stories) but
+                            // whose full payload the mirror DID catch. The
+                            // map above only touches prev.records, so
+                            // without this append those stories stayed
+                            // invisible offline (or came back data:null from
+                            // the server list and showed "Not saved locally"
+                            // forever). Appending feeds them into the same
+                            // persist effect, which then self-heals
+                            // localStorage. Deduped by storyId against the
+                            // MAPPED list (a list sync that landed between
+                            // the upgrade read and this setStore may have
+                            // already added the story as a data:null server
+                            // entry — the map's restore case above upgrades
+                            // THAT copy instead).
+                            const seenStoryIds = new Set(records.map((entry) => entry.storyId));
+                            upgraded.forEach((upgradedEntry) => {
+                                if (seenStoryIds.has(upgradedEntry.storyId)) return;
+                                changed = true;
+                                records.push(upgradedEntry);
                             });
                             if (!changed) return prev;
                             // Re-point the selection by storyId — a restored

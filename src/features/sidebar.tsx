@@ -30,13 +30,14 @@
 // CACHE-HEALTH CHIP (data-testid "cache-warning"): below the load warning, a
 // chip appears when the local cache is degraded — one or more localStorage
 // quick-cache copies failed, the boot write-probe found storage unavailable
-// (store.storageUnavailableAtBoot), or a boot recovery/upgrade restored
-// records from the IndexedDB mirror (informational). TIER-AWARE: when the
-// durable mirror sync ALSO failed (store.cacheMirrorWriteFailed), the copy
-// escalates to "stories cannot be saved on this device" instead of the hedged
-// "may still be available" line. See store.cacheWriteFailed /
-// store.storageUnavailableAtBoot / store.cacheMirrorWriteFailed in
-// src/context/store.tsx.
+// (store.storageUnavailableAtBoot) or the origin's quota FULL
+// (store.storageFullAtBoot), or a boot recovery/upgrade restored records
+// from the IndexedDB mirror (informational). TIER-AWARE: when the durable
+// mirror sync ALSO failed (store.cacheMirrorWriteFailed), the copy escalates
+// to "stories cannot be saved on this device" instead of the hedged "may
+// still be available" line. See store.cacheWriteFailed /
+// store.storageUnavailableAtBoot / store.storageFullAtBoot /
+// store.cacheMirrorWriteFailed in src/context/store.tsx.
 //
 // The "Stories" header carries a live job-count chip (data-testid
     // "sidebar-job-count", text "<n>") showing how many background
@@ -145,6 +146,17 @@ const CACHE_ALL_TIERS_FAILED_MESSAGE =
 // durable copy, but this session can never persist anything.
 const STORAGE_UNAVAILABLE_MESSAGE =
     'Browser storage is unavailable — private/incognito mode or storage is disabled; stories will only last for this visit';
+
+// QUOTA-FULL copy (store.storageFullAtBoot): the boot write-probe threw
+// QuotaExceededError — storage is ENABLED but the origin's budget is
+// exhausted (the reported mobile shape: ~5MB of old cached stories). The
+// private/incognito copy above would misname the cause; the accurate story is
+// that new writes cannot fit while the durable IndexedDB mirror (which never
+// sheds and has orders-of-magnitude more quota) keeps every cached story
+// available. Takes precedence over the hedged cacheWriteFailed copy for the
+// same reason — the probe names the cause.
+const STORAGE_FULL_MESSAGE =
+    'Browser storage is full — new stories cannot be saved to the browser cache; cached stories are kept in the durable local app database and remain available';
 
 // How often to auto-refresh while any story is being processed in the
 // background. The list response carries the server's live job-registry flags
@@ -445,17 +457,22 @@ const resolveCacheState = (entry: { data: unknown }, cacheWriteFailed: boolean):
 //      copy would overpromise in private mode / storage-dead WebViews.
 //   2. Boot-probe storage failure (storageUnavailableAtBoot, records worth
 //      saving exist) → name the private/incognito / storage-disabled cause.
-//   3. localStorage save failed but the mirror may have landed → the hedged
+//   3. Boot-probe QUOTA failure (storageFullAtBoot) → the origin's budget is
+//      exhausted; name "storage is full" and that the durable mirror keeps
+//      cached stories available (the private-mode copy would misname it).
+//   4. localStorage save failed but the mirror may have landed → the hedged
 //      copy (previous fix semantics, unchanged).
-//   4. Otherwise the informational cacheWarning (boot recovery/upgrade copy).
+//   5. Otherwise the informational cacheWarning (boot recovery/upgrade copy).
 const resolveCacheWarningMessage = (store: {
     cacheWriteFailed?: boolean;
     cacheMirrorWriteFailed?: boolean;
     storageUnavailableAtBoot?: boolean;
+    storageFullAtBoot?: boolean;
     cacheWarning?: string;
 }): string => {
     if (store.cacheWriteFailed && store.cacheMirrorWriteFailed) return CACHE_ALL_TIERS_FAILED_MESSAGE;
     if (store.storageUnavailableAtBoot) return STORAGE_UNAVAILABLE_MESSAGE;
+    if (store.storageFullAtBoot) return STORAGE_FULL_MESSAGE;
     if (store.cacheWriteFailed) return CACHE_WRITE_FAILED_MESSAGE;
     return store.cacheWarning ?? '';
 };
@@ -482,8 +499,19 @@ const VersionSuffix = styled('span', {
     whiteSpace: 'nowrap' as const
 });
 
-// Load-warning chip — shown if the bootstrap or auto-refresh failed. Flat
-// warning-tinted surface with an ellipsized single-line message.
+// Load-warning chip — shown if the bootstrap or auto-refresh failed (and by
+// the cache-health chip below, same component). Flat warning-tinted surface.
+//
+// WRAPS instead of truncating: this chip carries the long diagnostic copies
+// (long raw fetch errors, the tier-aware cache-health lines) and the
+// old `white-space: nowrap; text-overflow: ellipsis` treatment clipped them
+// to roughly "⚠ Failed to fetch — the storyboard API at http://…" on a
+// narrow phone — the exact shape of the mobile report, where the ACTIONABLE
+// part of the message (the cause the warning names) was the part cut
+// off. The chip now wraps (with break-word so long URLs in the copy can
+// never push the layout wide) and shows the full text on every width.
+// Unrelated one-line surfaces (e.g. StoryTitle's title truncation) are
+// untouched — only the warning/error chip variant wraps.
 const LoadWarning = styled('div', {
     fontSize: theme.fontSize.sm,
     color: theme.warning,
@@ -492,9 +520,9 @@ const LoadWarning = styled('div', {
     padding: '6px 10px',
     margin: '10px 10px 0',
     borderRadius: theme.radiusSm,
-    whiteSpace: 'nowrap' as const,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis'
+    whiteSpace: 'normal' as const,
+    wordBreak: 'break-word' as const,
+    lineHeight: 1.5
 });
 
 export const StorySidebar: React.FC = React.memo(() => {
@@ -877,22 +905,23 @@ export const StorySidebar: React.FC = React.memo(() => {
             )}
             {/* Cache-health chip — shown when the LOCAL cache is degraded:
                 one or more localStorage quick-cache copies failed, the boot
-                write-probe found storage unavailable with records worth
-                saving, or a boot recovery/upgrade pass restored records from
-                the IndexedDB mirror (informational). TIER-AWARE COPY: when
-                the localStorage tier failed AND the durable mirror sync also
-                failed (store.cacheMirrorWriteFailed — private mode /
-                storage-dead WebViews), the chip presents the stronger
-                "cannot be saved on this device" condition instead of the
-                hedged copy; a boot-probe storage failure names the
-                private/incognito cause. Independent of loadWarning (server
-                reachability). */}
-            {(store.cacheWriteFailed || store.cacheWarning || store.storageUnavailableAtBoot) && (
+                write-probe found storage unavailable (private/incognito) or
+                FULL (quota exhausted) with records worth saving, or a boot
+                recovery/upgrade pass restored records from the IndexedDB
+                mirror (informational). TIER-AWARE COPY: when the localStorage
+                tier failed AND the durable mirror sync also failed
+                (store.cacheMirrorWriteFailed — private mode / storage-dead
+                WebViews), the chip presents the stronger "cannot be saved on
+                this device" condition instead of the hedged copy; a boot-probe
+                storage failure names the private/incognito cause, and a
+                boot-probe QUOTA failure names the "storage is full" cause.
+                Independent of loadWarning (server reachability). */}
+            {(store.cacheWriteFailed || store.cacheWarning || store.storageUnavailableAtBoot || store.storageFullAtBoot) && (
                 <LoadWarning
                     data-testid="cache-warning"
                     title={resolveCacheWarningMessage(store)}
                 >
-                    {store.cacheWriteFailed || store.storageUnavailableAtBoot
+                    {store.cacheWriteFailed || store.storageUnavailableAtBoot || store.storageFullAtBoot
                         ? `⚠ ${resolveCacheWarningMessage(store)}`
                         : `ⓘ ${resolveCacheWarningMessage(store)}`}
                 </LoadWarning>

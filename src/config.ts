@@ -61,39 +61,3 @@ export const resolveStoryboardApiHostName = (): string => {
     }
 };
 
-// ── Mixed-content diagnosis ────────────────────────────────────────────────
-// The deployed GitHub Pages origin serves the dashboard over HTTPS, while the
-// storyboard API base URL is plain HTTP (the LAN host above, http://…:5252).
-// Every iOS/Android browser BLOCKS that request outright (mixed content: an
-// HTTPS page may not fetch an insecure http:// resource), so on mobile the
-// dashboard can never reach the API — nothing is fetched, nothing is cached,
-// and the tiles only ever say "Not saved locally" plus "⚠ Failed to fetch".
-// The deployment-level causes (https page + http API) can only be fixed by
-// serving one of them differently; this detection at least NAMES the cause in
-// the user-facing warning instead of showing a bare "Failed to fetch".
-// Deliberately NO runtime base-URL override here — the base URL still comes
-// from the same origin-mirroring rule above.
-
-// Pure predicate: would a page served over `pageProtocol` be blocked from
-// fetching an API at `apiBaseUrl` as mixed content? True only for the one
-// poisoned pair — a secure (https:) page dialing an insecure (http://) API.
-// Exported separately from the window-reading wrapper so tests (and future
-// callers) can exercise every branch deterministically without mocking
-// window.location (jsdom makes location an unforgeable property — same
-// rationale as isLocalHostOrigin above).
-export const isMixedContentApiPair = (pageProtocol: string, apiBaseUrl: string): boolean =>
-    pageProtocol === 'https:' && /^http:\/\//i.test(apiBaseUrl);
-
-// Live check against the page the UI is actually running in: is this session's
-// API base URL a mixed-content shape? Window access is guarded (typeof +
-// try/catch) exactly like resolveStoryboardApiHostName — this module is also
-// imported under test and in sandboxes without a usable window.
-export const isMixedContentBlocked = (apiBaseUrl: string): boolean => {
-    if (typeof window === 'undefined') return false;
-    try {
-        return isMixedContentApiPair(window.location.protocol, apiBaseUrl);
-    } catch {
-        // Hardened sandboxes can throw on location access — not provable.
-        return false;
-    }
-};

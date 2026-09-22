@@ -220,38 +220,62 @@ export const requestPersistentStorage = async (): Promise<boolean> => {
     }
 };
 
-// Write-probe: can localStorage accept a write RIGHT NOW? A tiny
-// setItem/removeItem pair on a probe key distinguishes the private-mode /
-// storage-disabled shapes (every setItem throws QuotaExceededError or
-// SecurityError; `window.localStorage` itself can be null in storage-dead
-// WebViews) from a merely empty cache. Reads can still work in some of these
-// shapes, so a successful boot hydration does NOT prove writability.
-const isLocalStorageWritable = (): boolean => {
+// Write-probe: what state is localStorage in RIGHT NOW? A tiny
+// setItem/removeItem pair on a probe key distinguishes THREE shapes from a
+// merely empty cache. Reads can still work in several of these shapes, so a
+// successful boot hydration does NOT prove writability:
+//   - 'writable'     — the probe write succeeded.
+//   - 'quota-full'    — the probe write threw QuotaExceededError: storage is
+//                       ENABLED but the ORIGIN'S BUDGET is exhausted (the
+//                       reported mobile shape — ~5MB of old cached stories).
+//                       Every key write fails, but the durable mirror tier
+//                       still accepts payloads, so the accurate user-facing
+//                       cause is "storage is full", NOT "private mode".
+//   - 'unavailable'   — any other throw (SecurityError — private/incognito
+//                       mode / storage disabled), or `window.localStorage`
+//                       itself is null (storage-dead WebViews).
+const probeLocalStorageHealth = (): 'writable' | 'quota-full' | 'unavailable' => {
     try {
-        if (typeof localStorage === 'undefined' || localStorage === null) return false;
+        if (typeof localStorage === 'undefined' || localStorage === null) return 'unavailable';
         localStorage.setItem('storyGenerator:storage-probe', '1');
         localStorage.removeItem('storyGenerator:storage-probe');
-        return true;
-    } catch {
-        return false;
+        return 'writable';
+    } catch (error) {
+        // QuotaExceededError is the one exception whose NAME identifies the
+        // cause (browsers throw it verbatim); anything else (SecurityError,
+        // hardened-sandbox TypeErrors) is classified as storage-unavailable —
+        // the previous boolean probe conflated the two and the sidebar told
+        // quota-full users they were "in private mode", masking the real fix.
+        return (error as { name?: string } | null)?.name === 'QuotaExceededError'
+            ? 'quota-full'
+            : 'unavailable';
     }
 };
 
 // Boot-time tier classification used by BootstrapLayer:
 //   - localStorageWritable: the quick-cache tier can accept writes.
+//   - localStorageQuotaFull: the probe failed with QuotaExceededError —
+//     storage is enabled but the origin's budget is exhausted (only
+//     meaningful when localStorageWritable is false; drives the distinct
+//     "storage is full" copy instead of the private/incognito copy).
 //   - indexedDbAvailable: the durable mirror tier exists at all.
-// storage-writable = both true; localStorage-dead = first false (iOS private
+// storage-writable = first true; localStorage-dead = first false (iOS private
 // mode / storage-disabled WebView — the mirror is then the only durable tier);
 // everything-dead = both false (recovery is impossible — nothing ever boots).
 export type StorageTierClassification = {
     localStorageWritable: boolean;
+    localStorageQuotaFull: boolean;
     indexedDbAvailable: boolean;
 };
 
-export const classifyStorageTiers = (): StorageTierClassification => ({
-    localStorageWritable: isLocalStorageWritable(),
-    indexedDbAvailable: hasIndexedDB()
-});
+export const classifyStorageTiers = (): StorageTierClassification => {
+    const health = probeLocalStorageHealth();
+    return {
+        localStorageWritable: health === 'writable',
+        localStorageQuotaFull: health === 'quota-full',
+        indexedDbAvailable: hasIndexedDB()
+    };
+};
 
 // Open (and lazily create) the database. Rejects on error/blocked so callers
 // can log-and-continue.
@@ -432,6 +456,24 @@ export const storyCacheGet = (): Promise<PersistableStoryEntryShape[] | null> =>
 //     structured-clone, no write — a poll tick for one story must not
 //     rewrite the other stories' mirror entries, and an unchanged story must
 //     not pay the clone cost at all),
+//   - entries whose IN-MEMORY signature cannot prove them unchanged are
+//     read back from the store first and can STILL be skipped:
+//       (a) stored fingerprint === incoming fingerprint → cross-load
+//           change detection. The in-memory mirrorSignatures map is empty
+//           on every fresh page load, so without this check the FIRST sync
+//           after boot re-put EVERY story as a multi-MB structured-clone
+//           burst — and on a slow phone a tx that misses the watchdog
+//           window got aborted, silently rolling back the new story's
+//           first full put (fire-and-forget, returns false).
+//       (b) RICHER-WINS never-downgrade: incoming entry has data == null
+//           while the stored entry has non-null data → skip the put. The
+//           boot-time persist effect saves the HYDRATED records; when
+//           localStorage shed a story to metadata-only (quota ladder rung
+//           2), that save carried data:null and the boot re-put used to
+//           overwrite the mirror's full copy — the only tier that still
+//           had it. Only the data==null case is treated as unambiguously
+//           poorer; a non-null payload with fewer revisions is a LEGITIMATE
+//           user delete that must reach the mirror.
 //   - previously-mirrored story keys ABSENT from the array are DELETED
 //     (the story was removed — e.g. deleteStory — so it must not resurrect),
 //   - the legacy single-blob 'records' key is deleted (superseded layout).
@@ -440,6 +482,15 @@ export const storyCacheGet = (): Promise<PersistableStoryEntryShape[] | null> =>
 // await-catch meaningfully). Serialized through the write queue so a rapid
 // save→save→reset sequence cannot reorder puts after a clear; a
 // stale-generation sync (enqueued before a reset) is skipped entirely.
+//
+// READ-TRADEOFF: the stored-value reads are per-key gets issued ONLY for
+// keys about to be written (never getAll): a deserialize replaces what was
+// previously a multi-MB structured-clone PUT for every story on the first
+// sync per page load, and each matching read immediately re-primes
+// mirrorSignatures (committed on tx.oncomplete) so every later sync of the
+// same payload takes the signature fast path with NO read and NO put. On a
+// genuinely full origin the reads also cost nothing — the tx only reads the
+// keys the sync would have rewritten anyway.
 //
 // OPEN HOISTED OUT OF THE QUEUE: openDatabase() is issued SYNCHRONOUSLY at
 // call time and the queued op only awaits the ready connection. This keeps
@@ -471,19 +522,32 @@ export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<bo
                 const store = tx.objectStore(STORE_NAME);
                 // First list the EXISTING per-story keys (source of
                 // truth for both the skip check and orphan cleanup);
-                // all puts/deletes are issued from its onsuccess,
-                // inside the same transaction.
+                // the read-modify-write decisions below are issued from
+                // its onsuccess, inside the same transaction.
                 const keysRequest = store.getAllKeys(storyKeyRange());
                 keysRequest.onsuccess = () => {
                     const existingKeys = new Set((keysRequest.result as IDBValidKey[]).map((k) => String(k)));
                     const incomingKeys = new Set<string>();
-                    // Fingerprints for the entries this sync PUTS (skipped
-                    // entries keep their previous fingerprint — the payload
-                    // is provably the same). Committed to mirrorSignatures
-                    // only on tx.oncomplete so a failed/aborted tx cannot
-                    // poison the skip cache.
+                    // Fingerprints committed to mirrorSignatures on
+                    // tx.oncomplete — for every entry this sync PUTS or
+                    // skips after a stored-value comparison (identical
+                    // payload ⇒ identical outcome, so the next sync takes
+                    // the signature fast path with no read at all). A
+                    // failed/aborted tx must not poison the skip cache.
                     const putFingerprints = new Map<string, string>();
                     const deleteIds: string[] = [];
+
+                    // ── Phase 1: classify every incoming entry ──────────────
+                    // Signature match + key exists → skip outright (the
+                    // same-page fast path). Everything else is a PUT
+                    // CANDIDATE and can still be skipped after reading the
+                    // stored value (see the (a)/(b) notes in the header).
+                    type PutCandidate = {
+                        entry: PersistableStoryEntryShape;
+                        fingerprint: string;
+                        stored?: PersistableStoryEntryShape;
+                    };
+                    const putCandidates: PutCandidate[] = [];
                     records.forEach((entry) => {
                         const key = STORY_KEY_PREFIX + entry.storyId;
                         incomingKeys.add(key);
@@ -491,19 +555,73 @@ export const storyCacheSet = (records: PersistableStoryEntryShape[]): Promise<bo
                         const unchanged =
                             existingKeys.has(key) && mirrorSignatures.get(entry.storyId) === fingerprint;
                         if (unchanged) return;
-                        putFingerprints.set(entry.storyId, fingerprint);
-                        store.put(entry, key);
+                        putCandidates.push({ entry, fingerprint });
                     });
-                    // Orphan cleanup: mirrored keys not present in the
-                    // incoming full set belong to deleted stories.
-                    existingKeys.forEach((key) => {
-                        if (incomingKeys.has(key)) return;
-                        deleteIds.push(key.slice(STORY_KEY_PREFIX.length));
-                        store.delete(key);
-                    });
-                    // The pre-per-story blob is dead weight once the
-                    // per-story keys exist — remove it on every sync.
-                    store.delete(LEGACY_RECORDS_KEY);
+
+                    // ── Phase 2: read the stored values the puts would overwrite ──
+                    // Only keys that already exist are worth reading (a new
+                    // key has nothing to compare); when every candidate is a
+                    // new key — or there are no candidates at all — the
+                    // writes issue immediately.
+                    const issueWrites = () => {
+                        putCandidates.forEach((candidate) => {
+                            const key = STORY_KEY_PREFIX + candidate.entry.storyId;
+                            const stored = candidate.stored;
+                            if (stored) {
+                                // (a) Cross-load change detection: the stored
+                                // payload is provably identical → nothing to
+                                // write, but DO commit the fingerprint so
+                                // later syncs of the same payload skip
+                                // without re-reading.
+                                if (storyCacheFingerprint(stored) === candidate.fingerprint) {
+                                    putFingerprints.set(candidate.entry.storyId, candidate.fingerprint);
+                                    return;
+                                }
+                                // (b) Richer-wins never-downgrade: the incoming
+                                // copy is metadata-only while the mirror
+                                // holds chapters — keep the richer stored
+                                // payload (the boot re-put used to destroy
+                                // the only full copy).
+                                if (candidate.entry.data == null && stored.data != null) {
+                                    putFingerprints.set(candidate.entry.storyId, candidate.fingerprint);
+                                    return;
+                                }
+                            }
+                            putFingerprints.set(candidate.entry.storyId, candidate.fingerprint);
+                            store.put(candidate.entry, key);
+                        });
+                        // Orphan cleanup: mirrored keys not present in the
+                        // incoming full set belong to deleted stories.
+                        existingKeys.forEach((key) => {
+                            if (incomingKeys.has(key)) return;
+                            deleteIds.push(key.slice(STORY_KEY_PREFIX.length));
+                            store.delete(key);
+                        });
+                        // The pre-per-story blob is dead weight once the
+                        // per-story keys exist — remove it on every sync.
+                        store.delete(LEGACY_RECORDS_KEY);
+                    };
+
+                    const candidatesNeedingRead = putCandidates.filter((candidate) =>
+                        existingKeys.has(STORY_KEY_PREFIX + candidate.entry.storyId)
+                    );
+                    if (candidatesNeedingRead.length === 0) {
+                        issueWrites();
+                    } else {
+                        let pendingReads = candidatesNeedingRead.length;
+                        candidatesNeedingRead.forEach((candidate) => {
+                            const get = store.get(STORY_KEY_PREFIX + candidate.entry.storyId);
+                            get.onsuccess = () => {
+                                if (get.result) candidate.stored = get.result as PersistableStoryEntryShape;
+                                pendingReads--;
+                                if (pendingReads === 0) issueWrites();
+                            };
+                            get.onerror = () => {
+                                cancelWatchdog();
+                                reject(get.error ?? new Error('IndexedDB get failed'));
+                            };
+                        });
+                    }
                     tx.oncomplete = () => {
                         // Commit the fingerprint changes only now — the tx
                         // provably landed.

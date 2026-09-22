@@ -666,11 +666,20 @@ const saveStoryAtRung = (
     const fingerprint = storyCacheFingerprint(entry);
     // Already cached, updated timestamp (and everything persisted) unchanged
     // → nothing to write. The rung the key holds is tracked alongside.
-    if (
-        allowSkip &&
-        persistedFingerprints.get(entry.storyId) === fingerprint &&
-        localStorage.getItem(key) !== null
-    ) {
+    // The key-existence read is GUARDED: a storage that dies mid-session
+    // (hardened WebView revoking storage, eviction storm) throws on read
+    // after a SUCCESSFUL earlier save left a fingerprint behind — without the
+    // guard that throw escaped saveStoryAtRung and crashed the provider's
+    // persist effect (the whole records save). A throwing read falls through
+    // to the ladder, whose own per-rung catch handles the dead storage.
+    let keyExists = false;
+    try {
+        keyExists = localStorage.getItem(key) !== null;
+    } catch {
+        // Storage died mid-session — the ladder below retries (and flags
+        // the per-story failure if every rung throws).
+    }
+    if (allowSkip && persistedFingerprints.get(entry.storyId) === fingerprint && keyExists) {
         return persistedRungs.get(entry.storyId) ?? 0;
     }
     for (let rung = Math.max(0, minRung); rung <= Math.min(2, maxRung); rung++) {
@@ -880,6 +889,14 @@ export const saveRecordsToStorage = (records: StoryEntry[]): void => {
     // mirror keeps every revision for the next boot's upgrade pass. The
     // mirror sync is per story internally (unchanged stories skipped), so a
     // poll tick for one story does not re-put the others.
+    //
+    // ORDER IS LOAD-BEARING — do not move this after the localStorage
+    // ladder: a save whose ladder rungs are about to fail (quota-full
+    // origin) must have already handed the full payload to the durable
+    // tier, and the mirror's own never-downgrade guard (see storyCacheSet)
+    // needs no ordering help — but queueing the mirror LAST would let a
+    // synchronous tab-kill between the ladder and the mirror call lose the
+    // ONLY durable copy of a story whose localStorage write just failed.
     void storyCacheSet(serializable).then((ok) => {
         // Surface the outcome beyond the console: on mobile the mirror is
         // the survivor tier, so a failed mirror write combined with a failed
@@ -1030,7 +1047,8 @@ export const loadRecordsFromIdbMirror = async (): Promise<StoryEntry[] | null> =
 
 /**
  * Upgrade the localStorage cache from the IndexedDB mirror when the mirror
- * holds RICHER content (per story).
+ * holds RICHER content (per story) — and APPEND stories that exist ONLY in
+ * the mirror.
  *
  * WHY: the localStorage quota ladder (saveSingleStoryToStorage) sheds weight
  * under quota — a story that no longer fits loses revisions or its whole
@@ -1043,15 +1061,33 @@ export const loadRecordsFromIdbMirror = async (): Promise<StoryEntry[] | null> =
  *     (the mirror's un-shed history wins).
  *   - otherwise keep the localStorage entry.
  *
- * Returns the upgraded array (same order) or null when there is nothing to
- * upgrade (no mirror / mirror poorer than localStorage). BootstrapLayer
- * merges the result into the hydrated records before rendering.
+ * MIRROR-ONLY APPEND (the "new stories never cache forever" fix): a NEW
+ * story whose localStorage writes failed at EVERY rung (mobile origin quota
+ * exhausted by old cached stories) never left a localStorage key, but the
+ * mirror caught the full payload (saveRecordsToStorage always fires the
+ * mirror sync with the complete records). On the next boot the story came
+ * back from the server list as data:null (mergeServerStoryList) or vanished
+ * entirely (offline boot) — and because this pass previously only MAPPED the
+ * localStorage records, the mirror's copy was silently dropped: the story
+ * went "cloud-off Not saved locally" EVERY session, forever. Mirror-only
+ * entries are now APPENDED (rehydrated through the same
+ * rehydratePersistable the recovery path uses), so the story lists with its
+ * cached chapters and the persist effect self-heals localStorage from the
+ * merged records. The empty-cache full-recovery path
+ * (loadRecordsFromIdbMirror) keeps its own shape — this append only runs in
+ * the "localStorage HAS records" boot.
+ *
+ * Returns the upgraded+appended array or null when there is nothing to
+ * upgrade (no mirror / mirror poorer than localStorage and no mirror-only
+ * stories). BootstrapLayer merges the result into the hydrated records
+ * before rendering.
  */
 export const upgradeRecordsFromIdbMirror = async (records: StoryEntry[]): Promise<StoryEntry[] | null> => {
     const mirrored = await storyCacheGet();
     if (!mirrored || mirrored.length === 0) return null;
 
     const mirrorByStoryId = new Map(mirrored.map((m) => [m.storyId, m]));
+    const localStoryIds = new Set(records.map((entry) => entry.storyId));
     let changed = false;
 
     const upgraded = records.map((entry) => {
@@ -1080,6 +1116,20 @@ export const upgradeRecordsFromIdbMirror = async (records: StoryEntry[]): Promis
         }
         return entry;
     });
+
+    // ── Mirror-only append (see the doc header): mirror entries whose
+    // storyId is absent from the hydrated localStorage records are
+    // rehydrated and APPENDED, not dropped. They carry their own data (the
+    // mirror never sheds), so they surface as "Cached locally" immediately;
+    // the server merge overlays fresh metadata onto them and the persist
+    // effect re-persists them so the next boot's localStorage has them too.
+    const appended = mirrored
+        .filter((mirror) => !localStoryIds.has(mirror.storyId))
+        .map((mirror) => rehydratePersistable(mirror as PersistableStoryEntry));
+    if (appended.length > 0) {
+        changed = true;
+        upgraded.push(...appended);
+    }
 
     return changed ? upgraded : null;
 };
@@ -1332,6 +1382,15 @@ export type StoryStore = {
     // (nothing to warn about) — later save failures are covered by
     // cacheWriteFailed. Transient: never persisted.
     storageUnavailableAtBoot?: boolean;
+    // True when the boot write-probe failed SPECIFICALLY with
+    // QuotaExceededError — storage is enabled but the origin's budget is
+    // exhausted (the reported mobile shape: ~5MB of old cached stories).
+    // Distinct from storageUnavailableAtBoot so the sidebar can name the
+    // accurate cause ("browser storage is full") instead of the misleading
+    // private/incognito copy — the durable mirror tier still works in this
+    // shape, so previously cached stories remain available. Transient: never
+    // persisted; set only when records worth saving exist.
+    storageFullAtBoot?: boolean;
     // Click counter for the sidebar's story tiles. Bumped by EVERY user click
     // on a tile (StorySidebar's itemProps.onClick) — including re-clicks on the
     // already-selected story. The content feature (StoryContent's selection
@@ -1399,7 +1458,7 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // LOCAL_AREA_NETWORK_HOST_NAME (192.168.8.128) unconditionally, which
     // forced even localhost-loaded sessions onto the machine's LAN interface.
     // Override via config in production by wrapping with a different provider value.
-        baseUrl: `http://${resolveStoryboardApiHostName()}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,
+    baseUrl: `http://${resolveStoryboardApiHostName()}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,
     // Poll every 10s. The generation-create-new-story handler writes plotpoint.md
     // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
     // so 10s gives a smooth progressive reveal without hammering the server.
@@ -1435,6 +1494,7 @@ export const StoryStoreProvider: React.FC<{
         cacheWriteFailedStoryIds: initialStore?.cacheWriteFailedStoryIds ?? [],
         cacheMirrorWriteFailed: initialStore?.cacheMirrorWriteFailed ?? false,
         storageUnavailableAtBoot: initialStore?.storageUnavailableAtBoot ?? false,
+        storageFullAtBoot: initialStore?.storageFullAtBoot ?? false,
         config: {
             ...DEFAULT_CONFIG,
             ...configOverrides,

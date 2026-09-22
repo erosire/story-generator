@@ -420,11 +420,15 @@ describe('requestPersistentStorage (best-effort persist() request)', () => {
 
 // ── classifyStorageTiers (boot-time storage-health probe) ──────────────────
 // BootstrapLayer probes both tiers at boot to classify the device:
-// storage-writable / localStorage-dead (private mode, storage-disabled
-// WebView — the mirror is then the only durable tier) / everything-dead.
-// The localStorage leg is a REAL write-probe: a readable cache does not prove
-// writability (iOS private mode keeps reads working while every setItem
-// throws QuotaExceededError).
+// storage-writable / localStorage-QUOTA-FULL (origin budget exhausted —
+// storage still enabled, the durable mirror still works) / localStorage-dead
+// (private mode, storage-disabled WebView — the mirror is then the only
+// durable tier) / everything-dead. The localStorage leg is a REAL
+// write-probe: a readable cache does not prove writability (iOS private mode
+// keeps reads working while every setItem throws QuotaExceededError), and
+// the probe exception NAME splits the two unwritable shapes apart —
+// QuotaExceededError means "full" (the accurate mobile cause), anything
+// else (SecurityError, null storage) means "unavailable".
 describe('classifyStorageTiers (write-probe classification)', () => {
     afterEach(() => {
         localStorage.clear();
@@ -434,11 +438,17 @@ describe('classifyStorageTiers (write-probe classification)', () => {
         // jsdom + fake-indexeddb: both tiers answer.
         expect(classifyStorageTiers()).toEqual({
             localStorageWritable: true,
+            localStorageQuotaFull: false,
             indexedDbAvailable: true
         });
     });
 
-    it('classifies quota-dead localStorage (private mode) as unwritable', () => {
+    it('classifies a quota-exhausted origin as FULL (not private mode)', () => {
+        // The reported mobile shape: the origin's ~5MB budget is exhausted
+        // by old cached stories, so even the tiny probe write throws
+        // QuotaExceededError. Storage is ENABLED — the private/incognito
+        // classification would misname the cause, and the durable mirror
+        // (orders-of-magnitude larger quota) still accepts payloads.
         const storageProto = Object.getPrototypeOf(localStorage) as Storage;
         const setItem = vi
             .spyOn(storageProto, 'setItem')
@@ -446,11 +456,34 @@ describe('classifyStorageTiers (write-probe classification)', () => {
                 throw new DOMException('QuotaExceededError', 'QuotaExceededError');
             });
         try {
-            // Reads still work in the private-mode shape — the WRITE probe is
+            // Reads still work in the quota-full shape — the WRITE probe is
             // the load-bearing signal, not a read.
             expect(localStorage.getItem).toBeInstanceOf(Function);
             expect(classifyStorageTiers()).toEqual({
                 localStorageWritable: false,
+                localStorageQuotaFull: true,
+                indexedDbAvailable: true
+            });
+        } finally {
+            setItem.mockRestore();
+        }
+    });
+
+    it('classifies a SecurityError-throwing storage as unavailable (private/disabled shape)', () => {
+        // Private/incognito mode and storage-disabled WebViews throw
+        // SecurityError (or null out window.localStorage) — NOT
+        // QuotaExceededError — so the probe must keep the distinct
+        // "unavailable" classification for them.
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(() => {
+                throw new DOMException('SecurityError', 'SecurityError');
+            });
+        try {
+            expect(classifyStorageTiers()).toEqual({
+                localStorageWritable: false,
+                localStorageQuotaFull: false,
                 indexedDbAvailable: true
             });
         } finally {
@@ -464,6 +497,7 @@ describe('classifyStorageTiers (write-probe classification)', () => {
         try {
             expect(classifyStorageTiers()).toEqual({
                 localStorageWritable: false,
+                localStorageQuotaFull: false,
                 indexedDbAvailable: true
             });
         } finally {
@@ -476,6 +510,7 @@ describe('classifyStorageTiers (write-probe classification)', () => {
         try {
             expect(classifyStorageTiers()).toEqual({
                 localStorageWritable: true,
+                localStorageQuotaFull: false,
                 indexedDbAvailable: false
             });
         } finally {

@@ -1,12 +1,11 @@
 // Per-file jsdom environment options (parsed by vitest's docblock scanner):
-// run this file's window at an HTTPS origin so the mixed-content detection
-// (isMixedContentBlocked in src/config.ts) can be exercised END-TO-END — the
-// deployed GitHub Pages shape is an https page dialing a plain-http API.
-// hostname stays 'localhost', so resolveStoryboardApiHostName and every other
-// origin-derived behavior is identical to the rest of the suite; only
-// location.protocol differs. NOTE: never write the directive's @-prefixed
-// literal into a COMMENT in a test file — the scanner would try to JSON.parse
-// whatever follows it.
+// run this file's window at the HTTPS origin matching the deployed GitHub
+// Pages shape, so the integrated suite exercises the app exactly as it is
+// served in production. hostname stays 'localhost', so
+// resolveStoryboardApiHostName and every other origin-derived behavior is
+// identical to the rest of the suite; only location.protocol differs.
+// NOTE: never write the directive's @-prefixed literal into a COMMENT in a
+// test file — the scanner would try to JSON.parse whatever follows it.
 // @vitest-environment-options {"url": "https://localhost:3000/"}
 //
 // Tests for the Story Generator dashboard.
@@ -83,6 +82,34 @@ const mockResponse = (status: number, body: unknown) =>
         status,
         json: async () => body
     }) as any;
+
+// Read the injected Emotion rule block for a styled element's generated class
+// (the styled() factory emits `css-<hash>` classes whose flat rules live in
+// the injected <style> tags — textContent in emotion's non-speedy test mode,
+// the parsed CSSOM otherwise; both are collected so the helper works either
+// way). Returns the rule slice from the class selector through its closing
+// brace (emotion's class rules are flat — no nested braces).
+const readEmotionRule = (element: Element): string => {
+    const emotionClass = element.className.split(/\s+/).find((name) => name.startsWith('css-'));
+    expect(emotionClass).toBeTruthy();
+    let rules = '';
+    Array.from(document.querySelectorAll('style')).forEach((tag) => {
+        rules += `${tag.textContent ?? ''}\n`;
+    });
+    Array.from(document.styleSheets).forEach((sheet) => {
+        try {
+            Array.from((sheet as CSSStyleSheet).cssRules).forEach((rule) => {
+                rules += `${rule.cssText}\n`;
+            });
+        } catch {
+            // Locked/cross-origin sheets — the textContent pass covers them.
+        }
+    });
+    const at = rules.indexOf(`.${emotionClass}`);
+    expect(at).not.toBe(-1);
+    const end = rules.indexOf('}', at);
+    return rules.slice(at, end === -1 ? at + 600 : end + 1);
+};
 
 describe('StoryGeneratorApp', () => {
     // Default fetch mock: GET / returns an empty story list. Individual
@@ -3484,8 +3511,8 @@ describe('StoryGeneratorApp', () => {
     // ── Offline regression: server unreachable → cached stories still show ──
     // The reported bug: with the server down, the stories list came up EMPTY
     // and no cached story could be opened. Two legs are pinned here:
-    //   1. Boot with the server REJECTING every request (mixed content /
-    //      connection refused — fetchStoryList throws): the localStorage
+    //   1. Boot with the server REJECTING every request (server unreachable —
+    //      every fetch rejects, fetchStoryList throws): the localStorage
     //      records cache must hydrate the sidebar AND the selected story's
     //      cached chapter content must render, with the load warning shown.
     //   2. The sidebar's periodic auto-refresh (30s) must NOT clear the
@@ -3760,6 +3787,200 @@ describe('StoryGeneratorApp', () => {
         });
     });
 
+    // ── T2: the NEW-STORY mobile pipeline end to end. localStorage holds
+    // story A (full) + story B metadata-only — B is the NEW story whose
+    // localStorage writes failed at EVERY rung (a quota-full mobile origin
+    // full of old cached stories) while the durable mirror caught BOTH full
+    // payloads. The server list still returns both stories; per-story GETs
+    // are offline. B must boot to the disk "Cached locally" icon via the
+    // mirror upgrade pass, render its restored content when selected, and —
+    // the mirror-poisoning regression — the boot re-put (which saves the
+    // hydrated data:null records before the upgrade lands) must NOT
+    // overwrite the mirror's only full copy of B (richer-wins in
+    // storyCacheSet).
+    it('restores a new quota-shed story from the mirror at boot and never downgrades the mirror copy', async () => {
+        const richData = (body: string) => ({
+            chapters: [
+                {
+                    chapterNumber: '1',
+                    chapterIndex: 0,
+                    title: 'Rich Chapter',
+                    plotpoints: ['rich plot'],
+                    expanded: true,
+                    canReExpand: true,
+                    revisions: [{ content: `## Rich Chapter\n\n${body}`, wordCount: 3, generationTimeMs: 500 }]
+                }
+            ],
+            meta: { storyline: 'rich storyline', chapterCount: 1, createdAt: '2026-08-15T09:00:00.000Z' }
+        });
+        const baseEntry = (id: number, storyId: string, title: string) => ({
+            id,
+            storyId,
+            storyName: title,
+            title,
+            storyline: `${title} storyline`,
+            chapterRequested: 1,
+            chapterCompleted: 1,
+            createdDate: '2026-08-15T09:00:00.000Z',
+            lastUpdatedAt: '2026-08-15T09:00:00.000Z',
+            status: 'completed',
+            data: null,
+            isRemote: false
+        });
+        // localStorage: A full + B metadata-only. Mirror: BOTH full — the
+        // exact durable-tier state a quota-full session leaves behind.
+        const aFull = { ...baseEntry(80, 'mirror-e2e-a', 'Mirror Tale A'), data: richData('mirror e2e body A') };
+        const bShed = baseEntry(81, 'mirror-e2e-b', 'Mirror Tale B');
+        const bFull = { ...bShed, data: richData('mirror e2e body B') };
+        localStorage.setItem('storyGenerator:story:mirror-e2e-a', JSON.stringify(aFull));
+        localStorage.setItem('storyGenerator:story:mirror-e2e-b', JSON.stringify(bShed));
+        await storyCacheSet([aFull, bFull] as any);
+
+        // The server list answers (both stories known to it); the per-story
+        // GETs are offline — the mobile mid-session network shape.
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                {
+                                    storyId: 'mirror-e2e-a',
+                                    storyName: 'Mirror Tale A',
+                                    chapterRequested: 1,
+                                    chapterCompleted: 1,
+                                    createdDate: '2026-08-15T09:00:00Z',
+                                    status: 'completed'
+                                },
+                                {
+                                    storyId: 'mirror-e2e-b',
+                                    storyName: 'Mirror Tale B',
+                                    chapterRequested: 1,
+                                    chapterCompleted: 1,
+                                    createdDate: '2026-08-15T09:00:00Z',
+                                    status: 'completed'
+                                }
+                            ]
+                        })
+                    );
+                }
+                return Promise.reject(new TypeError('Failed to fetch'));
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+
+        // Spy on the mirror's puts BEFORE the boot: the never-downgrade
+        // contract is that NO data:null put for B is ever issued — the
+        // pre-fix boot re-put (saving the hydrated data:null records)
+        // poisoned the mirror's only rich copy right after hydration.
+        const putSpy = vi.spyOn(IDBObjectStore.prototype, 'put');
+        try {
+            render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+            // B boots metadata-only from localStorage (the known symptom)…
+            expect(screen.getByTestId('story-tab-mirror-e2e-b')).toBeDefined();
+            // …and the mirror upgrade pass flips it to "Cached locally" with the
+            // restored chapter payload. A stays cached throughout.
+            await waitFor(() => {
+                expect(screen.getByTestId('story-cached-mirror-e2e-b').getAttribute('title')).toBe('Cached locally');
+            });
+            expect(screen.getByTestId('story-cached-mirror-e2e-a').getAttribute('title')).toBe('Cached locally');
+
+            // B's restored content renders when selected (the offline GET is
+            // silent — the cached copy stands, see the selection catch-up note
+            // in features/content.tsx).
+            await act(async () => {
+                fireEvent.click(screen.getByTestId('story-tab-mirror-e2e-b'));
+            });
+            await waitFor(() => {
+                expect(screen.getByTestId('chapter-0-content').textContent).toContain('mirror e2e body B');
+            });
+
+            // The boot never wrote a metadata-only B over the mirror: no
+            // data:null put for B was ever issued (the poisoning put the
+            // pre-fix code issued on the first post-hydration save).
+            const bPuts = putSpy.mock.calls.filter(
+                (call) => call[1] === 'story:mirror-e2e-b' && (call[0] as { data?: unknown }).data === null
+            );
+            expect(bPuts).toEqual([]);
+
+            // And the mirror still holds B's full payload at the end of the
+            // boot cycle.
+            await waitFor(async () => {
+                const mirrored = await storyCacheGet();
+                const b = mirrored?.find((r) => r.storyId === 'mirror-e2e-b');
+                expect(b?.data).not.toBeNull();
+                expect(b?.data?.chapters[0].revisions).toEqual([
+                    { content: '## Rich Chapter\n\nmirror e2e body B', wordCount: 3, generationTimeMs: 500 }
+                ]);
+            });
+        } finally {
+            putSpy.mockRestore();
+        }
+    });
+
+    // ── T7: MIRROR-ONLY APPEND e2e — localStorage holds ONLY story A; the
+    // durable mirror holds A + B (B is the new story whose localStorage
+    // writes failed at every rung — never even a metadata key). Fully
+    // offline: the sidebar must list BOTH stories with the disk icon —
+    // pre-fix, the upgrade pass mapped only the localStorage records and B
+    // was invisible offline, every session, forever.
+    it('appends mirror-only stories to the offline sidebar with their cached content', async () => {
+        const richData = (body: string) => ({
+            chapters: [
+                {
+                    chapterNumber: '1',
+                    chapterIndex: 0,
+                    title: 'Append Chapter',
+                    plotpoints: ['append plot'],
+                    expanded: true,
+                    canReExpand: true,
+                    revisions: [{ content: `## Append Chapter\n\n${body}`, wordCount: 3, generationTimeMs: 500 }]
+                }
+            ],
+            meta: { storyline: 'append storyline', chapterCount: 1, createdAt: '2026-08-15T09:00:00.000Z' }
+        });
+        const seed = (id: number, storyId: string, title: string) => ({
+            id,
+            storyId,
+            storyName: title,
+            title,
+            storyline: `${title} storyline`,
+            chapterRequested: 1,
+            chapterCompleted: 1,
+            createdDate: '2026-08-15T09:00:00.000Z',
+            lastUpdatedAt: '2026-08-15T09:00:00.000Z',
+            status: 'completed',
+            data: null,
+            isRemote: false
+        });
+        const aSeed = { ...seed(82, 'mirror-append-a', 'Append Tale A'), data: richData('append body A') };
+        const bSeed = { ...seed(83, 'mirror-append-b', 'Append Tale B'), data: richData('append body B') };
+        localStorage.setItem('storyGenerator:story:mirror-append-a', JSON.stringify(aSeed));
+        // NO localStorage key for B — its writes never landed at any rung.
+        await storyCacheSet([aSeed, bSeed] as any);
+
+        // Offline boot: every fetch rejects.
+        (globalThis.fetch as any).mockImplementation(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // A lists instantly from localStorage…
+        expect(screen.getByTestId('story-tab-mirror-append-a')).toBeDefined();
+        // …and B — previously dropped by the map-only upgrade — now APPENDS
+        // from the mirror with its cached chapters (disk icon, not the
+        // cloud-off "Not saved locally" variant).
+        await waitFor(() => {
+            expect(screen.getByTestId('story-cached-mirror-append-b').getAttribute('title')).toBe('Cached locally');
+        });
+
+        // The append fed the records-persist effect: localStorage self-heals
+        // with B's record so the NEXT boot lists B even without the mirror.
+        await waitFor(() => {
+            expect(localStorage.getItem('storyGenerator:story:mirror-append-b')).toContain('append body B');
+        });
+    });
+
     // ── End-to-end reload contract: an online session caches a viewed story,
     // then reloads OFFLINE (network disconnected before reload). The tile must
     // keep the disk "Cached locally" icon (not the cloud-off variant) and the
@@ -3831,13 +4052,12 @@ describe('StoryGeneratorApp', () => {
     // ── Mobile storage resilience ───────────────────────────────────────────
     // The mobile report: "still issues on mobile — it doesn't seem able to
     // cache the files". The desktop-side per-story cache fix stays in place;
-    // these tests pin the MOBILE-specific legs: the mixed-content blocker
-    // that prevents fetching/caching anything at all on the HTTPS deployment,
-    // the iOS private-mode quota-0 shape (every write throws, reads work),
-    // the storage-dead WebView (window.localStorage null), the silent
-    // mirror-failure escalation, the boot-time write-probe classification,
-    // and the navigator.storage.persist() request that mitigates Safari's
-    // 7-day ITP eviction of ALL script-writable storage.
+    // these tests pin the MOBILE-specific legs: the iOS private-mode quota-0
+    // shape (every write throws, reads work), the storage-dead WebView
+    // (window.localStorage null), the silent mirror-failure escalation, the
+    // boot-time write-probe classification, and the navigator.storage.persist()
+    // request that mitigates Safari's 7-day ITP eviction of ALL
+    // script-writable storage.
 
     // Deterministic module-state precondition for the mobile e2e tests below:
     // the mirror-outcome flag (didLastMirrorWriteFail, module-level in
@@ -3898,12 +4118,11 @@ describe('StoryGeneratorApp', () => {
         });
     };
 
-    it('names the mixed-content cause in the load warning when the https page cannot reach the http API', async () => {
-        // The deployed GitHub Pages shape, reproduced exactly by this file's
-        // https jsdom origin: the browser BLOCKS every https→http request
-        // (mixed content), so fetchStoryList rejects — the mobile device
-        // could never fetch, hence never cache, anything. The warning must
-        // NAME that cause instead of showing a bare "Failed to fetch".
+    it('shows the raw fetch error in the load warning when the server is unreachable at boot', async () => {
+        // The deployed GitHub Pages shape, reproduced by this file's https
+        // jsdom origin: with the server unreachable, every fetch rejects —
+        // fetchStoryList throws — and the load warning carries the RAW
+        // error message, with no diagnosis appended.
         (globalThis.fetch as any).mockImplementation(() =>
             Promise.reject(new TypeError('Failed to fetch'))
         );
@@ -3912,14 +4131,70 @@ describe('StoryGeneratorApp', () => {
 
         await waitFor(() => {
             const warning = screen.getByTestId('load-warning');
-            // The raw network error is kept…
+            // The raw network error is the whole warning…
             expect(warning.textContent).toContain('Failed to fetch');
-            // …and extended with the actual CAUSE and both deployment remedies.
-            expect(warning.textContent).toContain('HTTPS');
-            expect(warning.textContent).toContain('mixed content');
-            expect(warning.textContent).toContain('open this dashboard over the same http:// network origin');
-            expect(warning.textContent).toContain('serve the story API over HTTPS');
+            // …no diagnosis copy is appended.
+            expect(warning.textContent).not.toContain('mixed content');
+            expect(warning.textContent).not.toContain('?api=');
         });
+    });
+
+    // ── T9: the warning chip must be READABLE on a narrow phone. The mobile
+    // report: the chip's `white-space: nowrap; text-overflow: ellipsis`
+    // treatment clipped long warnings to roughly "⚠ Failed to fetch — the
+    // storyboard API at http://…" — the actionable part (the cause the
+    // warning names) was exactly what got cut off. The chip now WRAPS; the
+    // assertion pins the styling contract at the source (emotion class
+    // rules — see readEmotionRule): the warning variant must NOT carry the
+    // truncating pair, while unrelated one-line surfaces (the story tile
+    // title) keep theirs.
+    it('renders the full long warning on narrow screens (chip wraps; unrelated truncation unchanged)', async () => {
+        // One cached story (a tile + its truncating title exist)…
+        seedRecordsCache([
+            {
+                id: 63,
+                storyId: 'narrow-chip-1',
+                storyName: 'Narrow Chip Tale',
+                title: 'Narrow Chip Tale',
+                storyline: 'narrow storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-16T08:00:00.000Z',
+                status: 'completed',
+                data: null,
+                isRemote: false
+            }
+        ]);
+        // …and an unreachable server whose RAW fetch error is long, so the
+        // load warning chip carries a message well past one line.
+        const longFetchError =
+            'Failed to fetch — the storyboard API at the configured base URL did not answer; the browser could not establish a connection to the origin host after exhausting all candidate network routes';
+        (globalThis.fetch as any).mockImplementation(() =>
+            Promise.reject(new TypeError(longFetchError))
+        );
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        const warning = await screen.findByTestId('load-warning');
+        // The full long message is IN the chip text, uncut to the end.
+        expect(warning.textContent).toContain('Failed to fetch');
+        expect(warning.textContent).toContain('exhausting all candidate network routes');
+
+        // The chip's own rule WRAPS: no nowrap, no ellipsis clipping (the
+        // narrow-screen guarantee).
+        const chipRule = readEmotionRule(warning);
+        expect(chipRule).toContain('white-space:normal');
+        expect(chipRule).not.toContain('white-space:nowrap');
+        expect(chipRule).not.toContain('text-overflow:ellipsis');
+
+        // Unrelated one-line surfaces keep the truncating treatment: the
+        // story tile title still ellipsizes long names (the FIRST span
+        // inside the tile button is StoryTitle).
+        const tile = screen.getByTestId('story-tab-narrow-chip-1');
+        const title = tile.querySelector('span')!;
+        const titleRule = readEmotionRule(title);
+        expect(titleRule).toContain('white-space:nowrap');
+        expect(titleRule).toContain('text-overflow:ellipsis');
     });
 
     it('requests persistent storage once during bootstrap (Safari ITP eviction mitigation)', async () => {
@@ -4061,13 +4336,14 @@ describe('StoryGeneratorApp', () => {
         }
     });
 
-    it('warns that browser storage is unavailable when cached records exist but the boot write-probe fails', async () => {
-        // The boot classification (BootstrapLayer → classifyStorageTiers):
-        // records worth saving exist from a previous session (reads work),
-        // but the WRITE probe proves localStorage cannot accept anything —
-        // the private-mode / storage-disabled shape. The chip names the cause
-        // ("stories will only last for this visit") instead of leaving the
-        // session's persistence silently dead behind the hedged copy.
+    // T5a — QUOTA-FULL boot probe: the tiny write-probe throws
+    // QuotaExceededError (the origin's budget is exhausted — the reported
+    // mobile shape: ~5MB of old cached stories, storage itself enabled).
+    // The chip must name "storage is full" and the durable mirror tier;
+    // the OLD classification showed the private/incognito copy, which
+    // misnamed the cause and masked the real remedy (the mirror keeps
+    // every cached story available).
+    it('names a full origin when the boot write-probe throws QuotaExceededError (storage full, not private mode)', async () => {
         // (Settle the mirror-outcome flag FIRST: the empty-set save below
         // purges per-story keys, so it must run before the cache is seeded.)
         await settleMirrorOutcomeFlag();
@@ -4107,8 +4383,8 @@ describe('StoryGeneratorApp', () => {
             });
         try {
             // Offline boot: the cached records hydrate instantly (reads
-            // still work), the write-probe fails → the storage-unavailable
-            // classification fires.
+            // still work), the write-probe throws QuotaExceededError → the
+            // storage-FULL classification fires.
             (globalThis.fetch as any).mockImplementation(() =>
                 Promise.reject(new TypeError('Failed to fetch'))
             );
@@ -4118,10 +4394,75 @@ describe('StoryGeneratorApp', () => {
             expect(screen.getByTestId('story-tab-probe-story-1')).toBeDefined();
             await waitFor(() => {
                 expect(screen.getByTestId('cache-warning').textContent).toContain(
+                    'Browser storage is full'
+                );
+            });
+            // The mirror-tier reassurance is part of the copy (cached
+            // stories remain available offline).
+            expect(screen.getByTestId('cache-warning').textContent).toContain('remain available');
+            // The OLD misdiagnosis must NOT appear.
+            expect(screen.getByTestId('cache-warning').textContent).not.toContain('private/incognito mode');
+            expect(screen.getByTestId('cache-warning').textContent).not.toContain('will only last for this visit');
+        } finally {
+            setItem.mockRestore();
+        }
+    });
+
+    // T5b — SECURITY-ERROR boot probe: the write-probe throws SecurityError
+    // (private/incognito mode / storage disabled). The private/disabled copy
+    // must survive the quota/full split untouched.
+    it('keeps the private/incognito copy when the boot write-probe throws SecurityError', async () => {
+        await settleMirrorOutcomeFlag();
+        seedRecordsCache([
+            {
+                id: 62,
+                storyId: 'probe-story-2',
+                storyName: 'Probe Tale Two',
+                title: 'Probe Tale Two',
+                storyline: 'probe storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-14T08:00:00.000Z',
+                status: 'completed',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Probe Chapter',
+                            plotpoints: ['probe plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Probe Chapter\n\nprobe body two', wordCount: 2, generationTimeMs: 100 }]
+                        }
+                    ],
+                    meta: { storyline: 'probe storyline', chapterCount: 1, createdAt: '2026-08-14T08:00:00Z' }
+                },
+                isRemote: false
+            }
+        ]);
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(() => {
+                throw new DOMException('SecurityError', 'SecurityError');
+            });
+        try {
+            (globalThis.fetch as any).mockImplementation(() =>
+                Promise.reject(new TypeError('Failed to fetch'))
+            );
+
+            render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+            expect(screen.getByTestId('story-tab-probe-story-2')).toBeDefined();
+            await waitFor(() => {
+                expect(screen.getByTestId('cache-warning').textContent).toContain(
                     'will only last for this visit'
                 );
             });
             expect(screen.getByTestId('cache-warning').textContent).toContain('private/incognito mode');
+            // The quota-full copy must NOT appear for the SecurityError shape.
+            expect(screen.getByTestId('cache-warning').textContent).not.toContain('Browser storage is full');
         } finally {
             setItem.mockRestore();
         }
