@@ -1,3 +1,14 @@
+// Per-file jsdom environment options (parsed by vitest's docblock scanner):
+// run this file's window at an HTTPS origin so the mixed-content detection
+// (isMixedContentBlocked in src/config.ts) can be exercised END-TO-END — the
+// deployed GitHub Pages shape is an https page dialing a plain-http API.
+// hostname stays 'localhost', so resolveStoryboardApiHostName and every other
+// origin-derived behavior is identical to the rest of the suite; only
+// location.protocol differs. NOTE: never write the directive's @-prefixed
+// literal into a COMMENT in a test file — the scanner would try to JSON.parse
+// whatever follows it.
+// @vitest-environment-options {"url": "https://localhost:3000/"}
+//
 // Tests for the Story Generator dashboard.
 //
 // Covers the integrated UI behaviour:
@@ -34,11 +45,16 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoryGeneratorApp } from './App';
-import { cancelPendingStorageWrites } from './context/store';
+import {
+    cancelPendingStorageWrites,
+    didLastMirrorWriteFail,
+    saveRecordsToStorage
+} from './context/store';
 // storyCacheResetForTests wipes the fake IndexedDB mirror between tests;
 // storyCacheSet seeds a mirror payload the way saveRecordsToStorage's
-// fire-and-forget mirror call would (see src/context/storyCache.ts).
-import { storyCacheResetForTests, storyCacheSet } from './context/storyCache';
+// fire-and-forget mirror call would; storyCacheGet reads the mirror back in
+// the mobile-storage tests (see src/context/storyCache.ts).
+import { storyCacheGet, storyCacheResetForTests, storyCacheSet } from './context/storyCache';
 import { injectGlobalStyles } from './styles/global';
 
 const BASE_URL = 'http://test.local/v1/storyboard/generations';
@@ -3575,6 +3591,17 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('story-tab-offline-a')).toBeDefined();
         expect(screen.getByTestId('story-tab-offline-b')).toBeDefined();
         expect(screen.getByTestId('chapter-0-content').textContent).toContain('offline body B');
+        // Drain any fake-indexeddb transaction events still parked on the
+        // FAKE clock before switching back to real timers: useRealTimers
+        // DISCARDS pending fake-immediates, which strands an in-flight
+        // mirror transaction as a "zombie" that stalls the whole write
+        // queue for the NEXT tests (see the transaction watchdog notes in
+        // src/context/storyCache.ts) — observed as the mirror-restore test
+        // seeding a put that its own watchdog then aborted. Advancing the
+        // fake clock a little more first lets those events complete.
+        await act(async () => {
+            vi.advanceTimersByTime(500);
+        });
         vi.useRealTimers();
 
         // The cache itself was not damaged by the offline session: the
@@ -3799,5 +3826,347 @@ describe('StoryGeneratorApp', () => {
         await waitFor(() => {
             expect(screen.getByTestId('chapter-0-content').textContent).toContain('reload cached body');
         });
+    });
+
+    // ── Mobile storage resilience ───────────────────────────────────────────
+    // The mobile report: "still issues on mobile — it doesn't seem able to
+    // cache the files". The desktop-side per-story cache fix stays in place;
+    // these tests pin the MOBILE-specific legs: the mixed-content blocker
+    // that prevents fetching/caching anything at all on the HTTPS deployment,
+    // the iOS private-mode quota-0 shape (every write throws, reads work),
+    // the storage-dead WebView (window.localStorage null), the silent
+    // mirror-failure escalation, the boot-time write-probe classification,
+    // and the navigator.storage.persist() request that mitigates Safari's
+    // 7-day ITP eviction of ALL script-writable storage.
+
+    // Deterministic module-state precondition for the mobile e2e tests below:
+    // the mirror-outcome flag (didLastMirrorWriteFail, module-level in
+    // store.tsx) survives across tests within this file, and a STALE "failed"
+    // verdict — e.g. an earlier test's zombie mirror transaction that the
+    // storyCache watchdog aborted — would make the app's FIRST persist-effect
+    // snapshot read "both tiers dead" and flash the escalated chip copy in
+    // tests where the mirror is healthy. A tiny empty save with the (healthy)
+    // mirror settles the flag back to false before the app boots.
+    const settleMirrorOutcomeFlag = async () => {
+        saveRecordsToStorage([]);
+        await waitFor(() => {
+            expect(didLastMirrorWriteFail()).toBe(false);
+        });
+    };
+
+    // One server story with one fully-expanded chapter; shared by the mobile
+    // e2e tests below (list + per-story GET shapes).
+    const mobileFetchMock = (storyId: string, chapterTitle: string, body: string) => {
+        (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
+            if (!init || init.method === 'GET') {
+                if (url === BASE_URL || url === `${BASE_URL}/`) {
+                    return Promise.resolve(
+                        mockResponse(200, {
+                            stories: [
+                                {
+                                    storyId,
+                                    storyName: chapterTitle,
+                                    chapterRequested: 1,
+                                    chapterCompleted: 1,
+                                    createdDate: '2026-08-14T09:00:00Z',
+                                    status: 'completed'
+                                }
+                            ]
+                        })
+                    );
+                }
+                return Promise.resolve(
+                    mockResponse(200, {
+                        chapters: [
+                            {
+                                chapterNumber: '1',
+                                chapterIndex: 0,
+                                title: chapterTitle,
+                                plotpoints: ['mobile plot'],
+                                expanded: true,
+                                canReExpand: true,
+                                revisions: [
+                                    { content: `## ${chapterTitle}\n\n${body}`, wordCount: 3, generationTimeMs: 500 }
+                                ]
+                            }
+                        ],
+                        meta: { storyline: 'mobile storyline', chapterCount: 1, createdAt: '2026-08-14T09:00:00Z' }
+                    })
+                );
+            }
+            return Promise.resolve(mockResponse(200, {}));
+        });
+    };
+
+    it('names the mixed-content cause in the load warning when the https page cannot reach the http API', async () => {
+        // The deployed GitHub Pages shape, reproduced exactly by this file's
+        // https jsdom origin: the browser BLOCKS every https→http request
+        // (mixed content), so fetchStoryList rejects — the mobile device
+        // could never fetch, hence never cache, anything. The warning must
+        // NAME that cause instead of showing a bare "Failed to fetch".
+        (globalThis.fetch as any).mockImplementation(() =>
+            Promise.reject(new TypeError('Failed to fetch'))
+        );
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        await waitFor(() => {
+            const warning = screen.getByTestId('load-warning');
+            // The raw network error is kept…
+            expect(warning.textContent).toContain('Failed to fetch');
+            // …and extended with the actual CAUSE and both deployment remedies.
+            expect(warning.textContent).toContain('HTTPS');
+            expect(warning.textContent).toContain('mixed content');
+            expect(warning.textContent).toContain('open this dashboard over the same http:// network origin');
+            expect(warning.textContent).toContain('serve the story API over HTTPS');
+        });
+    });
+
+    it('requests persistent storage once during bootstrap (Safari ITP eviction mitigation)', async () => {
+        // navigator.storage.persist() opts a granted origin out of Safari's
+        // ~7-day ITP eviction of ALL script-writable storage (localStorage AND
+        // the IndexedDB mirror). Best-effort: the boot must not depend on the
+        // request resolving, but it MUST be made — once per session.
+        const persist = vi.fn().mockResolvedValue(true);
+        Object.defineProperty(window.navigator, 'storage', {
+            value: { persist },
+            configurable: true
+        });
+        try {
+            render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+            await waitFor(() => {
+                expect(persist).toHaveBeenCalledTimes(1);
+            });
+        } finally {
+            delete (window.navigator as { storage?: unknown }).storage;
+        }
+    });
+
+    it('renders story content from the in-memory store and warns per-story when every localStorage write fails (private mode)', async () => {
+        // iOS Safari private mode: setItem THROWS QuotaExceededError on every
+        // call while reads keep working. The fetched story must still render
+        // (the in-memory store is the session's source of truth), the cache
+        // chip must appear, and the per-tile title must flag the failed
+        // quick-cache copy — hedged on the durable mirror, which still works
+        // in this shape (fake-indexeddb answers).
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(() => {
+                throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+            });
+        try {
+            await settleMirrorOutcomeFlag();
+            mobileFetchMock('private-e2e-1', 'Private Tale', 'private mode body');
+
+            render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+            // The chapter content still renders from the in-memory store.
+            await waitFor(() => {
+                expect(screen.getByTestId('chapter-0-content').textContent).toContain('private mode body');
+            });
+            // The cache-health chip appears with the HEDGED copy (the mirror
+            // accepted the durable payload)…
+            await waitFor(() => {
+                expect(screen.getByTestId('cache-warning').textContent).toContain(
+                    'Browser cache copy failed for some stories'
+                );
+            });
+            expect(screen.getByTestId('cache-warning').textContent).not.toContain('cannot be saved on this device');
+            // …and the tile title flags this story's failed quick-cache copy.
+            await waitFor(() => {
+                expect(screen.getByTestId('story-cached-private-e2e-1').getAttribute('title')).toContain(
+                    'Browser cache copy write failed for this story'
+                );
+            });
+            // The durable mirror DID land the full payload (session survives
+            // reload via the recovery tier).
+            await waitFor(async () => {
+                const mirrored = await storyCacheGet();
+                expect(mirrored?.[0]?.storyId).toBe('private-e2e-1');
+            });
+        } finally {
+            setItem.mockRestore();
+        }
+    });
+
+    it('escalates the cache warning when both the quick cache and the durable mirror are dead', async () => {
+        // Storage-disabled WebView / evicted private mode: localStorage
+        // writes throw AND the IndexedDB mirror is unavailable. NOTHING
+        // durable accepted the payload, so the hedged "durable local app
+        // storage may still be available" copy would overpromise — the chip
+        // must escalate to the stronger condition instead.
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(() => {
+                throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+            });
+        // Mirror tier dead: no IndexedDB in this session.
+        vi.stubGlobal('indexedDB', undefined);
+        try {
+            mobileFetchMock('both-dead-e2e-1', 'Both Tiers Tale', 'both tiers dead body');
+
+            render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+            // Content still renders (in-memory store keeps the session alive).
+            await waitFor(() => {
+                expect(screen.getByTestId('chapter-0-content').textContent).toContain('both tiers dead body');
+            });
+            // The chip presents the STRONGER condition — not the hedged line.
+            await waitFor(() => {
+                expect(screen.getByTestId('cache-warning').textContent).toContain('cannot be saved on this device');
+            });
+            expect(screen.getByTestId('cache-warning').textContent).not.toContain('may still be available');
+            // The per-tile title also stops hedging on durable storage.
+            await waitFor(() => {
+                expect(screen.getByTestId('story-cached-both-dead-e2e-1').getAttribute('title')).toContain(
+                    'no durable local storage is available'
+                );
+            });
+        } finally {
+            vi.unstubAllGlobals();
+            setItem.mockRestore();
+        }
+    });
+
+    it('renders with a degraded-storage warning and no crash when window.localStorage is null (storage-dead WebView)', async () => {
+        // Some Android WebViews ship a NULL window.localStorage (storage
+        // disabled entirely). Every storage access throws TypeError on null,
+        // so the app must degrade gracefully: dashboard renders, server data
+        // still works, and the cache-health chip explains the degraded state.
+        const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')!;
+        Object.defineProperty(window, 'localStorage', { value: null, configurable: true });
+        try {
+            await settleMirrorOutcomeFlag();
+            mobileFetchMock('webview-1', 'WebView Tale', 'webview body');
+
+            render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+            // No crash: the dashboard renders and the server-sourced story
+            // list + content still work (fetch is storage-independent).
+            await waitFor(() => {
+                expect(screen.getByTestId('story-tab-webview-1')).toBeDefined();
+            });
+            await waitFor(() => {
+                expect(screen.getByTestId('chapter-0-content').textContent).toContain('webview body');
+            });
+            // The cache-write failure is observed (every save fails on the
+            // null storage) → the degraded warning appears.
+            await waitFor(() => {
+                expect(screen.getByTestId('cache-warning').textContent).toContain('Browser cache copy failed');
+            });
+        } finally {
+            Object.defineProperty(window, 'localStorage', descriptor);
+        }
+    });
+
+    it('warns that browser storage is unavailable when cached records exist but the boot write-probe fails', async () => {
+        // The boot classification (BootstrapLayer → classifyStorageTiers):
+        // records worth saving exist from a previous session (reads work),
+        // but the WRITE probe proves localStorage cannot accept anything —
+        // the private-mode / storage-disabled shape. The chip names the cause
+        // ("stories will only last for this visit") instead of leaving the
+        // session's persistence silently dead behind the hedged copy.
+        // (Settle the mirror-outcome flag FIRST: the empty-set save below
+        // purges per-story keys, so it must run before the cache is seeded.)
+        await settleMirrorOutcomeFlag();
+        seedRecordsCache([
+            {
+                id: 60,
+                storyId: 'probe-story-1',
+                storyName: 'Probe Tale',
+                title: 'Probe Tale',
+                storyline: 'probe storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-14T08:00:00.000Z',
+                status: 'completed',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Probe Chapter',
+                            plotpoints: ['probe plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Probe Chapter\n\nprobe body', wordCount: 2, generationTimeMs: 100 }]
+                        }
+                    ],
+                    meta: { storyline: 'probe storyline', chapterCount: 1, createdAt: '2026-08-14T08:00:00Z' }
+                },
+                isRemote: false
+            }
+        ]);
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(() => {
+                throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+            });
+        try {
+            // Offline boot: the cached records hydrate instantly (reads
+            // still work), the write-probe fails → the storage-unavailable
+            // classification fires.
+            (globalThis.fetch as any).mockImplementation(() =>
+                Promise.reject(new TypeError('Failed to fetch'))
+            );
+
+            render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+            expect(screen.getByTestId('story-tab-probe-story-1')).toBeDefined();
+            await waitFor(() => {
+                expect(screen.getByTestId('cache-warning').textContent).toContain(
+                    'will only last for this visit'
+                );
+            });
+            expect(screen.getByTestId('cache-warning').textContent).toContain('private/incognito mode');
+        } finally {
+            setItem.mockRestore();
+        }
+    });
+
+    it('shows no storage warning on a healthy-storage boot (boot probe clean)', async () => {
+        // The negative leg of the boot classification: records exist AND the
+        // write-probe succeeds → no storage-unavailable flag, no chip — fresh
+        // installs / healthy sessions must never see a degraded-storage copy.
+        seedRecordsCache([
+            {
+                id: 61,
+                storyId: 'healthy-probe-1',
+                storyName: 'Healthy Probe Tale',
+                title: 'Healthy Probe Tale',
+                storyline: 'healthy storyline',
+                chapterRequested: 1,
+                chapterCompleted: 1,
+                createdDate: '2026-08-14T08:00:00.000Z',
+                status: 'completed',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Healthy Chapter',
+                            plotpoints: ['healthy plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Healthy Chapter\n\nhealthy body', wordCount: 2, generationTimeMs: 100 }]
+                        }
+                    ],
+                    meta: { storyline: 'healthy storyline', chapterCount: 1, createdAt: '2026-08-14T08:00:00Z' }
+                },
+                isRemote: false
+            }
+        ]);
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        expect(screen.getByTestId('story-tab-healthy-probe-1')).toBeDefined();
+        // Give any would-be warning a beat to (wrongly) appear.
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 50));
+        });
+        expect(screen.queryByTestId('cache-warning')).toBeNull();
     });
 });

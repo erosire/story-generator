@@ -18,13 +18,15 @@
 // setupFiles â†’ src/test/setup.ts), so the REAL module code paths execute â€”
 // no mocks of the cache module itself.
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     storyCacheGet,
     storyCacheSet,
     storyCacheClear,
     storyCacheFingerprint,
     storyCacheResetForTests,
+    requestPersistentStorage,
+    classifyStorageTiers,
     type PersistableStoryEntryShape
 } from './storyCache';
 
@@ -347,5 +349,137 @@ describe('storyCacheFingerprint (cheap change detection)', () => {
         expect(storyCacheFingerprint({ ...base(), storyName: 'Renamed' })).not.toBe(before);
         expect(storyCacheFingerprint({ ...base(), missingFromServer: true })).not.toBe(before);
         expect(storyCacheFingerprint({ ...base(), chapterCompleted: 2 })).not.toBe(before);
+    });
+});
+
+// ── requestPersistentStorage (Safari ITP eviction mitigation) ─────────────
+// Safari's Intelligent Tracking Prevention can evict ALL script-writable
+// storage for an origin after ~7 days without interaction — the IndexedDB
+// mirror included (it is NOT exempt; see the corrected header comment in
+// storyCache.ts). The only mitigation is asking the browser to mark the
+// origin's storage persistent. These tests pin the helper's contract: it
+// resolves the persist() verdict when the StorageManager API exists and
+// NEVER throws (undefined API, rejecting persist(), hardened sandboxes) —
+// a best-effort request must not be able to take the boot path down.
+describe('requestPersistentStorage (best-effort persist() request)', () => {
+    // jsdom ships NO StorageManager — install one per test, remove after.
+    const installNavigatorStorage = (storage: unknown) => {
+        Object.defineProperty(window.navigator, 'storage', {
+            value: storage,
+            configurable: true
+        });
+    };
+    const removeNavigatorStorage = () => {
+        try {
+            delete (window.navigator as { storage?: unknown }).storage;
+        } catch {
+            // Absent already — nothing to clean.
+        }
+    };
+    afterEach(() => {
+        removeNavigatorStorage();
+    });
+
+    it('resolves true when the browser grants the persist() request', async () => {
+        const persist = vi.fn().mockResolvedValue(true);
+        installNavigatorStorage({ persist });
+        await expect(requestPersistentStorage()).resolves.toBe(true);
+        expect(persist).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves false (with a quota diagnostic) when persist() is declined', async () => {
+        const persist = vi.fn().mockResolvedValue(false);
+        const estimate = vi.fn().mockResolvedValue({ usage: 12, quota: 345 });
+        installNavigatorStorage({ persist, estimate });
+        await expect(requestPersistentStorage()).resolves.toBe(false);
+        expect(persist).toHaveBeenCalledTimes(1);
+        // Diagnostics only: the decline is accompanied by the origin's
+        // usage/quota context (never surfaced to state, never thrown).
+        expect(estimate).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves false without throwing when navigator.storage is undefined (old Safari / jsdom)', async () => {
+        removeNavigatorStorage();
+        await expect(requestPersistentStorage()).resolves.toBe(false);
+    });
+
+    it('resolves false without throwing when navigator itself is undefined (SSR shape)', async () => {
+        vi.stubGlobal('navigator', undefined);
+        try {
+            await expect(requestPersistentStorage()).resolves.toBe(false);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('resolves false without throwing when persist() rejects', async () => {
+        installNavigatorStorage({ persist: vi.fn().mockRejectedValue(new Error('denied')) });
+        await expect(requestPersistentStorage()).resolves.toBe(false);
+    });
+});
+
+// ── classifyStorageTiers (boot-time storage-health probe) ──────────────────
+// BootstrapLayer probes both tiers at boot to classify the device:
+// storage-writable / localStorage-dead (private mode, storage-disabled
+// WebView — the mirror is then the only durable tier) / everything-dead.
+// The localStorage leg is a REAL write-probe: a readable cache does not prove
+// writability (iOS private mode keeps reads working while every setItem
+// throws QuotaExceededError).
+describe('classifyStorageTiers (write-probe classification)', () => {
+    afterEach(() => {
+        localStorage.clear();
+    });
+
+    it('classifies healthy storage as writable with the mirror available', () => {
+        // jsdom + fake-indexeddb: both tiers answer.
+        expect(classifyStorageTiers()).toEqual({
+            localStorageWritable: true,
+            indexedDbAvailable: true
+        });
+    });
+
+    it('classifies quota-dead localStorage (private mode) as unwritable', () => {
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi
+            .spyOn(storageProto, 'setItem')
+            .mockImplementation(() => {
+                throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+            });
+        try {
+            // Reads still work in the private-mode shape — the WRITE probe is
+            // the load-bearing signal, not a read.
+            expect(localStorage.getItem).toBeInstanceOf(Function);
+            expect(classifyStorageTiers()).toEqual({
+                localStorageWritable: false,
+                indexedDbAvailable: true
+            });
+        } finally {
+            setItem.mockRestore();
+        }
+    });
+
+    it('survives window.localStorage being null (storage-dead WebView)', () => {
+        const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')!;
+        Object.defineProperty(window, 'localStorage', { value: null, configurable: true });
+        try {
+            expect(classifyStorageTiers()).toEqual({
+                localStorageWritable: false,
+                indexedDbAvailable: true
+            });
+        } finally {
+            Object.defineProperty(window, 'localStorage', descriptor);
+        }
+    });
+
+    it('reports the mirror tier unavailable when IndexedDB is missing', () => {
+        vi.stubGlobal('indexedDB', undefined);
+        try {
+            expect(classifyStorageTiers()).toEqual({
+                localStorageWritable: true,
+                indexedDbAvailable: false
+            });
+        } finally {
+            vi.unstubAllGlobals();
+        }
     });
 });

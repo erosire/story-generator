@@ -29,9 +29,14 @@
 //
 // CACHE-HEALTH CHIP (data-testid "cache-warning"): below the load warning, a
 // chip appears when the local cache is degraded — one or more localStorage
-// quick-cache copies failed, or a boot recovery/upgrade restored records from
-// the IndexedDB mirror (informational). See store.cacheWarning /
-// store.cacheWriteFailed in src/context/store.tsx.
+// quick-cache copies failed, the boot write-probe found storage unavailable
+// (store.storageUnavailableAtBoot), or a boot recovery/upgrade restored
+// records from the IndexedDB mirror (informational). TIER-AWARE: when the
+// durable mirror sync ALSO failed (store.cacheMirrorWriteFailed), the copy
+// escalates to "stories cannot be saved on this device" instead of the hedged
+// "may still be available" line. See store.cacheWriteFailed /
+// store.storageUnavailableAtBoot / store.cacheMirrorWriteFailed in
+// src/context/store.tsx.
 //
 // The "Stories" header carries a live job-count chip (data-testid
     // "sidebar-job-count", text "<n>") showing how many background
@@ -124,6 +129,22 @@ const REFRESH_INTERVAL_MS = 30_000;
 // local persistence was lost.
 const CACHE_WRITE_FAILED_MESSAGE =
     'Browser cache copy failed for some stories — durable local app storage may still be available';
+
+// BOTH-TIERS-DEAD copy: the localStorage quick-cache failed AND the durable
+// IndexedDB mirror sync failed (didLastMirrorWriteFail surfaced via
+// store.cacheMirrorWriteFailed). On mobile the mirror is the survivor tier,
+// so this state means NOTHING durable accepted the payload — private mode /
+// storage-dead WebViews — and the hedged copy above would overpromise.
+const CACHE_ALL_TIERS_FAILED_MESSAGE =
+    'Stories cannot be saved on this device and will be lost when the page closes — browser storage and the durable local cache are both unavailable';
+
+// BOOT-PROBE copy: BootstrapLayer's write-probe found localStorage unable to
+// accept writes while records worth saving exist (store.storageUnavailableAtBoot
+// — private/incognito mode or storage disabled). Takes precedence over the
+// hedged copy because the probe names the CAUSE; the mirror may still hold a
+// durable copy, but this session can never persist anything.
+const STORAGE_UNAVAILABLE_MESSAGE =
+    'Browser storage is unavailable — private/incognito mode or storage is disabled; stories will only last for this visit';
 
 // How often to auto-refresh while any story is being processed in the
 // background. The list response carries the server's live job-registry flags
@@ -417,6 +438,28 @@ const resolveCacheState = (entry: { data: unknown }, cacheWriteFailed: boolean):
     return 'not-cached';
 };
 
+// Tier-aware cache-warning copy resolution (the cache-health chip):
+//   1. BOTH tiers dead (localStorage save failed AND the durable mirror sync
+//      failed) → the strongest condition: nothing durable accepted the
+//      payload, so stories will be lost when the page closes. The hedged
+//      copy would overpromise in private mode / storage-dead WebViews.
+//   2. Boot-probe storage failure (storageUnavailableAtBoot, records worth
+//      saving exist) → name the private/incognito / storage-disabled cause.
+//   3. localStorage save failed but the mirror may have landed → the hedged
+//      copy (previous fix semantics, unchanged).
+//   4. Otherwise the informational cacheWarning (boot recovery/upgrade copy).
+const resolveCacheWarningMessage = (store: {
+    cacheWriteFailed?: boolean;
+    cacheMirrorWriteFailed?: boolean;
+    storageUnavailableAtBoot?: boolean;
+    cacheWarning?: string;
+}): string => {
+    if (store.cacheWriteFailed && store.cacheMirrorWriteFailed) return CACHE_ALL_TIERS_FAILED_MESSAGE;
+    if (store.storageUnavailableAtBoot) return STORAGE_UNAVAILABLE_MESSAGE;
+    if (store.cacheWriteFailed) return CACHE_WRITE_FAILED_MESSAGE;
+    return store.cacheWarning ?? '';
+};
+
 // Empty-state message when no stories exist.
 const EmptyMessage = styled('div', {
     padding: '20px 14px',
@@ -668,6 +711,11 @@ export const StorySidebar: React.FC = React.memo(() => {
                     entry,
                     store.cacheWriteFailedStoryIds?.includes(entry.storyId) === true
                 );
+                // Mirror-tier outcome for the write-failed title: when the
+                // durable IndexedDB sync ALSO failed, the hedged "may still be
+                // available" copy overpromises — this story has NO durable
+                // copy anywhere and dies with the page.
+                const mirrorWriteFailed = store.cacheMirrorWriteFailed === true;
 
                 // Cached-state icon per tile — the three-state resolution
                 // above drives WHICH glyph renders in the title row (testid
@@ -677,7 +725,8 @@ export const StorySidebar: React.FC = React.memo(() => {
                 //   not-cached   → cloud-off glyph, "Not saved locally — open
                 //                  once while connected to cache it"
                 //   write-failed → warning save-off glyph scoped to THIS
-                //                  story's browser quick-cache copy
+                //                  story's browser quick-cache copy, hedged
+                //                  on the mirror tier unless it also failed
                 const cachedIndicator =
                     cacheState === 'saved' ? (
                         <CachedIcon
@@ -690,7 +739,11 @@ export const StorySidebar: React.FC = React.memo(() => {
                     ) : cacheState === 'write-failed' ? (
                         <NotSavedIcon
                             data-testid={`story-cached-${entry.storyId}`}
-                            title="Browser cache copy write failed for this story (durable local app storage may still be available)"
+                            title={
+                                mirrorWriteFailed
+                                    ? 'Browser cache copy write failed for this story (no durable local storage is available — it will be lost when the page closes)'
+                                    : 'Browser cache copy write failed for this story (durable local app storage may still be available)'
+                            }
                             aria-label="Browser cache copy write failed for this story"
                         >
                             <SyncDisabledIcon style={{ fontSize: 13, display: 'block' }} />
@@ -823,17 +876,25 @@ export const StorySidebar: React.FC = React.memo(() => {
                 </LoadWarning>
             )}
             {/* Cache-health chip — shown when the LOCAL cache is degraded:
-                one or more localStorage quick-cache copies failed, or a boot
-                recovery/upgrade pass restored records from the IndexedDB
-                mirror (informational). IndexedDB writes settle asynchronously,
-                so this warning does not claim total local loss. Independent of
-                loadWarning (server reachability). */}
-            {(store.cacheWriteFailed || store.cacheWarning) && (
+                one or more localStorage quick-cache copies failed, the boot
+                write-probe found storage unavailable with records worth
+                saving, or a boot recovery/upgrade pass restored records from
+                the IndexedDB mirror (informational). TIER-AWARE COPY: when
+                the localStorage tier failed AND the durable mirror sync also
+                failed (store.cacheMirrorWriteFailed — private mode /
+                storage-dead WebViews), the chip presents the stronger
+                "cannot be saved on this device" condition instead of the
+                hedged copy; a boot-probe storage failure names the
+                private/incognito cause. Independent of loadWarning (server
+                reachability). */}
+            {(store.cacheWriteFailed || store.cacheWarning || store.storageUnavailableAtBoot) && (
                 <LoadWarning
                     data-testid="cache-warning"
-                    title={store.cacheWriteFailed ? CACHE_WRITE_FAILED_MESSAGE : store.cacheWarning}
+                    title={resolveCacheWarningMessage(store)}
                 >
-                    {store.cacheWriteFailed ? `⚠ ${CACHE_WRITE_FAILED_MESSAGE}` : `ⓘ ${store.cacheWarning}`}
+                    {store.cacheWriteFailed || store.storageUnavailableAtBoot
+                        ? `⚠ ${resolveCacheWarningMessage(store)}`
+                        : `ⓘ ${resolveCacheWarningMessage(store)}`}
                 </LoadWarning>
             )}
         </SidebarContainer>

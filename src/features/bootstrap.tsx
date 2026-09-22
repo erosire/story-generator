@@ -6,6 +6,15 @@
 // load existing state into the store on mount — renders nothing).
 //
 // Cache-first behavior (the store is the display source of truth):
+//   0a. On mount, request persistent storage (navigator.storage.persist —
+//      best-effort, never throws; the Safari ITP 7-day-eviction mitigation
+//      for BOTH cache tiers — see src/context/storyCache.ts).
+//   0b. Classify local storage health with a tiny write-probe
+//      (classifyStorageTiers): when localStorage cannot accept writes while
+//      records worth saving exist (private/incognito mode, storage-disabled
+//      WebView), store.storageUnavailableAtBoot is set so the sidebar names
+//      the cause ("stories will only last for this visit"). Healthy storage
+//      and record-less fresh installs stay unwarned.
 //   1. On mount, hydrate from localStorage INSTANTLY so the dashboard appears
 //      with cached data (stories + chapter content) even if the server is
 //      slow or unreachable.
@@ -28,7 +37,11 @@
 //      to IndexedDB by saveRecordsToStorage).
 //   3. On fetch error, keep the cached records and set a loadWarning (read
 //      by the dashboard header / sidebar so the user can see the backend is
-//      unreachable).
+//      unreachable). When the failure has the deployed mobile shape — an
+//      HTTPS page dialing the plain-HTTP API — the browser itself blocked
+//      the request (mixed content), and the warning is EXTENDED to name that
+//      cause and the two deployment-level remedies (see MIXED_CONTENT_DIAGNOSIS
+//      below + isMixedContentBlocked in src/config.ts).
 //
 // OFFLINE CONTRACT (the reason this layer exists in this shape): the
 // deployment's baseUrl points at a LAN host (src/config.ts —
@@ -49,6 +62,8 @@
 import React from 'react';
 import { useStoryStore } from '../context';
 import { fetchStoryList } from '../api';
+import { isMixedContentBlocked } from '../config';
+import { classifyStorageTiers, requestPersistentStorage } from '../context/storyCache';
 import {
     getLastStoryId,
     loadRecordsFromStorage,
@@ -57,6 +72,16 @@ import {
     mergeServerStoryList,
     type StoryEntry
 } from '../context/store';
+
+// Mixed-content diagnosis appended to the raw fetch error when the session is
+// the deployed mobile shape: an HTTPS page (GitHub Pages) dialing the plain
+// HTTP storyboard API. The browser blocks every such request before it leaves
+// the page, so the raw "Failed to fetch" alone misleads — without this the
+// user cannot tell a down server from a page that can NEVER reach it. The copy
+// names the cause and both deployment-level remedies; the app-side fix (serving
+// either side over a matching scheme) is out of this layer's control by design.
+const MIXED_CONTENT_DIAGNOSIS =
+    'this page is served over HTTPS but the story API uses plain HTTP, which the browser blocks as mixed content — open this dashboard over the same http:// network origin instead, or serve the story API over HTTPS';
 
 // Hidden bootstrap layer. Renders nothing; only effects.
 export const BootstrapLayer: React.FC = React.memo(() => {
@@ -69,9 +94,31 @@ export const BootstrapLayer: React.FC = React.memo(() => {
         if (didFetchRef.current) return;
         didFetchRef.current = true;
 
+        // ── Step 0a: ask for persistent storage (Safari ITP mitigation) ──
+        // Best-effort and never throwing (see storyCache.ts): a granted
+        // navigator.storage.persist() opts this origin out of Safari's
+        // 7-day capricious eviction of ALL script-writable storage — both
+        // the localStorage quick-cache and the IndexedDB mirror. Called
+        // BEFORE any cache work so the very first session already benefits;
+        // declined/unsupported requests resolve false silently.
+        void requestPersistentStorage();
+
         // Capture the baseUrl at mount — store.config is captured here, so if
         // the consumer swaps it later the bootstrap only fires once.
         const baseUrl = store.config.baseUrl;
+
+        // ── Step 0b: classify local storage health (write-probe) ─────────
+        // A tiny setItem/removeItem pair distinguishes the private-mode /
+        // storage-disabled shapes (every write throws; window.localStorage
+        // can be null outright in storage-dead WebViews) from a merely empty
+        // cache — a successful hydration does NOT prove writability because
+        // reads can still work while writes fail (iOS private-mode quota-0).
+        // Combined with hasIndexedDB (inside classifyStorageTiers) this is
+        // the storage-writable / localStorage-dead / everything-dead
+        // classification; only the localStorage leg drives a flag (when
+        // everything is dead there is nothing to hydrate anyway), and the
+        // sidebar renders the storage-unavailable copy for it.
+        const storageWritable = classifyStorageTiers().localStorageWritable;
 
         // ── Step 1: Hydrate from localStorage instantly ──────────────────
         // This makes the dashboard appear immediately with cached data
@@ -108,7 +155,16 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                         // cache chip (informational, cleared on the next
                         // successful sync by nothing — it is session-scoped
                         // context, so it persists until reload).
-                        ...(cacheWarning !== undefined ? { cacheWarning } : {})
+                        ...(cacheWarning !== undefined ? { cacheWarning } : {}),
+                        // Boot-time storage classification (step 0b): there
+                        // ARE records worth saving but localStorage cannot
+                        // accept writes — flag it so the sidebar's chip names
+                        // the private-mode/storage-disabled cause instead of
+                        // leaving the session's persistence silently dead.
+                        // Only reachable with records.length > 0, which is
+                        // exactly the "only warn when there is something to
+                        // lose" contract; healthy storage never sets it.
+                        ...(storageWritable ? {} : { storageUnavailableAtBoot: true })
                     };
                 });
             }
@@ -155,7 +211,17 @@ export const BootstrapLayer: React.FC = React.memo(() => {
                     // the user can still see cached data from localStorage and Add a
                     // story locally and POST (the bootstrap failure shouldn't block
                     // the whole UI). Cached records are left intact.
-                    setStore((prev) => ({ ...prev, loadWarning: err.message }));
+                    //
+                    // MIXED-CONTENT DIAGNOSIS: on the deployed mobile shape
+                    // (HTTPS page + plain-HTTP API, see ../config.ts) every
+                    // request is blocked by the browser itself — the raw
+                    // "Failed to fetch" never mentions WHY. Append the cause
+                    // and both deployment-level remedies so the warning is
+                    // actionable instead of misleading.
+                    const message = isMixedContentBlocked(baseUrl)
+                        ? `${err.message} — ${MIXED_CONTENT_DIAGNOSIS}`
+                        : err.message;
+                    setStore((prev) => ({ ...prev, loadWarning: message }));
                     console.warn('[BootstrapLayer] Failed to list existing stories.', err);
                 });
         };

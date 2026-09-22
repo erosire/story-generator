@@ -4,9 +4,16 @@
 //   - iOS Safari private mode: localStorage setItem THROWS on every write and
 //     the whole cache is wiped when the tab/session closes — the offline
 //     dashboard came up empty on every private-mode reload.
-//   - Safari ITP 7-day eviction: localStorage keys unused for 7 days are
-//     deleted outright; IndexedDB is NOT subject to the same blanket eviction
-//     (script-initiated storage that gets regular reads/writes is kept).
+//   - Safari ITP 7-day eviction: after ~7 days without interacting with the
+//     site, Safari's Intelligent Tracking Prevention can delete ALL
+//     script-writable storage for the origin — localStorage AND this
+//     IndexedDB mirror alike (IndexedDB is NOT exempt; only the removal of
+//     the interactive-use requirement after the 7-day window differs). The
+//     mitigation is navigator.storage.persist(): BootstrapLayer requests
+//     persistent storage at boot (requestPersistentStorage below) so a
+//     granted origin is opted out of the eviction window. Best-effort only —
+//     the browser may decline (or predate the API), in which case the 7-day
+//     cap stands and the cache is only as durable as the last interaction.
 //   - Quota: localStorage is ~5MB; IndexedDB is typically hundreds of MB on
 //     mobile — the full chapter-revision cache fits without shedding.
 //
@@ -170,6 +177,81 @@ const hasIndexedDB = (): boolean => {
         return false;
     }
 };
+
+// ── Storage-health helpers (mobile diagnosis) ───────────────────────────────
+// The mirror tier exists for the storage-hostile mobile environments above,
+// but until now the app never MEASURED them: Safari ITP could silently evict
+// everything (no persist() was ever requested), and iOS private mode /
+// storage-disabled WebViews kept failing writes with only a hedged
+// "may still be available" message. These helpers give BootstrapLayer the
+// two signals it needs at boot: can localStorage accept a write at all, and
+// can the browser be asked to keep this origin's storage persistent.
+
+// Ask the browser to mark this origin's storage as persistent. This is the
+// Safari ITP 7-day-eviction mitigation (see the header comment): a granted
+// persist() request opts the origin out of the capricious-eviction window,
+// keeping BOTH the localStorage quick-cache and the IndexedDB mirror. Strictly
+// best-effort: returns false (never throws) when the StorageManager API is
+// missing (older Safari, jsdom, SSR) or the request rejects. When the request
+// is declined, navigator.storage.estimate() is read for a console diagnostic
+// (usage/quota context) — never surfaced to state, never thrown.
+export const requestPersistentStorage = async (): Promise<boolean> => {
+    try {
+        const manager =
+            typeof navigator !== 'undefined' ? (navigator as Navigator).storage : undefined;
+        if (!manager || typeof manager.persist !== 'function') return false;
+        const persisted = await manager.persist();
+        if (!persisted) {
+            try {
+                if (typeof manager.estimate === 'function') {
+                    const { usage, quota } = await manager.estimate();
+                    console.info(
+                        `[storyCache] persistent storage not granted (origin usage ${usage ?? 0} of quota ${quota ?? 0})`
+                    );
+                }
+            } catch {
+                // Diagnostics must never break the request path.
+            }
+        }
+        return persisted;
+    } catch {
+        // A rejecting persist()/hardened sandbox must never surface.
+        return false;
+    }
+};
+
+// Write-probe: can localStorage accept a write RIGHT NOW? A tiny
+// setItem/removeItem pair on a probe key distinguishes the private-mode /
+// storage-disabled shapes (every setItem throws QuotaExceededError or
+// SecurityError; `window.localStorage` itself can be null in storage-dead
+// WebViews) from a merely empty cache. Reads can still work in some of these
+// shapes, so a successful boot hydration does NOT prove writability.
+const isLocalStorageWritable = (): boolean => {
+    try {
+        if (typeof localStorage === 'undefined' || localStorage === null) return false;
+        localStorage.setItem('storyGenerator:storage-probe', '1');
+        localStorage.removeItem('storyGenerator:storage-probe');
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+// Boot-time tier classification used by BootstrapLayer:
+//   - localStorageWritable: the quick-cache tier can accept writes.
+//   - indexedDbAvailable: the durable mirror tier exists at all.
+// storage-writable = both true; localStorage-dead = first false (iOS private
+// mode / storage-disabled WebView — the mirror is then the only durable tier);
+// everything-dead = both false (recovery is impossible — nothing ever boots).
+export type StorageTierClassification = {
+    localStorageWritable: boolean;
+    indexedDbAvailable: boolean;
+};
+
+export const classifyStorageTiers = (): StorageTierClassification => ({
+    localStorageWritable: isLocalStorageWritable(),
+    indexedDbAvailable: hasIndexedDB()
+});
 
 // Open (and lazily create) the database. Rejects on error/blocked so callers
 // can log-and-continue.

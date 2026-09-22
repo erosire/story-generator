@@ -27,6 +27,8 @@ import {
     mergeServerStoryList,
     saveRecordsToStorage,
     didLastSaveFail,
+    didLastMirrorWriteFail,
+    deriveCacheHealth,
     getLastSaveFailedStoryIds,
     type StoryEntry
 } from './store';
@@ -1069,6 +1071,29 @@ describe('saveRecordsToStorage (synchronous offline cache, per-story keys)', () 
 
         getItem.mockRestore();
         setItem.mockRestore();
+
+        // ── Private-mode quota-0 shape (the mobile iOS Safari failure) ──
+        // Reads still work; EVERY write throws QuotaExceededError. This is
+        // the shape the mobile report came from: every rung of every story
+        // fails, so the rung ladder must flag EVERY story (the in-memory
+        // store keeps the session alive) and the failure must be observable
+        // (didLastSaveFail + the scoped ID list → the sidebar's warning
+        // tile state) — never a crash, never a silent "Cached locally".
+        const quotaSetItem = vi.spyOn(storageProto, 'setItem').mockImplementation(() => {
+            throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+        });
+        try {
+            const entries = [
+                makeEntry({ id: 1, storyId: 'private-1', data: { chapters: [], meta: null } }),
+                makeEntry({ id: 2, storyId: 'private-2', data: { chapters: [], meta: null } })
+            ];
+            expect(() => saveRecordsToStorage(entries)).not.toThrow();
+            expect(didLastSaveFail()).toBe(true);
+            // Failed IDs contain EVERY story — nothing was persisted.
+            expect(getLastSaveFailedStoryIds()).toEqual(['private-1', 'private-2']);
+        } finally {
+            quotaSetItem.mockRestore();
+        }
     });
 });
 
@@ -1252,6 +1277,96 @@ describe('IndexedDB mirror (saveRecordsToStorage / loadRecordsFromIdbMirror)', (
 
         getItem.mockRestore();
         setItem.mockRestore();
+    });
+
+    // ── Mirror-failure surfacing (the silent-failure regression) ─────────
+    // The fire-and-forget storyCacheSet in saveRecordsToStorage used to log
+    // a failed mirror write and move on: on mobile the mirror is the
+    // SURVIVOR tier, so a both-tiers-dead device (localStorage unavailable
+    // AND the mirror failed — private mode / storage-dead WebView) kept
+    // showing the hedged "durable local app storage may still be available"
+    // copy while NOTHING durable held the records. The outcome is now
+    // recorded (didLastMirrorWriteFail) and observable (deriveCacheHealth →
+    // store.cacheMirrorWriteFailed in the provider's persist effect).
+    it('surfaces a mirror failure alongside the localStorage failure (both tiers dead)', async () => {
+        // localStorage tier: private-mode quota-0 — reads work, writes throw.
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi.spyOn(storageProto, 'setItem').mockImplementation(() => {
+            throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+        });
+        // Mirror tier: IndexedDB unavailable (storage-dead WebView shape).
+        vi.stubGlobal('indexedDB', undefined);
+        try {
+            const entry = makeEntry({ storyId: 'both-dead-1', data: { chapters: [], meta: null } });
+            expect(() => saveRecordsToStorage([entry])).not.toThrow();
+
+            // The mirror write settles asynchronously — wait for the outcome.
+            await vi.waitFor(() => {
+                expect(didLastMirrorWriteFail()).toBe(true);
+            });
+            // BOTH tiers are observable as dead in one health snapshot —
+            // the state the sidebar escalates its copy from.
+            expect(didLastSaveFail()).toBe(true);
+            expect(deriveCacheHealth()).toEqual({
+                cacheWriteFailed: true,
+                cacheWriteFailedStoryIds: ['both-dead-1'],
+                cacheMirrorWriteFailed: true
+            });
+        } finally {
+            vi.unstubAllGlobals();
+            setItem.mockRestore();
+        }
+    });
+
+    it('keeps the hedged state when localStorage fails but the mirror accepted the payload', async () => {
+        // localStorage quota-dead, mirror HEALTHY (the normal iOS
+        // private-mode shape: IndexedDB still works there) — the previous
+        // fix's semantics must hold: the failure is scoped to the quick-cache
+        // tier and the durable copy did land.
+        const storageProto = Object.getPrototypeOf(localStorage) as Storage;
+        const setItem = vi.spyOn(storageProto, 'setItem').mockImplementation(() => {
+            throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+        });
+        try {
+            const entry = makeEntry({
+                storyId: 'hedged-1',
+                data: {
+                    chapters: [
+                        {
+                            chapterNumber: '1',
+                            chapterIndex: 0,
+                            title: 'Hedged Chapter',
+                            plotpoints: ['plot'],
+                            expanded: true,
+                            canReExpand: true,
+                            revisions: [{ content: '## Hedged Chapter\n\nhedged body', wordCount: 2, generationTimeMs: 100 }]
+                        }
+                    ],
+                    meta: { storyline: 's', chapterCount: 1, createdAt: '2026-08-01T00:00:00.000Z' }
+                }
+            });
+            saveRecordsToStorage([entry]);
+
+            expect(didLastSaveFail()).toBe(true);
+            // The full-fidelity payload landed in the durable mirror…
+            await vi.waitFor(async () => {
+                const mirrored = await storyCacheGet();
+                expect(mirrored).not.toBeNull();
+            });
+            const mirrored = (await storyCacheGet())!;
+            expect(mirrored[0].data!.chapters[0].revisions).toEqual([
+                { content: '## Hedged Chapter\n\nhedged body', wordCount: 2, generationTimeMs: 100 }
+            ]);
+            // …so the health snapshot stays hedged: localStorage-only failure.
+            expect(didLastMirrorWriteFail()).toBe(false);
+            expect(deriveCacheHealth()).toEqual({
+                cacheWriteFailed: true,
+                cacheWriteFailedStoryIds: ['hedged-1'],
+                cacheMirrorWriteFailed: false
+            });
+        } finally {
+            setItem.mockRestore();
+        }
     });
 
     it('loadRecordsFromIdbMirror recovers records when localStorage is empty and self-heals localStorage', async () => {

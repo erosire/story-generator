@@ -21,6 +21,8 @@ import {
     LOCAL_AREA_NETWORK_HOST_NAME,
     LOCAL_AREA_NETWORK_STORYBOARD_PORT,
     isLocalHostOrigin,
+    isMixedContentApiPair,
+    isMixedContentBlocked,
     resolveStoryboardApiHostName
 } from './config';
 
@@ -65,5 +67,45 @@ describe('resolveStoryboardApiHostName (window.location-driven resolution)', () 
 describe('port constants (unchanged contract)', () => {
     it('the storyboard API still lives on port 5252', () => {
         expect(LOCAL_AREA_NETWORK_STORYBOARD_PORT).toBe(5252);
+    });
+});
+
+// ── Mixed-content detection (the deployed mobile blocker) ─────────────────
+// The GitHub Pages deployment serves the dashboard over HTTPS while the
+// storyboard API base URL stays plain HTTP (the LAN host). Every iOS/Android
+// browser blocks those requests outright, so on mobile nothing is ever
+// fetched — and therefore nothing is ever cached. The pure predicate lets the
+// branches be pinned deterministically (jsdom cannot flip location.protocol —
+// same unforgeable-location constraint as the resolver tests above); the
+// end-to-end HTTPS-page shape is exercised in App.test.tsx, whose jsdoc
+// environment options set the jsdom URL to an https origin for that file.
+describe('isMixedContentApiPair (pure mixed-content predicate)', () => {
+    it('is true for an https page dialing a plain-http API (the deployed shape)', () => {
+        expect(
+            isMixedContentApiPair('https:', `http://${LOCAL_AREA_NETWORK_HOST_NAME}:5252/v1/storyboard/generations`)
+        ).toBe(true);
+        // Scheme match is case-insensitive (URLs normalize the scheme).
+        expect(isMixedContentApiPair('https:', 'HTTP://example.com/api')).toBe(true);
+    });
+
+    it('is false for every non-poisoned pairing', () => {
+        // Matching schemes (both the dev shape and an all-HTTPS deployment).
+        expect(isMixedContentApiPair('http:', 'http://192.168.8.128:5252/v1/storyboard/generations')).toBe(false);
+        expect(isMixedContentApiPair('https:', 'https://api.example.com/v1/storyboard/generations')).toBe(false);
+        // http page dialing https API is fine (an upgrade, not a block).
+        expect(isMixedContentApiPair('http:', 'https://api.example.com/v1/storyboard/generations')).toBe(false);
+        // Non-web protocols and non-URL inputs never claim mixed content.
+        expect(isMixedContentApiPair('file:', 'http://192.168.8.128:5252/v1/storyboard/generations')).toBe(false);
+        expect(isMixedContentApiPair('https:', '')).toBe(false);
+        expect(isMixedContentApiPair('https:', 'not-a-url')).toBe(false);
+    });
+});
+
+describe('isMixedContentBlocked (window-reading wrapper)', () => {
+    it('is false in the default http jsdom origin (environment precondition)', () => {
+        // This file runs at http://localhost:3000/ — an http page dialing an
+        // http API is NOT mixed content; the wrapper must not fire.
+        expect(window.location.protocol).toBe('http:');
+        expect(isMixedContentBlocked('http://localhost:5252/v1/storyboard/generations')).toBe(false);
     });
 });

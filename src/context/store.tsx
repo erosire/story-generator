@@ -18,9 +18,13 @@
 //   - IndexedDB (durable mirror, ./storyCache.ts) — the mobile-survival copy,
 //     keyed 'story:<storyId>' the same way. iOS Safari private mode wipes
 //     localStorage on tab close and ITP evicts it under pressure; IndexedDB
-//     has orders-of-magnitude larger quotas and survives eviction. Every
-//     records write is mirrored per story (fire-and-forget, unchanged
-//     stories skipped) and BootstrapLayer rehydrates the durable copy at boot.
+//     has orders-of-magnitude larger quotas and a granted
+//     navigator.storage.persist() request (asked at boot, see storyCache.ts)
+//     opts the origin out of ITP's 7-day capricious eviction. Every records
+//     write is mirrored per story (fire-and-forget, unchanged stories
+//     skipped), the write's OUTCOME is surfaced (didLastMirrorWriteFail) so a
+//     both-tiers-dead device stops showing the hedged copy, and
+//     BootstrapLayer rehydrates the durable copy at boot.
 //
 // Unlike localContextStore, this distribution package cannot import @presource/react
 // (it is not in package.json deps — see distribution/story-generator/package.json).
@@ -515,11 +519,46 @@ let pendingRecords: StoryEntry[] | null = null;
 // Story IDs are retained so one failed key does not mark every tile failed.
 const lastSaveFailedStoryIds = new Set<string>();
 
+// Outcome of the most recent SETTLED IndexedDB mirror sync (see the
+// fire-and-forget storyCacheSet in saveRecordsToStorage). NOT reset while a
+// sync is in flight — the flag holds the last settled verdict until the next
+// one lands, so the persist effect's deriveCacheHealth() snapshot always
+// describes a real, settled outcome and can never ping-pong the store's
+// cacheMirrorWriteFailed between "failed" and "ok" on every records change.
+let lastMirrorWriteFailed = false;
+
 /** True when the last saveRecordsToStorage could not write localStorage. */
 export const didLastSaveFail = (): boolean => lastSaveFailedStoryIds.size > 0;
 
 /** Story IDs whose localStorage key failed during the last records save. */
 export const getLastSaveFailedStoryIds = (): string[] => [...lastSaveFailedStoryIds];
+
+/** True when the most recent settled mirror sync failed (no durable tier). */
+export const didLastMirrorWriteFail = (): boolean => lastMirrorWriteFailed;
+
+/**
+ * Tier-aware cache-health snapshot: what the LAST save left behind.
+ *   - cacheWriteFailed / cacheWriteFailedStoryIds: the synchronous
+ *     localStorage tier's outcome (unchanged semantics from the previous
+ *     fix — scoped per story).
+ *   - cacheMirrorWriteFailed: the durable IndexedDB tier's outcome. When BOTH
+ *     are true, NO tier accepted the payload — the sidebar must present the
+ *     stronger condition (stories cannot be saved on this device) instead of
+ *     the hedged "durable local app storage may still be available" copy,
+ *     which overpromises in private mode / storage-dead WebViews.
+ */
+export type CacheHealth = {
+    cacheWriteFailed: boolean;
+    cacheWriteFailedStoryIds: string[];
+    cacheMirrorWriteFailed: boolean;
+};
+
+/** Snapshot of both cache tiers' health after the latest save/settled mirror. */
+export const deriveCacheHealth = (): CacheHealth => ({
+    cacheWriteFailed: didLastSaveFail(),
+    cacheWriteFailedStoryIds: getLastSaveFailedStoryIds(),
+    cacheMirrorWriteFailed: didLastMirrorWriteFail()
+});
 
 /**
  * Serialize one entry's chapter payload with its revision history trimmed to
@@ -817,7 +856,11 @@ const removeLegacyBlob = (): void => {
  * mode / ITP 7-day eviction; IndexedDB has orders-of-magnitude larger quotas
  * and survives both. The mirror therefore holds the UNSHED cache, and
  * upgradeRecordsFromIdbMirror restores that richness at boot when the
- * localStorage copy is poorer than the mirror.
+ * localStorage copy is poorer than the mirror. The mirror write's outcome is
+ * recorded (lastMirrorWriteFailed → didLastMirrorWriteFail → deriveCacheHealth)
+ * so a BOTH-TIERS-DEAD save — localStorage unavailable AND the mirror failed
+ * (storage-disabled WebView, evicted private mode) — can be told apart from a
+ * localStorage-only failure whose durable copy still landed.
  */
 export const saveRecordsToStorage = (records: StoryEntry[]): void => {
     const serializable = records.map(toPersistable);
@@ -825,12 +868,35 @@ export const saveRecordsToStorage = (records: StoryEntry[]): void => {
 
     // Reset per-story cache health optimistically at the start of each save.
     lastSaveFailedStoryIds.clear();
+    // The mirror outcome flag is deliberately NOT reset here: it holds the
+    // most recent SETTLED sync's verdict until this save's storyCacheSet
+    // settles and overwrites it. Resetting it synchronously would make the
+    // persist effect's snapshot read "mirror ok" for every save, so a dead
+    // mirror tier would never surface (and an earlier design that ping-ponged
+    // the flag against an async store notification looped the renderer).
+    // The persist effect therefore always derives the LAST SETTLED outcome.
     // Mirror the FULL payload to IndexedDB FIRST (fire-and-forget) — the
     // durable tier never sheds, so even when localStorage must degrade the
     // mirror keeps every revision for the next boot's upgrade pass. The
     // mirror sync is per story internally (unchanged stories skipped), so a
     // poll tick for one story does not re-put the others.
     void storyCacheSet(serializable).then((ok) => {
+        // Surface the outcome beyond the console: on mobile the mirror is
+        // the survivor tier, so a failed mirror write combined with a failed
+        // localStorage tier means NOTHING durable holds the records — the
+        // persist effect's deriveCacheHealth() reads this flag on the next
+        // records change and the sidebar stops showing the hedged
+        // "may still be available" copy (see cacheMirrorWriteFailed).
+        //
+        // Deliberately NO store notification from this async landing: the
+        // provider's mirror flag is derived in the persist effect (the
+        // synchronous, effect-time snapshot) — an out-of-band setState from
+        // this fire-and-forget microtask interleaves with pending store
+        // updates and React's act-flush update replay can turn it into an
+        // unbounded render loop under RTL's waitFor (observed in
+        // App.test.tsx). The flag converges by the next records change
+        // (poll ticks / list syncs fire saves every few seconds).
+        lastMirrorWriteFailed = !ok;
         if (!ok) {
             // Logged, not thrown — the localStorage tier is independent.
             console.warn('[storyCache] IndexedDB mirror write failed (localStorage copy retained)');
@@ -1247,6 +1313,25 @@ export type StoryStore = {
     // so this state deliberately describes only the synchronous quick-cache
     // tier. Transient and recomputed on every records save.
     cacheWriteFailedStoryIds?: string[];
+    // True when the most recent SETTLED IndexedDB mirror sync failed. The
+    // mirror write is fire-and-forget, so its outcome lands AFTER the
+    // synchronous persist effect ran — the flag is therefore DERIVED in the
+    // persist effect from didLastMirrorWriteFail() (the last settled
+    // verdict), which converges by the next records change (poll ticks /
+    // list syncs fire saves every few seconds). Combined with
+    // cacheWriteFailed it means NO tier accepted the payload (private mode /
+    // storage-dead WebView), which the sidebar presents as the stronger
+    // "cannot be saved on this device" condition. Transient: never persisted.
+    cacheMirrorWriteFailed?: boolean;
+    // True when the BOOT-TIME write-probe (classifyStorageTiers in
+    // storyCache.ts, run by BootstrapLayer) found localStorage unable to
+    // accept writes while records worth saving exist (hydrated from cache or
+    // recovered from the mirror). Set once per session; the copy explains the
+    // private/incognito / storage-disabled cause and that stories will only
+    // last for this visit. Not set for fresh installs with working storage
+    // (nothing to warn about) — later save failures are covered by
+    // cacheWriteFailed. Transient: never persisted.
+    storageUnavailableAtBoot?: boolean;
     // Click counter for the sidebar's story tiles. Bumped by EVERY user click
     // on a tile (StorySidebar's itemProps.onClick) — including re-clicks on the
     // already-selected story. The content feature (StoryContent's selection
@@ -1348,6 +1433,8 @@ export const StoryStoreProvider: React.FC<{
         activeJobs: initialStore?.activeJobs ?? [],
         cacheWriteFailed: initialStore?.cacheWriteFailed ?? false,
         cacheWriteFailedStoryIds: initialStore?.cacheWriteFailedStoryIds ?? [],
+        cacheMirrorWriteFailed: initialStore?.cacheMirrorWriteFailed ?? false,
+        storageUnavailableAtBoot: initialStore?.storageUnavailableAtBoot ?? false,
         config: {
             ...DEFAULT_CONFIG,
             ...configOverrides,
@@ -1400,7 +1487,10 @@ export const StoryStoreProvider: React.FC<{
     //
     // CACHE-HEALTH INDICATION: after each save, failed story IDs are mirrored
     // into the store. This keeps tile warnings scoped to the keys that failed;
-    // IndexedDB may still have accepted the asynchronous durable mirror copy.
+    // IndexedDB may still have accepted the asynchronous durable mirror copy —
+    // UNLESS the mirror sync also failed, in which case deriveCacheHealth
+    // reports BOTH tiers dead and the sidebar escalates the copy (see
+    // cacheMirrorWriteFailed in the store shape).
     const didHydrateRef = useRef(false);
     useEffect(() => {
         // Skip the very first render — we don't want to overwrite localStorage
@@ -1415,16 +1505,21 @@ export const StoryStoreProvider: React.FC<{
         // (the didHydrateRef flips false in the cleanup effect below).
         if (!didHydrateRef.current) return;
         saveRecordsToStorage(store.records);
-        const writeFailed = didLastSaveFail();
-        const failedStoryIds = getLastSaveFailedStoryIds();
+        const health = deriveCacheHealth();
         setStoreState((prev) => {
             const previousIds = prev.cacheWriteFailedStoryIds ?? [];
             const sameIds =
-                previousIds.length === failedStoryIds.length &&
-                previousIds.every((storyId, index) => storyId === failedStoryIds[index]);
-            return prev.cacheWriteFailed === writeFailed && sameIds
+                previousIds.length === health.cacheWriteFailedStoryIds.length &&
+                previousIds.every((storyId, index) => storyId === health.cacheWriteFailedStoryIds[index]);
+            const sameMirror = (prev.cacheMirrorWriteFailed ?? false) === health.cacheMirrorWriteFailed;
+            return prev.cacheWriteFailed === health.cacheWriteFailed && sameIds && sameMirror
                 ? prev
-                : { ...prev, cacheWriteFailed: writeFailed, cacheWriteFailedStoryIds: failedStoryIds };
+                : {
+                      ...prev,
+                      cacheWriteFailed: health.cacheWriteFailed,
+                      cacheWriteFailedStoryIds: health.cacheWriteFailedStoryIds,
+                      cacheMirrorWriteFailed: health.cacheMirrorWriteFailed
+                  };
         });
     }, [store.records]);
     // Unmount latch: flip didHydrateRef.current to false so late microtasks
