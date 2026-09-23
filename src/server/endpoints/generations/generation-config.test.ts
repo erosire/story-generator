@@ -77,16 +77,13 @@ describe('generation sampling defaults', () => {
     });
 
     it('attaches the defaults to every selectable story-generation client', () => {
-        // KIMIK3 / MERGEK3 / MERGEK26 / SONNET / OPUS / GLM53 / PARTICLE all
-        // clone the TELNYX instance with their own model override (the Telnyx
-        // gateway serves every Kimi/GLM deployment), while GLMFLASH clones it
-        // with the plain SGLang defaults (no model override — the deployment's
-        // default model is used as-is). Qwen27B clones QWEN3_8_CLIENT with the
+        // KIMIK3 / KIMIK26 / SONNET / OPUS / GLM53 / PARTICLE / MODAL all
+        // clone the TELNYX instance with their own model override (the merge/
+        // lightning/vultr gateways serve every Kimi/GLM deployment). 4a8a3f6
+        // "Updated Merge" retired the MERGEK3 duplicate (KIMIK3 was retargeted
+        // to merge/kimi-k3), renamed MERGEK26 to KIMIK26, and dropped the
+        // GLMFLASH plain-default clone. Qwen27B clones QWEN3_8_CLIENT with the
         // nonnegative top_k variant.
-        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'telnyx/kimi-k3',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
             model: 'merge/kimi-k3',
             sampling: DEFAULT_SAMPLING_PARAMS
@@ -117,12 +114,9 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         // MODAL clones TELNYX with the modal/glm-5.3 model override (added
-        // alongside the GLM53/GLMFLASH/PARTICLE telnyx-gateway entries).
+        // alongside the GLM53/PARTICLE telnyx-gateway entries).
         expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
             model: 'modal/glm-5.3',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.TELNYX_CLIENT.clone).toHaveBeenCalledWith({
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.QWEN3_8_CLIENT.clone).toHaveBeenCalledWith({
@@ -130,13 +124,11 @@ describe('generation sampling defaults', () => {
         });
         expect(Object.keys(CLIENTS)).toEqual([
             'KIMIK3',
-            'MERGEK3',
-            'MERGEK26',
+            'KIMIK26',
             'SONNET',
             'OPUS',
             'Qwen27B',
             'GLM53',
-            'GLMFLASH',
             'PARTICLE',
             'MODAL'
         ]);
@@ -148,14 +140,12 @@ describe('generation sampling defaults', () => {
         // map (e.g. one client returned for every id) would fail exactly one
         // of these per key.
         expect(resolveClient('KIMIK3')).toBe(mocks.TELNYX_CLIENT);
-        expect(resolveClient('MERGEK3')).toBe(mocks.TELNYX_CLIENT);
-        expect(resolveClient('MERGEK26')).toBe(mocks.TELNYX_CLIENT);
+        expect(resolveClient('KIMIK26')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('SONNET')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('OPUS')).toBe(mocks.TELNYX_CLIENT);
         // Qwen27B is the renamed Qwen3_8 entry — same QWEN3_8_CLIENT instance.
         expect(resolveClient('Qwen27B')).toBe(mocks.QWEN3_8_CLIENT);
         expect(resolveClient('GLM53')).toBe(mocks.TELNYX_CLIENT);
-        expect(resolveClient('GLMFLASH')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('PARTICLE')).toBe(mocks.TELNYX_CLIENT);
         expect(resolveClient('MODAL')).toBe(mocks.TELNYX_CLIENT);
     });
@@ -186,13 +176,11 @@ describe('parseClientId', () => {
 
     it('accepts every selectable client id, echoing the key verbatim', () => {
         expect(parseClientId('KIMIK3')).toEqual({ clientId: 'KIMIK3' });
-        expect(parseClientId('MERGEK3')).toEqual({ clientId: 'MERGEK3' });
-        expect(parseClientId('MERGEK26')).toEqual({ clientId: 'MERGEK26' });
+        expect(parseClientId('KIMIK26')).toEqual({ clientId: 'KIMIK26' });
         expect(parseClientId('SONNET')).toEqual({ clientId: 'SONNET' });
         expect(parseClientId('OPUS')).toEqual({ clientId: 'OPUS' });
         expect(parseClientId('Qwen27B')).toEqual({ clientId: 'Qwen27B' });
         expect(parseClientId('GLM53')).toEqual({ clientId: 'GLM53' });
-        expect(parseClientId('GLMFLASH')).toEqual({ clientId: 'GLMFLASH' });
         expect(parseClientId('PARTICLE')).toEqual({ clientId: 'PARTICLE' });
         expect(parseClientId('MODAL')).toEqual({ clientId: 'MODAL' });
     });
@@ -208,20 +196,33 @@ describe('parseClientId', () => {
     it('rejects unknown clientId values, listing every available client', () => {
         // The available-client list is Object.keys(CLIENTS) in insertion order.
         const AVAILABLE =
-            'KIMIK3, MERGEK3, MERGEK26, SONNET, OPUS, Qwen27B, GLM53, GLMFLASH, PARTICLE, MODAL';
+            'KIMIK3, KIMIK26, SONNET, OPUS, Qwen27B, GLM53, PARTICLE, MODAL';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`
         });
         // Retired ids from the old CLIENTS map are rejected the same way — a
         // stale id persisted in the UI's localStorage (e.g. the pre-rename
-        // default 'Qwen3_8', or the since-retired 'Nvidia' / 'Makora' /
+        // default 'Qwen3_8', the 4a8a3f6-retired 'MERGEK3'/'MERGEK26'/
+        // 'GLMFLASH' entries, or the since-retired 'Nvidia' / 'Makora' /
         // 'DeepSeek' / 'Telnyx' entries) surfaces this message on the next
         // generation, which is why the UI default moved in lockstep with the
         // map changes.
         expect(parseClientId('Qwen3_8')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Qwen3_8'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('MERGEK3')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'MERGEK3'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('MERGEK26')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'MERGEK26'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('GLMFLASH')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'GLMFLASH'. Available clients: ${AVAILABLE}`
         });
         expect(parseClientId('Nvidia')).toEqual({
             clientId: undefined,
