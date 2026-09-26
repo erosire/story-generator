@@ -63,10 +63,10 @@ export const EXPAND_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 // ---------------------------------------------------------------------------
 
 /** Minimum word count for each expanded chapter. */
-export const MIN_WORDS_PER_CHAPTER = 3000;
+export const MIN_WORDS_PER_CHAPTER = 4000;
 
 /** Target word count stated in the expansion prompt to the LLM. */
-export const TARGET_WORD_COUNT_PROMPT = 4000;
+export const TARGET_WORD_COUNT_PROMPT = 6000;
 
 /** Minimum plotpoints per chapter requested in the plot outline prompt. */
 export const MIN_PLOTPOINTS_PER_CHAPTER = 10;

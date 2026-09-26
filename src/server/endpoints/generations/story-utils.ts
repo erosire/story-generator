@@ -155,9 +155,10 @@ const rollbackFailedChapterExpansion = (chapterDir: string, chapterIndex: number
         // remove it when the chapter is back to plotlines-only.
         const latest = chapterJson.revisions[chapterJson.revisions.length - 1];
         if (latest && typeof latest.content === 'string' && latest.content.length > 0) {
-            const restoreTitle = typeof chapterJson.title === 'string' && chapterJson.title.length > 0
-                ? chapterJson.title
-                : `Chapter ${chapterIndex + 1}`;
+            const restoreTitle =
+                typeof chapterJson.title === 'string' && chapterJson.title.length > 0
+                    ? chapterJson.title
+                    : `Chapter ${chapterIndex + 1}`;
             fs.writeFileSync(chapterFilePath, `## ${restoreTitle}\n\n${latest.content}`, 'utf-8');
         } else if (fs.existsSync(chapterFilePath)) {
             fs.rmSync(chapterFilePath);
@@ -512,7 +513,7 @@ export const buildExpandRequest = (chapterNumber: string, chapterTitle: string):
         '- Describe everything in slow-paced vivid imagery. Expand on every details.',
         '- Do not output a wall of text! Must use short and long paragraphs, putting emphasis on dialogues and descriptions',
         '- Must be written in active voice. Dialogue-driven story like Japanese Light Novels. Show the story, do not tell it!',
-        `- Must be a minimum of ${TARGET_WORD_COUNT_PROMPT} in total.`,
+        `- Must be at least the minimum of ${TARGET_WORD_COUNT_PROMPT} each chapter.`,
         '- The chapter must starts from the first plotpoint',
         '- The chapter must not contains plotpoints from different chapters',
         '- Do not include events that had not happened yet in the chapter',
@@ -668,9 +669,7 @@ export const buildExpansionContext = (opts: {
                 if (rev && typeof rev.content === 'string' && rev.content.length > 0) {
                     const payloadTitle = (payload as any).title;
                     const chapterTitle =
-                        typeof payloadTitle === 'string' && payloadTitle.length > 0
-                            ? payloadTitle
-                            : `Chapter ${i + 1}`;
+                        typeof payloadTitle === 'string' && payloadTitle.length > 0 ? payloadTitle : `Chapter ${i + 1}`;
                     entry = `## ${chapterTitle}\n\n${rev.content}`;
                     break;
                 }
