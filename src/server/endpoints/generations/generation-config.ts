@@ -210,6 +210,7 @@ export const CLIENTS = {
     // 'QWEN27B' key would reject every default UI payload.
     Qwen27B: QWEN3_8_CLIENT.clone({ sampling: QWEN3_8_SAMPLING_PARAMS }),
     GLM53: TELNYX_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    GLM53Flash: TELNYX_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     PARTICLE: TELNYX_CLIENT.clone({ model: 'merge/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     MODAL: TELNYX_CLIENT.clone({ model: 'modal/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS })
 };
