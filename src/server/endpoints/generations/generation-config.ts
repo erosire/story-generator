@@ -3,19 +3,34 @@
 //
 // Every tunable value used by generation-create-new-story.ts lives here.
 // To change model, prompts, timeouts, retries, or path layout, modify
-// this file only.
+// this file only. The base standard gateway client (STANDARD_CLIENT below)
+// is a local copy of runtime/secret/private/telnyx.ts — keep the two in sync.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Conversation Priming
 // ---------------------------------------------------------------------------
 
-import { QWEN3_8_CLIENT } from '@runtime/secret/private';
-import { TELNYX_CLIENT } from '@runtime/secret/private/telnyx';
+// simpleClient/simpleConfig build the LOCAL standard gateway client below
+// (STANDARD_CLIENT — a copy of runtime/secret/private/telnyx.ts's shared
+// TELNYX_CLIENT). The shared TELNYX_CLIENT import from
+// '@runtime/secret/private/telnyx' was removed because nothing dedicated to
+// that client is consumed here — every CLIENTS entry model-configures on the
+// fly via .clone({ model, sampling }) — so the construction was copied into
+// this file (see that section). Qwen27B is likewise cloned from
+// STANDARD_CLIENT with model 'local/qwen3.8-27b' (the same endpoint the
+// runtime local/qwen3_8.ts client used), so NO '@runtime/secret/private'
+// import remains in this file.
+import { simpleClient, simpleConfig } from '@agentic/harness';
 // Type-only import: every selectable client is a SimpleClient instance
 // (simpleClient() in @agentic/harness), used to widen CLIENTS for the
 // request-driven string indexing in resolveClient().
 import type { SimpleClient } from '@agentic/harness';
+// 429 rate-limit retry pause for the local standard copy (see status handler).
+import { scriptPause } from '@presource/core';
+// Standalone replacement for the monorepo's @config/environment package
+// (same constant names, port 5500) — used by the local copy's endpoint.
+import { LOCAL_AREA_NETWORK_PROVIDER_PORT } from '../../../config';
 
 /** First user message seeded into the conversation history. */
 export const OPENING_USER_MESSAGE = 'Hey ENI';
@@ -170,6 +185,50 @@ export const QWEN3_8_SAMPLING_PARAMS = {
     top_k: 0
 };
 
+// ---------------------------------------------------------------------------
+// Standard Gateway Client (local copy)
+// ---------------------------------------------------------------------------
+
+// Local copy of the shared Telnyx gateway client (runtime/secret/private/
+// telnyx.ts), renamed STANDARD_CLIENT: the construction is gateway-agnostic
+// (model string, endpoint, sampling are all supplied per CLIENTS entry on the
+// fly), so nothing about it is Telnyx-dedicated and the name should not
+// advertise a provider that this config no longer imports from. Nothing
+// dedicated to that client is consumed by this config — every CLIENTS entry
+// below only calls .clone({ model, sampling }) and model-configures on the
+// fly — so the construction lives here and the '@runtime/secret/private/
+// telnyx' import is gone. Keep this copy in sync with runtime/secret/private/
+// telnyx.ts if the gateway endpoint or status handling changes there
+// (mirrored assertions live in generation-config.test.ts).
+//
+// HOST = 'localhost' (deliberately NOT LOCAL_AREA_NETWORK_HOST_NAME): this
+// endpoint is dialled by the SERVER layer — the underload service running the
+// story-generator's storyboard routes. startServer (packages/underload/service/
+// src/server/start.ts) binds every declared port (gateway 5000, storyboard
+// 5252, provider 5500) inside ONE process on ONE machine, so the
+// server→provider hop is always machine-local and 'localhost' is the correct
+// (and netns/firewall-friendliest) address. Browser→API traffic is the only
+// cross-host caller and it resolves its host at runtime via
+// resolveStoryboardApiHostName (distribution/story-generator/src/config.ts).
+// The port constant comes from this distribution's own src/config.ts — the
+// standalone replacement for the monorepo's @config/environment package.
+const STANDARD_CLIENT = simpleClient({
+    model: 'telnyx/glm-5.3-flash',
+    config: simpleConfig({
+        endpoints: {
+            Standard: `http://localhost:${LOCAL_AREA_NETWORK_PROVIDER_PORT}/providers/private/v1`
+        }
+    }),
+    status: {
+        // Rate Limited
+        429: async () => {
+            // Wait for 10 seconds
+            await scriptPause(10000);
+            return true;
+        }
+    }
+});
+
 /**
  * Which client method to use for structured output.
  *   - "structure" — tool-calling (works with all providers)
@@ -197,23 +256,35 @@ export const useApiMethod: 'structure' | 'format' = 'structure';
 
 // List of possible clients
 export const CLIENTS = {
-    KIMIK3: TELNYX_CLIENT.clone({ model: 'merge/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
-    KIMIK26: TELNYX_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
-    SONNET: TELNYX_CLIENT.clone({ model: 'lightning/sonnet-5', sampling: DEFAULT_SAMPLING_PARAMS }),
-    OPUS: TELNYX_CLIENT.clone({ model: 'lightning/opus-5', sampling: DEFAULT_SAMPLING_PARAMS }),
+    KIMIK3: STANDARD_CLIENT.clone({ model: 'merge/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    KIMIK26: STANDARD_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
+    SONNET: STANDARD_CLIENT.clone({ model: 'lightning/sonnet-5', sampling: DEFAULT_SAMPLING_PARAMS }),
+    OPUS: STANDARD_CLIENT.clone({ model: 'lightning/opus-5', sampling: DEFAULT_SAMPLING_PARAMS }),
     // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
-    // Uses QWEN3_8_SAMPLING_PARAMS (top_k: 0) because the ninfer backend
-    // rejects the SGLang-style top_k: -1 sentinel; all other values unchanged.
+    // Qwen27B clones STANDARD_CLIENT with the local qwen3.8-27b model — the
+    // same 'local/qwen3.8-27b' model string the runtime QWEN3_8_CLIENT
+    // (runtime/secret/private/local/qwen3_8.ts) pinned, now served by the
+    // local standard copy's localhost:5500 endpoint (identical to that
+    // client's endpoint; the clone additionally inherits STANDARD_CLIENT's
+    // 429 → pause-10s-and-retry handler). Uses QWEN3_8_SAMPLING_PARAMS
+    // (top_k: 0) because the ninfer backend rejects the SGLang-style
+    // top_k: -1 sentinel; all other values unchanged.
     // Key casing is load-bearing: the UI round-trips this exact string as the
     // wire id (DEFAULT_CLIENT_ID = 'Qwen27B' in src/context/store.tsx), and
     // parseClientId/resolveClient match CLIENTS keys verbatim — an all-caps
     // 'QWEN27B' key would reject every default UI payload.
-    Qwen27B: QWEN3_8_CLIENT.clone({ sampling: QWEN3_8_SAMPLING_PARAMS }),
-    GLM53: TELNYX_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
-    GLM53Flash: TELNYX_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    PARTICLE: TELNYX_CLIENT.clone({ model: 'merge/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    LIGHTNING: TELNYX_CLIENT.clone({ model: 'lightning/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
-    MODAL: TELNYX_CLIENT.clone({ model: 'modal/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS })
+    Qwen27B: STANDARD_CLIENT.clone({ model: 'local/qwen3.8-27b', sampling: QWEN3_8_SAMPLING_PARAMS }),
+    // VULTR is the renamed GLM53 entry — the key now names the GATEWAY
+    // (vultr/) instead of the model, matching the PARTICLE/LIGHTNING/MODAL
+    // gateway-style naming (GLM53Flash keeps its model-derived name for UI
+    // backward compatibility). Model string is unchanged ('vultr/glm-5.3');
+    // a stale 'GLM53' id persisted in the UI's localStorage is rejected by
+    // parseClientId until the user re-picks the client.
+    VULTR: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    GLM53Flash: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
+    PARTICLE: STANDARD_CLIENT.clone({ model: 'merge/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
+    LIGHTNING: STANDARD_CLIENT.clone({ model: 'lightning/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    MODAL: STANDARD_CLIENT.clone({ model: 'modal/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
 /**
@@ -221,8 +292,9 @@ export const CLIENTS = {
  * clientId. Kept for backward compatibility with code/tests that import CLIENT
  * directly — treat resolveClient() as the canonical selector.
  *
- * Qwen27B is the renamed Qwen3_8 entry (same QWEN3_8_CLIENT instance and
- * QWEN3_8_SAMPLING_PARAMS — see the CLIENTS map above); the UI pins the same
+ * Qwen27B is the renamed Qwen3_8 entry (same QWEN3_8_SAMPLING_PARAMS and the
+ * same 'local/qwen3.8-27b' model the runtime QWEN3_8_CLIENT pinned — see the
+ * CLIENTS map above); the UI pins the same
  * id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and a
  * server-only fallback can never disagree on which model writes a story.
  */

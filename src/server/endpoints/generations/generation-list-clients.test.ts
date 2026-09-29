@@ -20,26 +20,35 @@ const mocks = vi.hoisted(() => {
         return client;
     };
 
+    // The LOCAL standard gateway copy inside generation-config.ts is built by
+    // simpleClient(simpleConfig(...)) — this mock instance is what those
+    // factories hand back, and it is ALSO what the Qwen27B clone (the mocked
+    // clone returns itself) hands back. Every selectable CLIENTS entry
+    // therefore shares this single mock instance.
+    const STANDARD_CLIENT = createClient();
+
     return {
-        QWEN3_8_CLIENT: createClient(),
-        TELNYX_CLIENT: createClient()
+        STANDARD_CLIENT,
+        simpleClient: vi.fn(() => STANDARD_CLIENT),
+        simpleConfig: vi.fn((configuration: Record<string, unknown>) => ({
+            config: configuration
+        }))
     };
 });
 
-// Mock surface mirrors the CURRENT named imports of generation-config.ts
-// (QWEN3_8_CLIENT from '@runtime/secret/private' and TELNYX_CLIENT from
-// '@runtime/secret/private/telnyx') — a missing name surfaces as
-// "No ... export is defined on the mock" at import time. The makora module is
-// still mocked defensively because vi.mock intercepts the FULL module graph
-// pulled in by '@runtime/secret/private' (its barrel re-exports
-// runtime/secret/private/modal, whose index imports the makora-backed clients);
-// the retired NVIDIA_CLIENT / GLM53FLASH_CLIENT / KIMI3_CLIENT mock entries
-// were removed along with the CLIENTS entries they backed.
-vi.mock('@runtime/secret/private/makora', () => ({ MAKORA_CLIENT: mocks.TELNYX_CLIENT }));
-vi.mock('@runtime/secret/private', () => ({
-    QWEN3_8_CLIENT: mocks.QWEN3_8_CLIENT
+// Mock surface mirrors the CURRENT named imports of generation-config.ts:
+// simpleClient/simpleConfig from '@agentic/harness' — they build the file's
+// LOCAL standard gateway copy (STANDARD_CLIENT), which replaced the retired
+// '@runtime/secret/private' (QWEN3_8_CLIENT) and '@runtime/secret/private/
+// telnyx' (TELNYX_CLIENT) imports once every CLIENTS entry — including
+// Qwen27B ('local/qwen3.8-27b') — reduced to a .clone({ model, sampling }) of
+// the standard copy. A missing name surfaces as "No ... export is defined on
+// the mock" at import time. No '@runtime/secret/private*' mock remains
+// because generation-config.ts no longer imports that barrel at all.
+vi.mock('@agentic/harness', () => ({
+    simpleClient: mocks.simpleClient,
+    simpleConfig: mocks.simpleConfig
 }));
-vi.mock('@runtime/secret/private/telnyx', () => ({ TELNYX_CLIENT: mocks.TELNYX_CLIENT }));
 
 import { generationListClients } from './generation-list-clients';
 
@@ -49,20 +58,24 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         // Order is the object insertion order of CLIENTS — the UI preserves it.
-        // KIMIK3 / KIMIK26 / SONNET / OPUS / GLM53 / PARTICLE / MODAL are all
-        // served by the merge/lightning/vultr gateways; Qwen27B is the renamed
-        // 'Qwen3_8' entry. 4a8a3f6 "Updated Merge" retired the MERGEK3
-        // duplicate, renamed MERGEK26 to KIMIK26, and dropped GLMFLASH; the
-        // retired Modal (GLM52), Makora, DeepSeek, Router (OpenRouter) and
-        // standalone Nvidia/Telnyx deployments stay commented out of CLIENTS.
+        // KIMIK3 / KIMIK26 / SONNET / OPUS / VULTR / GLM53Flash / PARTICLE /
+        // LIGHTNING / MODAL are all served by the merge/lightning/vultr/modal
+        // gateways; Qwen27B is the renamed 'Qwen3_8' entry. 4a8a3f6 "Updated
+        // Merge" retired the MERGEK3 duplicate, renamed MERGEK26 to KIMIK26,
+        // and dropped GLMFLASH; GLM53 was renamed to VULTR (gateway-style
+        // naming) and the retired Modal (GLM52), Makora, DeepSeek, Router
+        // (OpenRouter) and standalone Nvidia/Telnyx deployments stay
+        // commented out of CLIENTS.
         expect(result.response.clients).toEqual([
             'KIMIK3',
             'KIMIK26',
             'SONNET',
             'OPUS',
             'Qwen27B',
-            'GLM53',
+            'VULTR',
+            'GLM53Flash',
             'PARTICLE',
+            'LIGHTNING',
             'MODAL'
         ]);
     });
@@ -84,8 +97,9 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 8 selectable ids: KIMIK3, KIMIK26, SONNET, OPUS, Qwen27B, GLM53,
-        // PARTICLE, MODAL (retired entries commented out of CLIENTS).
-        expect(result.response.clients.length).toBe(8);
+        // 10 selectable ids: KIMIK3, KIMIK26, SONNET, OPUS, Qwen27B, VULTR,
+        // GLM53Flash, PARTICLE, LIGHTNING, MODAL (retired entries commented
+        // out of CLIENTS).
+        expect(result.response.clients.length).toBe(10);
     });
 });
