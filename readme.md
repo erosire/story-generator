@@ -11,7 +11,7 @@ npm run test       # Run all tests
 npm run build      # Production build to dist/
 ```
 
-The UI connects to the storyboard API at `http://192.168.8.128:5252` by default (configurable via `StoryStoreProvider` `configOverrides`). All storyboard routes (list stories, story CRUD, clients) live on the same dedicated service port `5252` (`LOCAL_AREA_NETWORK_STORYBOARD_PORT` in `config/environment/src/port.ts`).
+The UI connects to the storyboard API at `http://192.168.50.109:5252` by default (configurable via `StoryStoreProvider` `configOverrides`). All storyboard routes (list stories, story CRUD, clients) live on the same dedicated service port `5252` (`LOCAL_AREA_NETWORK_STORYBOARD_PORT` in `config/environment/src/port.ts`).
 
 ---
 
@@ -369,7 +369,7 @@ Via `StoryStoreProvider` `configOverrides`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `baseUrl` | `http://192.168.8.128:5252/v1/storyboard/generations` | API base URL (dedicated storyboard service port `5252`) |
+| `baseUrl` | `http://192.168.50.109:5252/v1/storyboard/generations` | API base URL (dedicated storyboard service port `5252`) |
 | `pollIntervalMs` | 10000 | Cadence for the per-chapter completion pollers (re-expand / rewrite) |
 | `activePollIntervalMs` | 2000 | Fast cadence for the story poll loop while a background job runs (idle stories are never polled) |
 

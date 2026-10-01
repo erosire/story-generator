@@ -1455,7 +1455,7 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // (the dev server, vite.config.ts server.port 8000) dials the API at
     // http://localhost:5252 (same machine); UI served from any other host
     // falls back to the LAN constant. Previously the host was pinned to
-    // LOCAL_AREA_NETWORK_HOST_NAME (192.168.8.128) unconditionally, which
+    // LOCAL_AREA_NETWORK_HOST_NAME (192.168.50.109) unconditionally, which
     // forced even localhost-loaded sessions onto the machine's LAN interface.
     // Override via config in production by wrapping with a different provider value.
     baseUrl: `http://${resolveStoryboardApiHostName()}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,

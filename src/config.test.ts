@@ -1,7 +1,7 @@
 // Tests for src/config.ts — the runtime storyboard-API host resolution.
 //
 // REGRESSION CONTEXT: DEFAULT_CONFIG.baseUrl (src/context/store.tsx) used to
-// pin the host to LOCAL_AREA_NETWORK_HOST_NAME (192.168.8.128) unconditionally,
+// pin the host to LOCAL_AREA_NETWORK_HOST_NAME (192.168.50.109) unconditionally,
 // so a dashboard loaded from the local dev server (http://localhost:8000 —
 // vite.config.ts server.port) dialled the API across the machine's LAN
 // interface and could fail even with the server healthy at localhost:5252.

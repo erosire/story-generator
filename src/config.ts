@@ -4,7 +4,7 @@
 // the constant names are unchanged so imports are a drop-in swap.
 
 // Standard local area network host name (config/environment/src/host.ts).
-export const LOCAL_AREA_NETWORK_HOST_NAME = '192.168.8.128';
+export const LOCAL_AREA_NETWORK_HOST_NAME = '192.168.50.109';
 
 // List of ports available (config/environment/src/port.ts).
 export const LOCAL_AREA_NETWORK_DATABASE_PORT = 5000;
@@ -13,7 +13,7 @@ export const LOCAL_AREA_NETWORK_PROVIDER_PORT = 5500;
 
 // ── Runtime API host resolution ──────────────────────────────────────────────
 // The storyboard UI used to dial the API at the CONSTANT LAN address
-// (http://192.168.8.128:5252) no matter where the UI itself was loaded from.
+// (http://192.168.50.109:5252) no matter where the UI itself was loaded from.
 // When the dashboard runs on the same machine as the server (the common dev
 // case: UI served from http://localhost:8000 by vite.config.ts server.port),
 // that constant forces the fetches onto the machine's LAN interface — they

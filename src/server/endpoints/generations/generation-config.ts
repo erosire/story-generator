@@ -11,6 +11,10 @@
 // Conversation Priming
 // ---------------------------------------------------------------------------
 
+// Type-only import: every selectable client is a SimpleClient instance
+// (simpleClient() in @agentic/harness), used to widen CLIENTS for the
+// request-driven string indexing in resolveClient().
+import type { SimpleClient } from '@agentic/harness';
 // simpleClient/simpleConfig build the LOCAL standard gateway client below
 // (STANDARD_CLIENT — a copy of runtime/secret/private/telnyx.ts's shared
 // TELNYX_CLIENT). The shared TELNYX_CLIENT import from
@@ -22,10 +26,6 @@
 // runtime local/qwen3_8.ts client used), so NO '@runtime/secret/private'
 // import remains in this file.
 import { simpleClient, simpleConfig } from '@agentic/harness';
-// Type-only import: every selectable client is a SimpleClient instance
-// (simpleClient() in @agentic/harness), used to widen CLIENTS for the
-// request-driven string indexing in resolveClient().
-import type { SimpleClient } from '@agentic/harness';
 // 429 rate-limit retry pause for the local standard copy (see status handler).
 import { scriptPause } from '@presource/core';
 // Standalone replacement for the monorepo's @config/environment package
@@ -280,6 +280,7 @@ export const CLIENTS = {
     // backward compatibility). Model string is unchanged ('vultr/glm-5.3');
     // a stale 'GLM53' id persisted in the UI's localStorage is rejected by
     // parseClientId until the user re-picks the client.
+    MERGE: STANDARD_CLIENT.clone({ model: 'merge/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
     VULTR: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
     GLM53Flash: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     PARTICLE: STANDARD_CLIENT.clone({ model: 'merge/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
