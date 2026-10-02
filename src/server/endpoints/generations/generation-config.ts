@@ -258,6 +258,7 @@ export const useApiMethod: 'structure' | 'format' = 'structure';
 export const CLIENTS = {
     KIMIK3: STANDARD_CLIENT.clone({ model: 'merge/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMIK26: STANDARD_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
+    MIMO26: STANDARD_CLIENT.clone({ model: 'merge/mimo-v2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
     SONNET: STANDARD_CLIENT.clone({ model: 'lightning/sonnet-5', sampling: DEFAULT_SAMPLING_PARAMS }),
     OPUS: STANDARD_CLIENT.clone({ model: 'lightning/opus-5', sampling: DEFAULT_SAMPLING_PARAMS }),
     // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
@@ -282,9 +283,9 @@ export const CLIENTS = {
     // parseClientId until the user re-picks the client.
     MERGE: STANDARD_CLIENT.clone({ model: 'merge/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
     VULTR: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
-    GLM53Flash: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
+    FLASH: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     PARTICLE: STANDARD_CLIENT.clone({ model: 'merge/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    LIGHTNING: STANDARD_CLIENT.clone({ model: 'lightning/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    LIGHTNING: STANDARD_CLIENT.clone({ model: 'lightning/mimo-v2.6-pro', sampling: DEFAULT_SAMPLING_PARAMS }),
     MODAL: STANDARD_CLIENT.clone({ model: 'modal/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
