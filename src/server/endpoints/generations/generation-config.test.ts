@@ -105,20 +105,26 @@ describe('generation sampling defaults', () => {
     });
 
     it('attaches the defaults to every selectable story-generation client', () => {
-        // KIMIK3 / KIMIK26 / SONNET / OPUS / VULTR / GLM53Flash / PARTICLE /
-        // LIGHTNING / MODAL / Qwen27B all clone the STANDARD_CLIENT copy with
-        // their own model override (the merge/lightning/vultr/modal gateways
-        // serve every Kimi/GLM deployment; Qwen27B pins the local ninfer
-        // model). 4a8a3f6 "Updated Merge" retired the MERGEK3 duplicate
-        // (KIMIK3 was retargeted to merge/kimi-k3), renamed MERGEK26 to
-        // KIMIK26, and dropped the GLMFLASH plain-default clone. Qwen27B uses
-        // the nonnegative top_k sampling variant.
+        // KIMIK3 / KIMIK26 / MIMO26 / SONNET / OPUS / MERGE / VULTR / FLASH /
+        // PARTICLE / LIGHTNING / MODAL / Qwen27B all clone the STANDARD_CLIENT
+        // copy with their own model override (the merge/lightning/vultr/modal
+        // gateways serve every Kimi/GLM/MiMo deployment; Qwen27B pins the
+        // local ninfer model). 4a8a3f6 "Updated Merge" retired the MERGEK3
+        // duplicate (KIMIK3 was retargeted to merge/kimi-k3), renamed MERGEK26
+        // to KIMIK26, and dropped the GLMFLASH plain-default clone. Qwen27B
+        // uses the nonnegative top_k sampling variant.
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             model: 'merge/kimi-k3',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             model: 'merge/kimi-k2-6',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
+            // MIMO26 routes MiMo-2.6 through the merge gateway
+            // ('merge/mimo-2-6' — the canonical ${provider}/mimo-2-6 id).
+            model: 'merge/mimo-2-6',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
@@ -141,7 +147,7 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // GLM53Flash is the plain-default flash model on the Vultr gateway
+            // FLASH is the plain-default flash model on the Vultr gateway
             // (the sibling of the VULTR entry above).
             model: 'vultr/glm-5.3-flash',
             sampling: DEFAULT_SAMPLING_PARAMS
@@ -151,12 +157,11 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // LIGHTNING routes GLM-5.3 through the lightning gateway.
-            model: 'lightning/glm-5.3',
+            // LIGHTNING routes MiMo-2.6 through the lightning gateway
+            // ('lightning/mimo-2-6' — the canonical ${provider}/mimo-2-6 id).
+            model: 'lightning/mimo-2-6',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
-        // MODAL clones STANDARD_CLIENT with the modal/glm-5.3 model override
-        // (added alongside the GLM53/PARTICLE gateway entries).
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             model: 'modal/glm-5.3',
             sampling: DEFAULT_SAMPLING_PARAMS
@@ -171,11 +176,13 @@ describe('generation sampling defaults', () => {
         expect(Object.keys(CLIENTS)).toEqual([
             'KIMIK3',
             'KIMIK26',
+            'MIMO26',
             'SONNET',
             'OPUS',
             'Qwen27B',
+            'MERGE',
             'VULTR',
-            'GLM53Flash',
+            'FLASH',
             'PARTICLE',
             'LIGHTNING',
             'MODAL'
@@ -189,12 +196,14 @@ describe('generation sampling defaults', () => {
         // a misspelled one would fail exactly the affected assertion.
         expect(resolveClient('KIMIK3')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('KIMIK26')).toBe(mocks.STANDARD_CLIENT);
+        expect(resolveClient('MIMO26')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('SONNET')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('OPUS')).toBe(mocks.STANDARD_CLIENT);
         // Qwen27B is the renamed Qwen3_8 entry — same STANDARD_CLIENT mock.
         expect(resolveClient('Qwen27B')).toBe(mocks.STANDARD_CLIENT);
+        expect(resolveClient('MERGE')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('VULTR')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('GLM53Flash')).toBe(mocks.STANDARD_CLIENT);
+        expect(resolveClient('FLASH')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('PARTICLE')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('LIGHTNING')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('MODAL')).toBe(mocks.STANDARD_CLIENT);
@@ -271,11 +280,13 @@ describe('parseClientId', () => {
     it('accepts every selectable client id, echoing the key verbatim', () => {
         expect(parseClientId('KIMIK3')).toEqual({ clientId: 'KIMIK3' });
         expect(parseClientId('KIMIK26')).toEqual({ clientId: 'KIMIK26' });
+        expect(parseClientId('MIMO26')).toEqual({ clientId: 'MIMO26' });
         expect(parseClientId('SONNET')).toEqual({ clientId: 'SONNET' });
         expect(parseClientId('OPUS')).toEqual({ clientId: 'OPUS' });
         expect(parseClientId('Qwen27B')).toEqual({ clientId: 'Qwen27B' });
+        expect(parseClientId('MERGE')).toEqual({ clientId: 'MERGE' });
         expect(parseClientId('VULTR')).toEqual({ clientId: 'VULTR' });
-        expect(parseClientId('GLM53Flash')).toEqual({ clientId: 'GLM53Flash' });
+        expect(parseClientId('FLASH')).toEqual({ clientId: 'FLASH' });
         expect(parseClientId('PARTICLE')).toEqual({ clientId: 'PARTICLE' });
         expect(parseClientId('LIGHTNING')).toEqual({ clientId: 'LIGHTNING' });
         expect(parseClientId('MODAL')).toEqual({ clientId: 'MODAL' });
@@ -292,7 +303,7 @@ describe('parseClientId', () => {
     it('rejects unknown clientId values, listing every available client', () => {
         // The available-client list is Object.keys(CLIENTS) in insertion order.
         const AVAILABLE =
-            'KIMIK3, KIMIK26, SONNET, OPUS, Qwen27B, VULTR, GLM53Flash, PARTICLE, LIGHTNING, MODAL';
+            'KIMIK3, KIMIK26, MIMO26, SONNET, OPUS, Qwen27B, MERGE, VULTR, FLASH, PARTICLE, LIGHTNING, MODAL';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`
