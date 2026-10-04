@@ -58,22 +58,25 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         // Order is the object insertion order of CLIENTS — the UI preserves it.
-        // KIMIK3 / KIMIK26 / SONNET / OPUS / VULTR / GLM53Flash / PARTICLE /
-        // LIGHTNING / MODAL are all served by the merge/lightning/vultr/modal
-        // gateways; Qwen27B is the renamed 'Qwen3_8' entry. 4a8a3f6 "Updated
+        // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH / PARTICLE /
+        // LIGHTNING / MODAL are all served by the merge/vultr/modal
+        // gateways; SOL pins Lightning's gpt-6-sol (top_p-less sampling),
+        // and Qwen27B is the renamed 'Qwen3_8' entry. 4a8a3f6 "Updated
         // Merge" retired the MERGEK3 duplicate, renamed MERGEK26 to KIMIK26,
         // and dropped GLMFLASH; GLM53 was renamed to VULTR (gateway-style
-        // naming) and the retired Modal (GLM52), Makora, DeepSeek, Router
-        // (OpenRouter) and standalone Nvidia/Telnyx deployments stay
+        // naming), the SONNET/OPUS Lightning GPT entries were retired in
+        // favor of SOL, and the retired Modal (GLM52), Makora, DeepSeek,
+        // Router (OpenRouter) and standalone Nvidia/Telnyx deployments stay
         // commented out of CLIENTS.
         expect(result.response.clients).toEqual([
             'KIMIK3',
             'KIMIK26',
-            'SONNET',
-            'OPUS',
+            'MIMO26',
+            'SOL',
             'Qwen27B',
+            'MERGE',
             'VULTR',
-            'GLM53Flash',
+            'FLASH',
             'PARTICLE',
             'LIGHTNING',
             'MODAL'
@@ -97,9 +100,9 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 10 selectable ids: KIMIK3, KIMIK26, SONNET, OPUS, Qwen27B, VULTR,
-        // GLM53Flash, PARTICLE, LIGHTNING, MODAL (retired entries commented
+        // 11 selectable ids: KIMIK3, KIMIK26, MIMO26, SOL, Qwen27B, MERGE,
+        // VULTR, FLASH, PARTICLE, LIGHTNING, MODAL (retired entries commented
         // out of CLIENTS).
-        expect(result.response.clients.length).toBe(10);
+        expect(result.response.clients.length).toBe(11);
     });
 });

@@ -27,7 +27,9 @@ import type { SimpleClient } from '@agentic/harness';
 // import remains in this file.
 import { simpleClient, simpleConfig } from '@agentic/harness';
 // 429 rate-limit retry pause for the local standard copy (see status handler).
-import { scriptPause } from '@presource/core';
+// objectFilter builds the SOL sampling variant below (drops the top_p key
+// entirely — see SOL_SAMPLING_PARAMS).
+import { objectFilter, scriptPause } from '@presource/core';
 // Standalone replacement for the monorepo's @config/environment package
 // (same constant names, port 5500) — used by the local copy's endpoint.
 import { LOCAL_AREA_NETWORK_PROVIDER_PORT } from '../../../config';
@@ -137,6 +139,9 @@ export const DATABASE_BASE_DIR = 'storyboard';
 // SGLang-compatible defaults for the GLM-5.2 API. These values are attached to
 // every story-generation client so plotpoint, validation, chapter expansion,
 // retry, fork, and rewrite requests all use the same sampling behavior.
+// EXCEPTION: the SOL entry (lightning/gpt-6-sol) clones with
+// SOL_SAMPLING_PARAMS below instead — the gpt-6.1-sol Responses model rejects
+// `top_p`, so that entry drops the key (see SOL_SAMPLING_PARAMS).
 // `max_tokens: 32768` is the explicit completion limit for EVERY story client:
 // EXPAND_TIMEOUT_MS (15 min) + TARGET_WORD_COUNT_PROMPT (4000 words) mean a
 // single chapter easily exceeds backends' own default completion caps (e.g.
@@ -184,6 +189,27 @@ export const QWEN3_8_SAMPLING_PARAMS = {
     ...DEFAULT_SAMPLING_PARAMS,
     top_k: 0
 };
+
+// Sol (lightning/gpt-6-sol → Lightning's gpt-6.1-sol) is a Responses-API
+// reasoning model in the GPT-5 family, and that family rejects `top_p` with
+// "Unsupported parameter: 'top_p' is not supported with this model." — the
+// production failure that motivated this variant. The Lightning transport
+// (packages/agentic/provider/src/lightning/lightning-client.ts,
+// toLightningResponseRequest, lines 179-205) forwards ONLY temperature,
+// top_p and max_tokens (→ max_output_tokens; plus reasoning_effort →
+// reasoning.effort) out of the sampling map — top_k / min_p /
+// presence_penalty / frequency_penalty / repetition_penalty are dropped at
+// translation and never reach the wire — so top_p is the single offending
+// value here. temperature: 1.0 stays: it was present in the failing request
+// and the endpoint named only top_p (1.0 is also the model default).
+// objectFilter removes the top_p KEY entirely rather than assigning
+// undefined: simple-client spreads defaultSampling verbatim into every
+// request body (simple-client.ts:684/920/983/1191/1527), and
+// toLightningResponseRequest skips a key only when
+// objectHasKey(body, key) && body[key] !== undefined — a present-but-undefined
+// key would still survive JSON.stringify's undefined-drop in some transports,
+// so absence at the object level is the only guarantee.
+export const SOL_SAMPLING_PARAMS = objectFilter(DEFAULT_SAMPLING_PARAMS, ({ key }) => key !== 'top_p');
 
 // ---------------------------------------------------------------------------
 // Standard Gateway Client (local copy)
@@ -259,7 +285,10 @@ export const CLIENTS = {
     KIMIK3: STANDARD_CLIENT.clone({ model: 'merge/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMIK26: STANDARD_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
     MIMO26: STANDARD_CLIENT.clone({ model: 'vultr/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
-    SOL: STANDARD_CLIENT.clone({ model: 'lightning/gpt-6-sol', sampling: DEFAULT_SAMPLING_PARAMS }),
+    // SOL uses SOL_SAMPLING_PARAMS (top_p dropped): Lightning's gpt-6.1-sol
+    // Responses model rejects top_p ("Unsupported parameter: 'top_p' is not
+    // supported with this model") — see SOL_SAMPLING_PARAMS above.
+    SOL: STANDARD_CLIENT.clone({ model: 'lightning/gpt-6-sol', sampling: SOL_SAMPLING_PARAMS }),
     // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // Qwen27B clones STANDARD_CLIENT with the local qwen3.8-27b model — the
     // same 'local/qwen3.8-27b' model string the runtime QWEN3_8_CLIENT

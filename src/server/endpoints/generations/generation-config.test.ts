@@ -62,7 +62,15 @@ vi.mock('@presource/core', async (importOriginal) => {
     return { ...actual, scriptPause: mocks.scriptPause };
 });
 
-import { CLIENT, CLIENTS, DEFAULT_SAMPLING_PARAMS, QWEN3_8_SAMPLING_PARAMS, parseClientId, resolveClient } from './generation-config';
+import {
+    CLIENT,
+    CLIENTS,
+    DEFAULT_SAMPLING_PARAMS,
+    QWEN3_8_SAMPLING_PARAMS,
+    SOL_SAMPLING_PARAMS,
+    parseClientId,
+    resolveClient
+} from './generation-config';
 // The distribution's own standalone replacement for @config/environment —
 // the value baked into the local standard copy's localhost endpoint.
 import { LOCAL_AREA_NETWORK_PROVIDER_PORT } from '../../../config';
@@ -104,15 +112,46 @@ describe('generation sampling defaults', () => {
         });
     });
 
+    it('drops top_p for the Sol Responses model', () => {
+        // Lightning's gpt-6.1-sol (the SOL entry) rejects top_p outright:
+        // "Unsupported parameter: 'top_p' is not supported with this model."
+        // top_p is removed as a KEY (not set to undefined) — simple-client
+        // spreads sampling verbatim into request bodies, and the Lightning
+        // Responses translation only skips keys absent from the body.
+        expect(SOL_SAMPLING_PARAMS).toEqual({
+            temperature: 1.0,
+            top_k: -1,
+            max_tokens: 32768,
+            min_p: 0.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            repetition_penalty: 1.0
+        });
+        // toEqual treats undefined-valued keys as equal to absent keys, so the
+        // own-property check is what pins true key absence on the wire.
+        expect(Object.prototype.hasOwnProperty.call(SOL_SAMPLING_PARAMS, 'top_p')).toBe(false);
+        // Every other default survives unchanged.
+        expect(Object.keys(SOL_SAMPLING_PARAMS)).toEqual([
+            'temperature',
+            'top_k',
+            'max_tokens',
+            'min_p',
+            'presence_penalty',
+            'frequency_penalty',
+            'repetition_penalty'
+        ]);
+    });
+
     it('attaches the defaults to every selectable story-generation client', () => {
-        // KIMIK3 / KIMIK26 / MIMO26 / SONNET / OPUS / MERGE / VULTR / FLASH /
-        // PARTICLE / LIGHTNING / MODAL / Qwen27B all clone the STANDARD_CLIENT
+        // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH /
+        // PARTICLE / LIGHTNING / MODAL all clone the STANDARD_CLIENT
         // copy with their own model override (the merge/lightning/vultr/modal
         // gateways serve every Kimi/GLM/MiMo deployment; Qwen27B pins the
         // local ninfer model). 4a8a3f6 "Updated Merge" retired the MERGEK3
         // duplicate (KIMIK3 was retargeted to merge/kimi-k3), renamed MERGEK26
-        // to KIMIK26, and dropped the GLMFLASH plain-default clone. Qwen27B
-        // uses the nonnegative top_k sampling variant.
+        // to KIMIK26, and dropped the GLMFLASH plain-default clone; the
+        // SONNET/OPUS Lightning GPT entries were retired and SOL added.
+        // Qwen27B uses the nonnegative top_k sampling variant; SOL drops top_p.
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             model: 'merge/kimi-k3',
             sampling: DEFAULT_SAMPLING_PARAMS
@@ -122,18 +161,17 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // MIMO26 routes MiMo-2.6 through the merge gateway
-            // ('merge/mimo-2-6' — the canonical ${provider}/mimo-2-6 id).
-            model: 'merge/mimo-2-6',
+            // MIMO26 routes MiMo-2.6 through the Vultr gateway
+            // ('vultr/mimo-2-6' — the canonical ${provider}/mimo-2-6 id).
+            model: 'vultr/mimo-2-6',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'lightning/sonnet-5',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'lightning/opus-5',
-            sampling: DEFAULT_SAMPLING_PARAMS
+            // SOL pins Lightning's gpt-6-sol id with the top_p-less sampling
+            // variant (the model rejects top_p — see the SOL_SAMPLING_PARAMS
+            // test above).
+            model: 'lightning/gpt-6-sol',
+            sampling: SOL_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             // VULTR is the renamed GLM53 entry — the key now names the
@@ -177,8 +215,7 @@ describe('generation sampling defaults', () => {
             'KIMIK3',
             'KIMIK26',
             'MIMO26',
-            'SONNET',
-            'OPUS',
+            'SOL',
             'Qwen27B',
             'MERGE',
             'VULTR',
@@ -197,8 +234,7 @@ describe('generation sampling defaults', () => {
         expect(resolveClient('KIMIK3')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('KIMIK26')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('MIMO26')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('SONNET')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('OPUS')).toBe(mocks.STANDARD_CLIENT);
+        expect(resolveClient('SOL')).toBe(mocks.STANDARD_CLIENT);
         // Qwen27B is the renamed Qwen3_8 entry — same STANDARD_CLIENT mock.
         expect(resolveClient('Qwen27B')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('MERGE')).toBe(mocks.STANDARD_CLIENT);
@@ -281,8 +317,7 @@ describe('parseClientId', () => {
         expect(parseClientId('KIMIK3')).toEqual({ clientId: 'KIMIK3' });
         expect(parseClientId('KIMIK26')).toEqual({ clientId: 'KIMIK26' });
         expect(parseClientId('MIMO26')).toEqual({ clientId: 'MIMO26' });
-        expect(parseClientId('SONNET')).toEqual({ clientId: 'SONNET' });
-        expect(parseClientId('OPUS')).toEqual({ clientId: 'OPUS' });
+        expect(parseClientId('SOL')).toEqual({ clientId: 'SOL' });
         expect(parseClientId('Qwen27B')).toEqual({ clientId: 'Qwen27B' });
         expect(parseClientId('MERGE')).toEqual({ clientId: 'MERGE' });
         expect(parseClientId('VULTR')).toEqual({ clientId: 'VULTR' });
@@ -303,7 +338,7 @@ describe('parseClientId', () => {
     it('rejects unknown clientId values, listing every available client', () => {
         // The available-client list is Object.keys(CLIENTS) in insertion order.
         const AVAILABLE =
-            'KIMIK3, KIMIK26, MIMO26, SONNET, OPUS, Qwen27B, MERGE, VULTR, FLASH, PARTICLE, LIGHTNING, MODAL';
+            'KIMIK3, KIMIK26, MIMO26, SOL, Qwen27B, MERGE, VULTR, FLASH, PARTICLE, LIGHTNING, MODAL';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`
@@ -312,8 +347,9 @@ describe('parseClientId', () => {
         // stale id persisted in the UI's localStorage (e.g. the pre-rename
         // default 'Qwen3_8', the 4a8a3f6-retired 'MERGEK3'/'MERGEK26'/
         // 'GLMFLASH' entries, the since-retired 'Nvidia' / 'Makora' /
-        // 'DeepSeek' / 'Telnyx' entries, or 'GLM53' — renamed to 'VULTR' when
-        // the key switched to gateway naming) surfaces this message on the
+        // 'DeepSeek' / 'Telnyx' entries, 'GLM53' — renamed to 'VULTR' when
+        // the key switched to gateway naming — or the retired Lightning
+        // 'SONNET' / 'OPUS' GPT entries) surfaces this message on the
         // next generation, which is why the UI default moved in lockstep with
         // the map changes.
         expect(parseClientId('Qwen3_8')).toEqual({
@@ -335,6 +371,14 @@ describe('parseClientId', () => {
         expect(parseClientId('GLM53')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'GLM53'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('SONNET')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'SONNET'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('OPUS')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'OPUS'. Available clients: ${AVAILABLE}`
         });
         expect(parseClientId('Nvidia')).toEqual({
             clientId: undefined,
