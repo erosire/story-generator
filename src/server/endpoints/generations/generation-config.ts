@@ -259,8 +259,7 @@ export const CLIENTS = {
     KIMIK3: STANDARD_CLIENT.clone({ model: 'merge/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMIK26: STANDARD_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
     MIMO26: STANDARD_CLIENT.clone({ model: 'vultr/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
-    SONNET: STANDARD_CLIENT.clone({ model: 'lightning/sonnet-5', sampling: DEFAULT_SAMPLING_PARAMS }),
-    OPUS: STANDARD_CLIENT.clone({ model: 'lightning/opus-5', sampling: DEFAULT_SAMPLING_PARAMS }),
+    SOL: STANDARD_CLIENT.clone({ model: 'lightning/gpt-6-sol', sampling: DEFAULT_SAMPLING_PARAMS }),
     // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
     // Qwen27B clones STANDARD_CLIENT with the local qwen3.8-27b model — the
     // same 'local/qwen3.8-27b' model string the runtime QWEN3_8_CLIENT
