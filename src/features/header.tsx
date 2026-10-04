@@ -34,7 +34,8 @@
 import React from 'react';
 // Material UI icon button + hamburger glyph — the sidebar toggle.
 import IconButton from '@mui/material/IconButton';
-import MenuIcon from '@mui/icons-material/Menu';
+// Inline SVG hamburger glyph from the workspace icon package
+import { MenuIcon } from '@rightless/icons';
 import { styled, theme } from '../styles';
 import { StoryStoreProvider, useStoryStore, setClientId, type StoryStore } from '../context';
 import { updateStoryMeta, fetchClientOptions } from '../api';
@@ -275,7 +276,7 @@ export const HeaderControls: React.FC<{
                 aria-label="Toggle story sidebar"
                 data-testid="sidebar-toggle"
             >
-                <MenuIcon style={{ fontSize: 18, display: 'block' }} />
+                <MenuIcon size={18} style={{ display: 'block' }} />
             </ToggleButton>
             <HeaderTitle
                 onClick={openRename}

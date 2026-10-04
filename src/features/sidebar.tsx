@@ -98,21 +98,21 @@
 // feature (owns the sort/filter/refresh business logic + store access).
 
 import React from 'react';
-// Material UI close glyph, icon button, button base + text field — the tile
-// delete control, story tiles, and the real-time search field.
-import CloseIcon from '@mui/icons-material/Close';
-// Material UI save/disk glyph — the cached-locally indicator on a story tile
-// (see the CACHED-LOCALLY ICON note in the file header).
-import SaveAltIcon from '@mui/icons-material/SaveAlt';
-// Material UI sync-disabled glyph — the "NOT saved locally" warning variant of
-// the cached icon (rendered when the cache write failed; see NotSavedIcon
-// below). (SaveOff does not exist in @mui/icons-material v9 — SyncDisabled is
-// the equivalent "saving unavailable" glyph.)
-import SyncDisabledIcon from '@mui/icons-material/SyncDisabled';
-// Material UI cloud-off glyph — the "not cached at all" variant: the story's
-// content has never been fetched into this browser, so it is viewable only
-// while the server is reachable.
-import CloudOffOutlinedIcon from '@mui/icons-material/CloudOffOutlined';
+// Inline SVG glyphs from the workspace icon package (per-icon named imports —
+// tree-shakable), replacing the former @mui/icons-material defaults:
+//   close          — the tile delete control
+//   download       — the cached-locally indicator on a story tile (the disk /
+//                    save glyph; see the CACHED-LOCALLY ICON note in the file
+//                    header)
+//   sync-off       — the "NOT saved locally" warning variant of the cached
+//                    icon (rendered when the cache write failed; see
+//                    NotSavedIcon below)
+//   cloud-off      — the "not cached at all" variant: the story's content has
+//                    never been fetched into this browser, so it is viewable
+//                    only while the server is reachable
+//   warning / info — the warning + informational chip prefixes (replacing the
+//                    ⚠ / ⓘ text glyphs)
+import { CloseIcon, DownloadIcon, SyncOffIcon, CloudOffIcon, WarningIcon, InfoIcon } from '@rightless/icons';
 import { TextField, IconButton, ButtonBase } from '@mui/material';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
@@ -762,7 +762,7 @@ export const StorySidebar: React.FC = React.memo(() => {
                             title="Cached locally"
                             aria-label="Cached locally"
                         >
-                            <SaveAltIcon style={{ fontSize: 13, display: 'block' }} />
+                            <DownloadIcon size={13} style={{ display: 'block' }} />
                         </CachedIcon>
                     ) : cacheState === 'write-failed' ? (
                         <NotSavedIcon
@@ -774,7 +774,7 @@ export const StorySidebar: React.FC = React.memo(() => {
                             }
                             aria-label="Browser cache copy write failed for this story"
                         >
-                            <SyncDisabledIcon style={{ fontSize: 13, display: 'block' }} />
+                            <SyncOffIcon size={13} style={{ display: 'block' }} />
                         </NotSavedIcon>
                     ) : (
                         <NotSavedIcon
@@ -782,7 +782,7 @@ export const StorySidebar: React.FC = React.memo(() => {
                             title="Not saved locally — open this story once while the server is reachable to cache it"
                             aria-label="Not saved locally"
                         >
-                            <CloudOffOutlinedIcon style={{ fontSize: 13, display: 'block' }} />
+                            <CloudOffIcon size={13} style={{ display: 'block' }} />
                         </NotSavedIcon>
                     );
 
@@ -889,18 +889,20 @@ export const StorySidebar: React.FC = React.memo(() => {
                             title={`Delete story ${entry.title}`}
                             data-testid={`story-delete-${entry.storyId}`}
                         >
-                        <CloseIcon style={{ fontSize: 14, display: 'block' }} />
+                        <CloseIcon size={14} style={{ display: 'block' }} />
                     </StoryDeleteButton>
                     </StoryEntry>
                 );
             })}
-            {/* Load warning — shown if the bootstrap or auto-refresh failed. */}
+            {/* Load warning — shown if the bootstrap or auto-refresh failed.
+                The inline SVG warning glyph replaces the former ⚠ text glyph
+                so the marker is an icon, not a font-dependent character. */}
             {store.loadWarning && (
                 <LoadWarning
                     data-testid="load-warning"
                     title={store.loadWarning}
                 >
-                    ⚠ {store.loadWarning}
+                    <WarningIcon size={13} style={{ display: 'block', flexShrink: 0 }} /> {store.loadWarning}
                 </LoadWarning>
             )}
             {/* Cache-health chip — shown when the LOCAL cache is degraded:
@@ -921,9 +923,14 @@ export const StorySidebar: React.FC = React.memo(() => {
                     data-testid="cache-warning"
                     title={resolveCacheWarningMessage(store)}
                 >
-                    {store.cacheWriteFailed || store.storageUnavailableAtBoot || store.storageFullAtBoot
-                        ? `⚠ ${resolveCacheWarningMessage(store)}`
-                        : `ⓘ ${resolveCacheWarningMessage(store)}`}
+                {/* Inline SVG warning/info glyphs replace the former ⚠ / ⓘ
+                    text glyphs (font-dependent characters) */}
+                {store.cacheWriteFailed || store.storageUnavailableAtBoot || store.storageFullAtBoot ? (
+                    <WarningIcon size={13} style={{ display: 'block', flexShrink: 0 }} />
+                ) : (
+                    <InfoIcon size={13} style={{ display: 'block', flexShrink: 0 }} />
+                )}
+                {` ${resolveCacheWarningMessage(store)}`}
                 </LoadWarning>
             )}
         </SidebarContainer>

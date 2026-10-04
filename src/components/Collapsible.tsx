@@ -31,8 +31,9 @@
 
 import React from 'react';
 import { ButtonBase } from '@mui/material';
-// Material UI chevron — the collapse affordance glyph.
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+// Inline SVG chevron (currentColor stroke) from the workspace icon package —
+// the collapse affordance glyph.
+import { ChevronDownIcon } from '@rightless/icons';
 import { theme } from '../styles';
 
 // Header button — full width, left aligned. The chevron glyph sits to the
@@ -63,18 +64,18 @@ const HeaderButton: React.FC<React.ComponentProps<typeof ButtonBase>> = ({ sx, .
     />
 );
 
-// The Material chevron rendered inside the header. We rotate it conditionally
-// based on the open state. ExpandMoreIcon points DOWN by default, so the
-// closed state rotates it -90deg to point RIGHT; open keeps the natural
-// downward orientation.
+// The chevron rendered inside the header, rotating with the open state.
+// ChevronDownIcon points DOWN by default, so the closed state rotates it
+// -90deg to point RIGHT; open keeps the natural downward orientation.
+// The former MUI fontSize is now the icon's own size prop (12px box).
 const ArrowIcon: React.FC<{ open: boolean }> = ({ open }) => (
-    <ExpandMoreIcon
+    <ChevronDownIcon
+        size={12}
         aria-hidden="true"
         style={{
             transform: open ? 'rotate(0deg)' : 'rotate(-90deg)',
             transition: `transform ${theme.transitionSlow}`,
             flex: '0 0 12px',
-            fontSize: 12,
             color: theme.textMuted,
             display: 'block'
         }}

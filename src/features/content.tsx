@@ -64,19 +64,18 @@
 import React from 'react';
 import { objectEach } from '@presource/core';
 import { useDelayHook } from '@presource/react';
-// Material icon set — replaces the previous hand-rolled inline SVG glyphs
-// (the "package is icon-free" convention is retired now that the distribution
-// depends on @mui/icons-material; every glyph below is the MUI outline icon
-// sized down to the 14px action-bar scale via fontSize).
-import RefreshIcon from '@mui/icons-material/Refresh';
-import ForkRightIcon from '@mui/icons-material/ForkRight';
-import EastIcon from '@mui/icons-material/East';
-import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import AddIcon from '@mui/icons-material/Add';
-import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
-import StopIcon from '@mui/icons-material/Stop';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+// Inline SVG glyphs from the workspace icon package (per-icon named imports —
+// tree-shakable; every glyph below keeps the MUI outline glyph's semantics):
+//   refresh    — expand/re-generate a chapter
+//   forkRight  — fork the storyline from a chapter
+//   arrowRight — continue / next action (the "extend plotpoints" control)
+//   unfoldLess — collapse-all (two vertical chevrons pointing together)
+//   play       — resume a paused generation
+//   plus       — rewrite with custom context (the add-control affordance)
+//   trash      — delete a chapter / revision (outlined trash, stroke-drawn)
+//   stop       — stop/terminate a running generation
+//   copy       — copy the chapter body / plotpoints
+import { RefreshIcon, ForkRightIcon, ArrowRightIcon, UnfoldLessIcon, PlayIcon, PlusIcon, TrashIcon, StopIcon, CopyIcon } from '@rightless/icons';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
 import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter, abortStoryJob } from '../api';
@@ -188,11 +187,6 @@ const DialogCopy = styled('p', {
     color: theme.textMuted,
     lineHeight: 1.5
 });
-
-// Action-bar glyph scale — the MUI icons default to 24px; the chapter action
-// bar's icon buttons are compact 30×30 controls, so every glyph is sized down
-// to the 14px scale the previous inline SVGs used.
-const ICON_STYLE: React.CSSProperties = { fontSize: 14, display: 'block' };
 
 // Chapters list container — flex column with gap between chapter collapsibles.
 const ChapterListContainer = styled('div', {
@@ -337,7 +331,7 @@ const PlotpointsWrapper: React.FC<{
                         data-testid={`${testId}-delete-chapter`}
                         title="Remove this chapter, its plotpoints, and all its revisions (later chapters renumber)"
                     >
-                        <DeleteOutlinedIcon style={ICON_STYLE} />
+                        <TrashIcon size={14} style={{ display: 'block' }} />
                         Delete Chapter
                     </Button>
                 </RemoveChapterRow>
@@ -1739,7 +1733,7 @@ export const StoryContent: React.FC = React.memo(() => {
                         }
                         style={{ fontSize: theme.fontSize.sm, fontWeight: 600, padding: '3px 10px' }}
                     >
-                        <StopIcon style={{ ...ICON_STYLE, fontSize: 12 }} />
+                        <StopIcon size={12} style={{ display: 'block' }} />
                         {terminateState.isSubmitting ? 'Terminating…' : 'Terminate'}
                     </Button>
                 </ProgressBanner>
@@ -1830,7 +1824,7 @@ export const StoryContent: React.FC = React.memo(() => {
                                             title="Rewrite chapter with custom context"
                                             data-testid={`chapter-${i}-rewrite`}
                                         >
-                                            <AddIcon style={ICON_STYLE} />
+                                            <PlusIcon size={14} style={{ display: 'block' }} />
                                         </IconButton>
                                         {/* Delete revision button — sits next to the rewrite [+].
                                             Only rendered for expanded chapters (a pending chapter
@@ -1852,7 +1846,7 @@ export const StoryContent: React.FC = React.memo(() => {
                                                 title="Delete the selected revision of this chapter"
                                                 data-testid={`chapter-${i}-delete`}
                                             >
-                                                <DeleteOutlinedIcon style={ICON_STYLE} />
+                                                <TrashIcon size={14} style={{ display: 'block' }} />
                                             </IconButton>
                                         )}
                                     </>
@@ -1874,14 +1868,14 @@ export const StoryContent: React.FC = React.memo(() => {
                                             }
                                             data-testid={`chapter-${i}-reexpand`}
                                         >
-                                            <RefreshIcon style={ICON_STYLE} />
+                                            <RefreshIcon size={14} style={{ display: 'block' }} />
                                         </IconButton>
                                         <IconButton
                                             onClick={() => handleFork(ch.chapterIndex)}
                                             title="Fork from this chapter"
                                             data-testid={`chapter-${i}-fork`}
                                         >
-                                            <ForkRightIcon style={ICON_STYLE} />
+                                            <ForkRightIcon size={14} style={{ display: 'block' }} />
                                         </IconButton>
                                     </>
                                 }
@@ -1949,7 +1943,7 @@ export const StoryContent: React.FC = React.memo(() => {
                                         : undefined
                                 }
                             >
-                                <ContentCopyIcon style={ICON_STYLE} />
+                                <CopyIcon size={14} style={{ display: 'block' }} />
                             </Button>
                         </ActionBarLead>
                     )}
@@ -1960,7 +1954,7 @@ export const StoryContent: React.FC = React.memo(() => {
                             data-testid="collapse-all-button"
                             title="Collapse all chapters"
                         >
-                            <UnfoldLessIcon style={ICON_STYLE} />
+                            <UnfoldLessIcon size={14} style={{ display: 'block' }} />
                         </Button>
                     )}
                     {canResume && (
@@ -1975,7 +1969,7 @@ export const StoryContent: React.FC = React.memo(() => {
                                     : `Resume plotline generation (${data.chapters.length}/${resumeTarget} chapters)`
                             }
                         >
-                            <PlayArrowIcon style={ICON_STYLE} />
+                            <PlayIcon size={14} style={{ display: 'block' }} />
                         </Button>
                     )}
                     {hasChapters && (
@@ -1985,7 +1979,7 @@ export const StoryContent: React.FC = React.memo(() => {
                             data-testid="extend-plotpoints-button"
                             title={`Append ${appendState.chapterCount} new chapters to this story`}
                         >
-                            <EastIcon style={ICON_STYLE} />
+                            <ArrowRightIcon size={14} style={{ display: 'block' }} />
                         </Button>
                     )}
                 </ActionBar>
