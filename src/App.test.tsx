@@ -19,6 +19,11 @@
 //   - the [->] action opens the in-place append-chapters dialog (notes +
 //     chapter count + Append) and POSTs the append envelope to the same
 //     storyId; server 400s keep the dialog open with the error inline
+//   - the action bar's LEFT icon-only Copy control writes the entire story's
+//     plotpoints to the clipboard — "[Story title]" header + one
+//     "Chapter N:" dash-list block per chapter, nothing else — and flashes
+//     accent / "Copied!" for ~1.6s; it hides when no chapter carries
+//     plotpoints
 //   - the ▶ resume action appears when a story's plotline sits below its
 //     target (interrupted generation) and POSTs the resume envelope; server
 //     400s surface inline via the content-error banner
@@ -2319,6 +2324,147 @@ describe('StoryGeneratorApp', () => {
         await waitFor(() => {
             expect(screen.queryByTestId('chapter-1-body')).toBeNull();
         });
+    });
+
+    // ── Copy action (LEFT side of the action bar) ──────────────────────────
+    // The ICON-ONLY Copy control copies the ENTIRE story's plotpoints to the
+    // clipboard, structured as:
+    //
+    //   [Story title]
+    //
+    //   Chapter 1:
+    //   - plotpoint
+    //   ...
+    //
+    // Layers asserted:
+    //   1. STRUCTURE — navigator.clipboard.writeText receives the exact
+    //      bracket-title header + "Chapter N:" dash-list blocks
+    //      (features/clipboard.ts collectStoryPlotpoints): plotpoints ONLY,
+    //      no chapter titles ('Ch1'/'Ch2') and no revision prose.
+    //   2. ICON-ONLY — the button renders no wording (glyph only), like the
+    //      collapse/resume/extend icon buttons.
+    //   3. FEEDBACK — the tooltip swaps to "Copied!" and the glyph/border
+    //      flash accent for ~1.6s, then revert (useDelayHook timer).
+    //   4. POINTER EVENTS — same guard as collapse-all: the ActionBar frame
+    //      is pointerEvents:'none', so the button must carry the inline
+    //      pointerEvents:'auto' (jsdom never enforces pointer-events; the
+    //      Button frame's BASE supplies it).
+    //   5. LAYOUT — the button sits inside the ActionBarLead left slot whose
+    //      Emotion rule carries margin-right:auto (the split layout).
+    it('copies every chapter plotpoint (and only the plotpoints) to the clipboard from the left Copy button', async () => {
+        const writeText = vi.fn(() => Promise.resolve());
+        // jsdom has no navigator.clipboard — install the stub and restore it
+        // (it was absent) so no other test inherits it.
+        (navigator as any).clipboard = { writeText };
+
+        const fetchMock = globalThis.fetch as any;
+        const story = seedResumeStory(fetchMock, {
+            chapters: [
+                {
+                    chapterNumber: '1', chapterIndex: 0, title: 'Ch1',
+                    plotpoints: ['The crew wakes from cryo', 'Station drifts off course'],
+                    expanded: false, canReExpand: false
+                },
+                {
+                    chapterNumber: '2', chapterIndex: 1, title: 'Ch2',
+                    plotpoints: ['Mutiny in the lower decks'],
+                    expanded: false, canReExpand: false
+                }
+            ],
+            meta: { storyline: 'Copy story', chapterCount: 2, createdAt: '2026-08-01T12:00:00Z', status: 'completed' },
+            chapterRequested: 2
+        });
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('copy-plotpoints-button')).toBeDefined();
+        });
+
+        // POINTER-EVENTS GUARD (same class of loss as the collapse-all bug):
+        // the ActionBar frame is click-through, the button must not be.
+        expect(screen.getByTestId('copy-plotpoints-button').style.pointerEvents).toBe('auto');
+
+        // LAYOUT: the button's wrapper is the ActionBarLead left slot — its
+        // Emotion rule must carry margin-right:auto so the Copy control hugs
+        // the left edge while the right-side group stays flex-end.
+        const leadSlot = screen.getByTestId('copy-plotpoints-button').parentElement;
+        expect(leadSlot).toBeTruthy();
+        expect(readEmotionRule(leadSlot!)).toContain('margin-right:auto');
+
+        // ICON-ONLY contract: no wording inside the button (the copy glyph is
+        // an SVG), plus the default tooltip title.
+        expect(screen.getByTestId('copy-plotpoints-button').textContent).toBe('');
+        expect(screen.getByTestId('copy-plotpoints-button').getAttribute('title')).toBe(
+            "Copy every chapter's plot points to the clipboard"
+        );
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('copy-plotpoints-button'));
+        });
+
+        // STRUCTURE: writeText got the "[Story title]" header (title resolves
+        // like the header bar: storyName || title — 'Interrupted story' in
+        // this seed) + per-chapter "Chapter N:" dash lists, blank-line
+        // separated. No chapter titles, no revision prose.
+        await waitFor(() => {
+            expect(writeText.mock.calls).toEqual([
+                [
+                    '[Interrupted story]\n\nChapter 1:\n- The crew wakes from cryo\n- Station drifts off course\n\nChapter 2:\n- Mutiny in the lower decks'
+                ]
+            ]);
+        });
+
+        // FEEDBACK: the tooltip swaps to "Copied!" and the outline frame
+        // flashes accent (glyph color #7c8cff from styles/theme.ts; jsdom
+        // serializes the hex as its rgb() form)…
+        await waitFor(() => {
+            const copiedButton = screen.getByTestId('copy-plotpoints-button');
+            expect(copiedButton.getAttribute('title')).toBe('Copied!');
+            expect(copiedButton.style.color).toBe('rgb(124, 140, 255)');
+            expect(copiedButton.style.borderColor).toBe('rgb(124, 140, 255)');
+        });
+
+        // …reverts to the default title + frame after the ~1.6s flash delay
+        // (real timers): the accent override is gone — the glyph color is the
+        // outline frame's theme.text (#f0f3ff) again.
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 1800));
+        });
+        const revertedButton = screen.getByTestId('copy-plotpoints-button');
+        expect(revertedButton.getAttribute('title')).toBe("Copy every chapter's plot points to the clipboard");
+        expect(revertedButton.style.color).toBe('rgb(240, 243, 255)');
+        expect(revertedButton.style.borderColor).toBe('');
+    });
+
+    it('hides the Copy button when no chapter carries plotpoints', async () => {
+        const fetchMock = globalThis.fetch as any;
+        const story = seedResumeStory(fetchMock, {
+            chapters: [
+                { chapterNumber: '1', chapterIndex: 0, title: 'Ch1', plotpoints: [], expanded: false, canReExpand: false }
+            ],
+            meta: { storyline: 'No plotpoints', chapterCount: 1, createdAt: '2026-08-01T12:00:00Z', status: 'completed' },
+            chapterRequested: 1
+        });
+
+        render(
+            <StoryGeneratorApp
+                configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }}
+                initialStore={{ records: [story], selected: story }}
+            />
+        );
+
+        // The bar still shows (collapse-all gate is chapters, not plotpoints),
+        // but with zero plotpoints anywhere there is nothing to copy.
+        await waitFor(() => {
+            expect(screen.getByTestId('collapse-all-button')).toBeDefined();
+        });
+        expect(screen.queryByTestId('copy-plotpoints-button')).toBeNull();
     });
 
 

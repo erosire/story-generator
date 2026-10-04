@@ -48,12 +48,22 @@
 // <Badge>; the two danger controls keep their danger-tinted frames with
 // square corners via the modular <Button variant="danger">.
 //
+// COPY ACTION: the sticky bottom action bar is SPLIT — the LEFT slot
+// (ActionBarLead, marginRight:auto) carries the ICON-ONLY "⧉ Copy" control
+// which writes the ENTIRE story's plotpoints to the clipboard, structured
+// as "[Story title]" + one "Chapter N:" dash-list block per chapter
+// (plotpoints only, no prose). Helpers live in features/clipboard.ts
+// (collectStoryPlotpoints + copyTextToClipboard, both unit-tested in
+// clipboard.test.ts); on success the glyph/border flash accent + tooltip
+// swap to "Copied!" for ~1.6s.
+//
 // Moved from the old src/components/sections/SectionStoryContent.tsx — this
 // feature owns all chapter-action business logic (poll loops, re-expand,
 // fork, rewrite, delete, remove, append, resume, terminate).
 
 import React from 'react';
 import { objectEach } from '@presource/core';
+import { useDelayHook } from '@presource/react';
 // Material icon set — replaces the previous hand-rolled inline SVG glyphs
 // (the "package is icon-free" convention is retired now that the distribution
 // depends on @mui/icons-material; every glyph below is the MUI outline icon
@@ -66,11 +76,14 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import StopIcon from '@mui/icons-material/Stop';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
 import { pollStoryData, updateChapter, rewriteChapter, fetchStoryData, createNewStory, appendStoryPlotpoints, resumeStoryPlotpoints, deleteChapter, removeChapter, abortStoryJob } from '../api';
 import { Badge, Button, Collapsible, Dialog, IconButton, Input, NumberInput, Textarea, MarkdownContent } from '../components';
 import { getExpandedChapters, setExpandedChapters } from '../context/store';
+// Clipboard helpers for the action bar's Copy action (see clipboard.ts).
+import { collectStoryPlotpoints, copyTextToClipboard } from './clipboard';
 
 // Empty-state placeholder shown when no story is selected. Modern: monospace
 // "drawing" glyph + elevated typography for a calm centered hero state.
@@ -202,6 +215,15 @@ const ActionBar = styled('div', {
     zIndex: 5,
     marginTop: -60,
     pointerEvents: 'none' as const
+});
+
+// Left slot of the action bar — hosts the Copy control. marginRight:'auto'
+// absorbs the free space so this group hugs the LEFT edge of the bar while
+// justifyContent:'flex-end' keeps the collapse/resume/append group pinned to
+// the right edge (the split layout the bar has had since the sticky rework).
+const ActionBarLead = styled('div', {
+    display: 'flex',
+    marginRight: 'auto'
 });
 
 // In-progress status banner — flat solid accent-tinted surface + accent border
@@ -1452,6 +1474,44 @@ export const StoryContent: React.FC = React.memo(() => {
         setExpandedChaptersState(new Set());
     }, [selected?.storyId]);
 
+    // ── Copy plotpoints (the ⧉ action — LEFT side of the action bar) ──────
+    // Copies the ENTIRE story's plotpoints to the clipboard, structured as:
+    //   [Story title]
+    //
+    //   Chapter 1:
+    //   - plotpoint
+    //   ...
+    // (see features/clipboard.ts collectStoryPlotpoints for the exact shape —
+    // plotpoints only, no prose; a blank title drops the header). The title
+    // resolves like the header bar's display name (features/header.tsx:
+    // storyName || title). Structuring + the clipboard write live in
+    // features/clipboard.ts so both are unit-testable. On success the ICON
+    // ONLY button flashes accent (border + glyph color) and its tooltip
+    // swaps to "Copied!" for ~1.6s; a failed write (permission denial,
+    // unsupported) keeps the button unchanged instead of lying about success.
+    const [copyState, setCopyState] = React.useState<{ copied: boolean }>({ copied: false });
+
+    // Restartable revert timer (useDelayHook: runs its callback after the
+    // delay; calling the returned accessor with (cb, delay) clears the
+    // previous timer and re-arms). Also fires once on mount (copied is
+    // already false — a harmless no-op render).
+    const resetCopiedFlash = useDelayHook(() => setCopyState({ copied: false }), 1600);
+
+    const handleCopyPlotpoints = React.useCallback(async () => {
+        // Story title for the "[Story title]" header — the same resolution
+        // the header bar uses for the display name.
+        const storyTitle = selected?.storyName || selected?.title || selected?.storyId || '';
+        const text = collectStoryPlotpoints(data?.chapters, storyTitle);
+        if (!text) return;
+        const copied = await copyTextToClipboard(text);
+        if (!copied) return;
+        setCopyState({ copied: true });
+        // Re-arm the flash-revert timer (rapid re-clicks restart it).
+        resetCopiedFlash(() => setCopyState({ copied: false }), 1600);
+        // data?.chapters: the structure reads the currently rendered payload,
+        // so a copy right after a poll tick picks up the freshest plotpoints.
+    }, [selected?.storyName, selected?.title, selected?.storyId, data?.chapters, resetCopiedFlash]);
+
     // ── Resume generation (the ▶ action) ─────────────────────────────────
     // Continues an INTERRUPTED plotline generation for the selected story:
     // the server's background job died (restart/crash) leaving plotpoint.json
@@ -1586,6 +1646,13 @@ export const StoryContent: React.FC = React.memo(() => {
     // existing chapter (the server rejects appends to chapter-less stories),
     // so the bar appears as soon as any chapter is present.
     const hasChapters = (data?.chapters ?? []).length > 0;
+
+    // Copy gate: at least one chapter must carry plotpoints — with zero
+    // plotpoints anywhere there is nothing to copy, so the left slot of the
+    // action bar stays empty (the right-side actions keep their own gates).
+    const canCopy = (data?.chapters ?? []).some(
+        (ch: any) => Array.isArray(ch.plotpoints) && ch.plotpoints.length > 0
+    );
 
     // Whether the plotline looks stopped before reaching its target — the
     // resume button's visibility gate. The comparison target is the LARGER of
@@ -1843,17 +1910,49 @@ export const StoryContent: React.FC = React.memo(() => {
                 </ContentErrorBanner>
             )}
 
-            {/* Action bar — pinned bottom-right. Collapse-all closes every
-                expanded chapter. The ▶ resume button continues an interrupted
-                plotline generation (server restart, exhausted retries) — it
-                renders whenever the chapter list sits below its target (or the
-                server marked the story failed), even with zero chapters, since
-                a generation that died before its first chapter is exactly the
-                case resume exists for. The [->] button opens the in-place
-                append-chapters dialog; appending needs at least one existing
-                chapter (the server rejects chapter-less stories). */}
+            {/* Action bar — pinned to the bottom of the content area, split
+                in two: the LEFT slot carries the icon-only Copy control
+                (every chapter's plotpoints → clipboard, via ActionBarLead's
+                marginRight:auto), the RIGHT group keeps its original layout.
+                Collapse-all closes every expanded chapter. The ▶ resume
+                button continues an interrupted plotline generation (server
+                restart, exhausted retries) — it renders whenever the chapter
+                list sits below its target (or the server marked the story
+                failed), even with zero chapters, since a generation that
+                died before its first chapter is exactly the case resume
+                exists for. The [->] button opens the in-place append-chapters
+                dialog; appending needs at least one existing chapter (the
+                server rejects chapter-less stories). */}
             {(hasChapters || canResume) && (
                 <ActionBar data-testid="content-action-bar">
+                    {canCopy && (
+                        <ActionBarLead>
+                            {/* Icon-only Copy control — same compact outline
+                                frame as the collapse/resume/extend icon
+                                buttons (no wording). Transient success
+                                feedback without text: while the clipboard
+                                write succeeded, the glyph + border flash
+                                accent and the tooltip swaps to "Copied!"
+                                for ~1.6s (copyState). */}
+                            <Button
+                                variant="outline"
+                                onClick={handleCopyPlotpoints}
+                                data-testid="copy-plotpoints-button"
+                                title={copyState.copied ? 'Copied!' : "Copy every chapter's plot points to the clipboard"}
+                                style={
+                                    copyState.copied
+                                        ? {
+                                              color: theme.accent,
+                                              borderColor: theme.accent,
+                                              backgroundColor: theme.accentSoft
+                                          }
+                                        : undefined
+                                }
+                            >
+                                <ContentCopyIcon style={ICON_STYLE} />
+                            </Button>
+                        </ActionBarLead>
+                    )}
                     {hasChapters && (
                         <Button
                             variant="outline"
