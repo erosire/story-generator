@@ -22,7 +22,7 @@
 //     (storyline form not yet sent). We render an empty-state hint in that case
 //     instead of polling.
 //   - GET returning 404 right after POST is expected; poll keeps going until the
-//     server creates the dir (see generation-create-new-story.ts:236 fire-and-forget).
+//     server creates the dir (see generation-create-new-story.ts:1041 fire-and-forget).
 //   - On unmount or selection change, shouldStop becomes true so the loop exits
 //     without dispatching further setState (avoids "state on unmounted component").
 //
@@ -1380,8 +1380,8 @@ export const StoryContent: React.FC = React.memo(() => {
     // `append` POST (appendStoryPlotpoints) with the user's optional notes +
     // how many new chapters to generate. The server appends plotpoints-only
     // chapters after the current chapter list (10 existing + 3 appended = 13)
-    // and writes skeleton payloads for them — NO chapter expansion happens,
-    // each new chapter is expanded later via its own per-chapter action.
+    // and writes NO skeleton payloads — NO chapter expansion happens, and
+    // each new chapter's payload is created later by its own PATCH expansion.
     //
     // On success we bump this entry's chapterRequested to the new total so
     // the main polling effect (below) restarts with the enlarged target and

@@ -1,7 +1,9 @@
 /**
  * @vitest-environment node
- * This test needs the Node environment because the handler imports @runtime/secret/private
- * which transitively imports OpenAI SDK — that SDK throws in jsdom browser-like environments.
+ * This test needs the Node environment because the handler imports
+ * generation-config, which constructs the real LLM simpleClient at module load
+ * (the former @runtime/secret/private OpenAI SDK client) — that client throws
+ * in jsdom browser-like environments. The config module is also mocked below.
  */
 import fs from 'node:fs';
 import os from 'node:os';

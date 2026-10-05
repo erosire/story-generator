@@ -2,7 +2,7 @@
 //
 // The runtime clients are mocked because this test verifies only the
 // distribution-owned configuration contract: every selectable story client
-// receives the GLM-5.2-compatible defaults when it is cloned, and the LOCAL
+// receives the GLM-5.3-compatible defaults when it is cloned, and the LOCAL
 // standard gateway client (STANDARD_CLIENT, which replaced the
 // '@runtime/secret/private/telnyx' import) mirrors the runtime telnyx.ts
 // construction.

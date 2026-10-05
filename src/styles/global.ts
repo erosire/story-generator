@@ -33,7 +33,7 @@ const sheet = `
 
 /* Native UI surfaces the browser paints for us — scrollbars, native
    dialogs, and native form controls (incl. the header client dropdown's
-   <select> control + options popup, StoryGeneratorApp ClientSelect) are
+   <select> control + options popup, features/header.tsx ClientSelect) are
    drawn per the document's color scheme. Without this dark hint they
    default to the LIGHT scheme (white tracks / grey-on-white popups) which
    shatters the dark dashboard. */
@@ -70,8 +70,8 @@ const sheet = `
    surface + light text: some browsers/webviews ignore the color-scheme hint,
    and a translucent background then composites over the UA's white control
    base -> white control with unreadable text. Opaque colors are immune to
-   that. colorScheme:"dark" remains INLINE on the element (feature/header.tsx
-   ClientSelect) for the UA-drawn options popup.
+    that. colorScheme:"dark" remains INLINE on the element (features/header.tsx
+    ClientSelect) for the UA-drawn options popup.
    NOTE: these rules sit AFTER .sg-input:focus above so, at equal specificity,
    the opaque focus treatment here wins for the select. */
 .sg-select {
@@ -159,7 +159,7 @@ const sheet = `
 
 /* Background-processing animation for story tiles. While the server's job
    registry reports a live background thread for the story (or this session's
-   poll loop is waiting), SectionStoryTabs attaches .sg-story-processing and
+   poll loop is waiting), StorySidebar attaches .sg-story-processing and
    the tile's SURFACE breathes between its normal and its hovered brightness.
    Background-color only — no translate, no glow — so the pulse stays within
    the flat design language. Scoped per tile variant because the two variants

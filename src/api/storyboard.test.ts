@@ -108,7 +108,7 @@ describe('createNewStory', () => {
             'fork-abc',
             // storyline/chapterCount are not needed for a fork (the server
             // inherits them from the source story) — same `{}` shape the UI
-            // passes in SectionStoryContent.handleFork.
+            // passes in StoryContent.handleFork.
             {} as any,
             { sourceStoryId: 'source-story', chapterIndex: 1 },
             'Modal'

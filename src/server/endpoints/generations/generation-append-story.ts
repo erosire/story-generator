@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Append handler — extends an EXISTING story with N new plotline chapters.
 //
-// Triggered by the dashboard's "[->]" append dialog (SectionStoryContent),
+// Triggered by the dashboard's "[->]" append dialog (StoryContent),
 // which POSTs { append: { chapterCount, notes? } } to the SAME storyId as
 // the story being extended (see generation-create-new-story.ts handler —
 // the append branch runs before the plain create branch).
@@ -11,7 +11,7 @@
 //     and at least one chapter WITH plotpoints (there is nothing to continue
 //     from otherwise). Validation runs synchronously in the handler so the
 //     client surfaces the exact 400 reason.
-//   - The LLM is primed exactly like forkStory (generation-fork-story.ts:175-177):
+//   - The LLM is primed exactly like forkStory (generation-fork-story.ts:176-180):
 //     system/opening from createStoryClient, then user(STORY_REQUEST_MESSAGE) +
 //     assistant(storyline). The appending[] context holds the in-order
 //     plotpoint summaries of every existing chapter; for the most recent
@@ -151,7 +151,7 @@ export const appendStoryChapters = async (options: AppendStoryChaptersOptions) =
     // ── Prime the LLM client ──────────────────────────────────────────────
     // createStoryClient() seeds the system instructions + opening exchange;
     // then the story request + storyline, exactly like generateStory
-    // (generation-create-new-story.ts:300-301) and forkStory (:175-177).
+    // (generation-create-new-story.ts:320-321) and forkStory (:176-180).
     const client = createStoryClient(clientId);
     client.user(STORY_REQUEST_MESSAGE);
     client.assistant(storyline);
@@ -212,7 +212,7 @@ export const appendStoryChapters = async (options: AppendStoryChaptersOptions) =
 
     // callStructured resolves { response: { chapters } } (both client.format
     // and client.structure share that envelope — see the destructuring in
-    // generateStory, generation-create-new-story.ts:387-389). Guard against a
+    // generateStory, generation-create-new-story.ts:502). Guard against a
     // malformed payload whose response lacks a chapters array.
     const responseChapters: unknown = (result as any)?.response?.chapters;
     const generatedChapters: Array<{ number: string; title: string; plotpoints: string[] }> = Array.isArray(responseChapters)

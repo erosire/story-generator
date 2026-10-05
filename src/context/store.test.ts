@@ -164,7 +164,7 @@ describe('lastUpdatedAt / dataStale (static-memory staleness)', () => {
     it('mergeServerStoryList clears dataStale when the timestamps agree', () => {
         // The poll loop already fetched data AFTER the last server write, so
         // the entry's stored timestamp matches the server's — the delta is
-        // resolved; an earlier stale flag must clear (SectionStoryContent
+        // resolved; an earlier stale flag must clear (StoryContent
         // writes lastUpdatedAt=meta.lastUpdatedAt on every fetch).
         const prevRecords = [makeEntry({ storyId: 'story-a', lastUpdatedAt: '2026-08-01T11:00:00.000Z', dataStale: true, data: { chapters: [], meta: null } })];
         const prev = { records: prevRecords, selected: prevRecords[0] };

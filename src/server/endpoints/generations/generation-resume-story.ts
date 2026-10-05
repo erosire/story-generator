@@ -2,7 +2,7 @@
 // Resume handler — continues PLOTLINE generation for a story whose
 // generation stopped before its chapter target was reached.
 //
-// Triggered by the dashboard's resume button (SectionStoryContent), which
+// Triggered by the dashboard's resume button (StoryContent), which
 // POSTs { resume: { chapterCount? } } to the story's own storyId (the branch
 // sits in generation-create-new-story.ts after the append branch).
 //
@@ -16,7 +16,7 @@
 // Resume semantics:
 //   - The resumable baseline is the COMPLETE PREFIX of meta.chapters: a
 //     chapter counts as complete only when it passes the SAME acceptance
-//     checks as the create flow (generation-create-new-story.ts:534-556 —
+//     checks as the create flow (generation-create-new-story.ts:549-578 —
 //     no refusal phrase, >= MIN_PLOTPOINTS_PER_CHAPTER plotpoints). Anything
 //     from the first incomplete chapter onward is a partially-streamed or
 //     failed tail and is REGENERATED from scratch.
@@ -30,7 +30,7 @@
 //     ('already complete').
 //   - Generation mirrors the create flow's per-chapter agentic chain: ONE
 //     structured call per missing chapter with the byte-stable request
-//     wording (generation-create-new-story.ts:462-468), re-issued VERBATIM
+//     wording (generation-create-new-story.ts:480-486), re-issued VERBATIM
 //     on up to MAX_PLOT_ATTEMPTS retries. A single-call-for-everything
 //     approach (the append flow's) is deliberately avoided here: resuming a
 //     story that died on chapter 1 would mean one giant call spanning every
@@ -39,24 +39,24 @@
 //   - The LLM is primed like append (user(STORY_REQUEST_MESSAGE) +
 //     assistant(storyline)), then the complete-prefix summaries (recent
 //     expanded chapters' prose replacing their summaries — same pattern as
-//     generation-append-story.ts:156-167) are committed as ONE assistant
-//     message (expandChapter's convention, story-utils.ts:212). Accepted
+//     generation-append-story.ts:164-179) are committed as ONE assistant
+//     message (expandChapter's convention, story-utils.ts:282). Accepted
 //     regenerated chapters chain as tool-call messages exactly like create
-//     (generation-create-new-story.ts:580-591). NOTE: appendStoryChapters
+//     (generation-create-new-story.ts:590-613). NOTE: appendStoryChapters
 //     never injects its summaries into the actual request; resume does —
 //     without them the model would continue blind from the storyline alone.
 //   - plotpoint.json is rewritten after EVERY accepted chapter (status
 //     'generating') so the dashboard's GET polling watches the outline grow
 //     back chapter by chapter. plotpoint.md is rebuilt from the current
 //     chapter list on the same cadence (create's writePlotpointFile
-//     convention, generation-create-new-story.ts:407-420).
+//     convention, generation-create-new-story.ts:394-439).
 //   - Terminal failure mirrors markStoryFailed: status 'failed' + validation
 //     record, every accepted chapter preserved plus the broken latest
 //     attempt left in its slot for inspection. The failed state is itself
 //     resumable — the user clicks resume again and generation restarts from
 //     the (now invalid-tail-free) complete prefix.
 //   - On full completion: status 'completed' (plotline-only semantics, see
-//     the plotOnly block at generation-create-new-story.ts:628-667) and a
+//     the plotOnly block at generation-create-new-story.ts:629-667) and a
 //     skeleton chapter-XXX.json is written for EVERY chapter that lacks one
 //     — an interrupted create has NO payloads at all (plotOnly writes them
 //     only at the end). Existing payloads are NEVER overwritten: they may
@@ -114,7 +114,7 @@ export type ResumableStoryState = {
 
 /**
  * A chapter is "complete" only when it would pass the create flow's
- * per-chapter validation (generation-create-new-story.ts:534-556): no
+ * per-chapter validation (generation-create-new-story.ts:549-578): no
  * refusal phrase FIRST (a refusal is a content-level rejection even when the
  * list is long enough), then the minimum plotpoint count. A failed story's
  * preserved broken chapter deliberately fails this check so resume
@@ -261,7 +261,7 @@ export const resumeStoryPlotlines = async (options: ResumeStoryChaptersOptions) 
         fs.writeFileSync(plotpointMdPath, mdContent, 'utf-8');
     };
 
-    // Terminal failure — mirror markStoryFailed (generation-create-new-story.ts:319-348):
+    // Terminal failure — mirror markStoryFailed (generation-create-new-story.ts:323-366):
     // status 'failed', accepted chapters preserved, broken attempt inspectable.
     const markStoryFailed = (reason: string) => {
         if (storyFailed) return;
@@ -294,9 +294,9 @@ export const resumeStoryPlotlines = async (options: ResumeStoryChaptersOptions) 
     );
 
     // ── Prime the LLM client ──────────────────────────────────────────────
-    // Same priming as append (generation-append-story.ts:143-145), then the
+    // Same priming as append (generation-append-story.ts:151-157), then the
     // complete-prefix context as ONE assistant message (expandChapter's
-    // appending convention, story-utils.ts:210-212) so the model continues
+    // appending convention, story-utils.ts:280-282) so the model continues
     // from what actually happened instead of continuing blind.
     const client = createStoryClient(clientId);
     client.user(STORY_REQUEST_MESSAGE);
@@ -305,7 +305,7 @@ export const resumeStoryPlotlines = async (options: ResumeStoryChaptersOptions) 
     if (completeChapters.length > 0) {
         const appending = buildAppendingFromChapters(completeChapters);
         // Replace the most recent prefix chapters' summaries with their latest
-        // expanded prose when available (mirrors generation-append-story.ts:156-167).
+        // expanded prose when available (mirrors generation-append-story.ts:164-179).
         for (let i = Math.max(0, completeChapters.length - PREVIOUS_EXPANDED_CHAPTERS); i < completeChapters.length; i++) {
             const payload = readChapterPayload(chapterDir, i);
             const revisions = Array.isArray(payload?.revisions) ? (payload!.revisions as any[]) : [];
@@ -337,7 +337,7 @@ export const resumeStoryPlotlines = async (options: ResumeStoryChaptersOptions) 
         const chapterLabel = chapterIndex + 1;
         console.log(`[RESUME] Generating plotpoints for chapter ${chapterLabel}/${target} (storyId: ${storyId})`);
 
-        // Byte-identical to the create flow's request (generation-create-new-story.ts:462-468)
+        // Byte-identical to the create flow's request (generation-create-new-story.ts:480-486)
         // so resumed chapters are produced under the same contract.
         const request = [
             `> Submit me the detailed plotpoints of the next chapter (chapter ${chapterLabel} of ${target})`,
@@ -406,7 +406,7 @@ export const resumeStoryPlotlines = async (options: ResumeStoryChaptersOptions) 
         }
 
         // Agentic chain step — commit request + tool_call so the next chapter
-        // sees this one (generation-create-new-story.ts:580-591).
+        // sees this one (generation-create-new-story.ts:590-613).
         client.user(request);
         client.assistant(
             JSON.stringify({

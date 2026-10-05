@@ -115,7 +115,7 @@ export const buildAppendingFromChapters = (
  * behind (see expandChapter below). During streaming, expandChapter writes
  * partial content progressively: a `generationTimeMs === 0` streaming entry
  * is appended to chapter-XXX.json, and chapter-XXX.md is overwritten on every
- * attempt (line ~380). When the retry budget is exhausted without quality,
+ * attempt (line ~442). When the retry budget is exhausted without quality,
  * expandChapter now THROWS instead of keeping best-effort content — so this
  * rollback runs first, otherwise the chapter would stay "expanded" with a
  * truncated/broken revision and poison the context of any later expansion.

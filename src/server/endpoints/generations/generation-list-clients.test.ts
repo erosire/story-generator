@@ -66,8 +66,8 @@ describe('generationListClients', () => {
         // and dropped GLMFLASH; GLM53 was renamed to VULTR (gateway-style
         // naming), the SONNET/OPUS Lightning GPT entries were retired in
         // favor of SOL, and the retired Modal (GLM52), Makora, DeepSeek,
-        // Router (OpenRouter) and standalone Nvidia/Telnyx deployments stay
-        // commented out of CLIENTS.
+        // Router (OpenRouter) and standalone Nvidia/Telnyx deployments were
+        // dropped from CLIENTS.
         expect(result.response.clients).toEqual([
             'KIMIK3',
             'KIMIK26',
@@ -101,8 +101,8 @@ describe('generationListClients', () => {
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
         // 11 selectable ids: KIMIK3, KIMIK26, MIMO26, SOL, Qwen27B, MERGE,
-        // VULTR, FLASH, PARTICLE, LIGHTNING, MODAL (retired entries commented
-        // out of CLIENTS).
+        // VULTR, FLASH, PARTICLE, LIGHTNING, MODAL (retired entries removed
+        // from CLIENTS).
         expect(result.response.clients.length).toBe(11);
     });
 });

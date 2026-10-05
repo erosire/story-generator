@@ -1,9 +1,9 @@
 // Reusable collapsible section — built on the Material UI ButtonBase.
 //
 // Renders a clickable header (with a rotating Material chevron) and
-// conditionally renders its children. Used by SectionStoryContent to wrap the
-// Plotlines block and each Chapter card so users can collapse/expand them
-// individually.
+// conditionally renders its children. Used by the story content feature
+// (features/content.tsx) to wrap each Chapter card so users can collapse/
+// expand them individually.
 //
 // State:
 //   - `defaultOpen` controls the initial open state (uncontrolled). We use

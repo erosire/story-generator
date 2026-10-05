@@ -85,7 +85,7 @@ export const theme = {
     // Dialog elevation shadow — the one place the flat design keeps a real
     // drop shadow (floating task surfaces above a scrim).
     shadowDialog: '0 8px 32px rgba(2, 5, 16, 0.5)',
-    // Rename dialog's larger elevation (see StoryGeneratorApp DialogBox).
+    // Rename dialog's larger elevation (see components/Dialog.tsx paper).
     shadowDialogLg: '0 20px 60px rgba(2, 5, 16, 0.6)',
 
     // Pure highlight token — text/icons that must sit at maximum contrast
@@ -160,7 +160,7 @@ export const theme = {
     fontSans: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
     fontMono: 'ui-monospace, "Cascadia Code", "Source Code Pro", "JetBrains Mono", monospace',
 
-    // Font sizes — rem-based. The root font-size is set on <body> in index.html
+    // Font sizes — rem-based. The root font-size is set on <html> in index.html
     // so scaling the entire UI only requires changing that one value.
     fontSize: {
         xs: '0.625rem',     // ~10px at 16px root

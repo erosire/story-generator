@@ -165,7 +165,7 @@ describe('StoryGeneratorApp', () => {
     it('renders the empty state and input area before any story is created', async () => {
         render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
-        // Empty state — matches the hardcoded "Select one" in SectionStoryContent.
+        // Empty state — matches the hardcoded "Select one" in StoryContent.
         expect(screen.getByTestId('content-empty').textContent).toBe('Select one');
         // Input area is always visible — user can type a storyline and click Generate.
         expect(screen.getByTestId('storyline-input')).toBeDefined();
@@ -273,7 +273,7 @@ describe('StoryGeneratorApp', () => {
 
     // Retries the /v1/storyboard/clients fetch against a STALE deployment:
     // the first response is a 404 (route not deployed yet), the retry after
-    // CLIENTS_FETCH_RETRY_MS (10s, see StoryGeneratorApp.tsx) hits the
+    // CLIENTS_FETCH_RETRY_MS (10s, see features/header.tsx) hits the
     // updated server and fills the dropdown with every CLIENTS key — no page
     // reload required. Fake timers advance the retry delay deterministically.
     it('recovers the full client list when the server first 404s (stale deployment) and recovers without a page reload', async () => {
@@ -459,7 +459,7 @@ describe('StoryGeneratorApp', () => {
             chapterCompleted: 0,
             createdDate: '2026-08-01T12:00:00.000Z',
             status: 'generating' as const,
-            // Content is empty but initialized so SectionStoryContent can read
+            // Content is empty but initialized so StoryContent can read
             // its chapter count while the rename interaction is under test.
             data: { chapters: [], meta: null },
             isProcessing: false,
@@ -508,7 +508,7 @@ describe('StoryGeneratorApp', () => {
 
     // Read the sidebar tile order (top-to-bottom) as an array of testids.
     // Tiles are <button data-testid="story-tab-<storyId>"> elements; DOM order
-    // IS the sorted display order (see SectionStoryTabs' last-actioned sort).
+    // IS the sorted display order (see StorySidebar's last-actioned sort).
     const readSidebarOrder = () =>
         screen
             .getAllByRole('button')
@@ -1233,7 +1233,7 @@ describe('StoryGeneratorApp', () => {
     // merge. When the job finishes (processing drops out of the list
     // response), the animation stops.
     //
-    // chapterRequested stays 0 so SectionStoryContent's own poll loop runs in
+    // chapterRequested stays 0 so StoryContent's own poll loop runs in
     // stable-poll mode and terminates immediately (2 identical empty polls) —
     // isProcessing drops to false on its own, which isolates the animation
     // source under test to the server-side serverProcessing flag.
@@ -1307,7 +1307,7 @@ describe('StoryGeneratorApp', () => {
             });
             // After the sync the tile's animation stops: badge, spinner
             // ring, and pulse class are all gone (the ⏳ absence keeps the
-            // App.test.tsx:631 contract).
+            // App.test.tsx:960 contract).
             const tab = screen.getByTestId('story-tab-bg-job-uuid');
             animationStopped =
                 !tab.textContent!.includes('⏳') &&
@@ -1416,7 +1416,7 @@ describe('StoryGeneratorApp', () => {
     });
 
     // The count must be INSTANT for jobs this session just started: Generate
-    // sets isProcessing synchronously (SectionStoryInput), which must count
+    // sets isProcessing synchronously (StoryInput), which must count
     // toward the header chip BEFORE any list sync reports the job — the idle
     // refresh cadence is 30s, so a snapshot-only count would lag badly here.
     it('counts a just-started local job in the Stories header before any list sync reports it', async () => {

@@ -14,7 +14,7 @@ import { CLIENTS } from './generation-config';
  * the currently available set, keeping the UI in sync whenever CLIENTS gains
  * or loses entries on the deployment side.
  *
- * Response: { clients: string[] } — e.g. { clients: ['Nvidia', 'Modal', ...] }.
+ * Response: { clients: string[] } — e.g. { clients: ['KIMIK3', 'MODAL', ...] }.
  */
 export const generationListClients = asHandlerMethod(async () => {
     return {

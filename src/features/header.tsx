@@ -9,7 +9,7 @@
 // <Dialog> (components/Dialog.tsx — MUI Dialog + title/content/actions bands).
 // Test contract preserved by construction:
 //   - frame: data-testid="rename-dialog", role="dialog", aria-modal,
-//     aria-labelledby="rename-dialog-title" (App.test.tsx:395-397)
+//     aria-labelledby="rename-dialog-title" (App.test.tsx:486-488)
 //   - input: data-testid="rename-input", className CONTAINS 'sg-dialog-input'
 //     — the stronger focus ring class hook (the MUI TextField merges its own
 //     input classes, so the assertion is a toContain)
@@ -28,7 +28,7 @@
 // styled() Emotion class must not carry background/color/border or it would
 // fight the .sg-select hover/focus rules at equal specificity. A translucent
 // background would also composite over the browser's light UA control base
-// (white-control bug). App.test.tsx:103-105 asserts the class hooks + inline
+// (white-control bug). App.test.tsx:193-195 asserts the class hooks + inline
 // colorScheme.
 
 import React from 'react';
@@ -89,7 +89,7 @@ const HeaderTitle = styled('span', {
 // would fight the .sg-select hover/focus hooks at equal specificity. The
 // dark `colorScheme` stays an INLINE style (see the render call): the
 // UA-drawn options popup reads it from the element, and the test contract
-// (App.test.tsx:105) asserts the inline value.
+// (App.test.tsx:195) asserts the inline value.
 const ClientSelect = styled('select', {
     marginLeft: 'auto',
     height: 34,
@@ -289,7 +289,7 @@ export const HeaderControls: React.FC<{
 
             {/* Top-right client dropdown — colors from .sg-select (global.ts);
                 the dark colorScheme stays INLINE for the UA-drawn control +
-                options popup (test contract: App.test.tsx:105). */}
+                options popup (test contract: App.test.tsx:195). */}
             <ClientSelect
                 value={store.config.clientId}
                 onChange={(e) => handleClientChange(e.target.value)}
@@ -321,8 +321,8 @@ export const HeaderControls: React.FC<{
                         placeholder="Enter story name"
                         data-testid="rename-input"
                         id="rename-input"
-                        // EXACT class contract (App.test.tsx:399 asserts
-                        // toBe 'sg-dialog-input') — the stronger focus ring.
+                        // EXACT class contract (App.test.tsx:492 asserts
+                        // toContain 'sg-dialog-input') — the stronger focus ring.
                         className="sg-dialog-input"
                     />
                 </Dialog.Body>

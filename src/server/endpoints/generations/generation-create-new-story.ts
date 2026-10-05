@@ -592,13 +592,13 @@ const generateStory = async (options: {
         // request that produced this chapter, then an assistant message
         // carrying the chapter's tool call. structure()/format() append the
         // NEXT request only to a local copy of the messages (they never mutate
-        // client.messages — simple-client.ts:1010-1013/:1279-1281), so only
+        // client.messages — simple-client.ts:1157-1179/:1445-1455), so only
         // what is committed here is visible to the next chapter's call: chapter
         // N+1 is generated with chapters 1..N present as sequential tool calls.
         // The tool-call JSON follows the harness convention of storing tool
         // calls as assistant message content (simple-harness.ts:208-215) and
         // uses the well-known structure tool name 'respond'
-        // (simple-client.ts:1025) — exactly what the model emitted.
+        // (simple-client.ts:1129) — exactly what the model emitted.
         client.user(request);
         client.assistant(
             JSON.stringify({
@@ -649,7 +649,7 @@ const generateStory = async (options: {
     // until every chapter is expanded, so for a plotline-only story it
     // doubles as a live-refresh loop and is cancelled by shouldStop() when
     // the user switches stories or unmounts. Individual chapter expansions
-    // run their own completion poll (SectionStoryContent reExpand effect).
+    // run their own completion poll (StoryContent reExpand effect).
     if (plotOnly) {
         assertStoryExists();
 
@@ -1028,7 +1028,7 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
     //
     // The job registry guard turns a duplicate POST for the same storyId into
     // a clean 400 instead of a background crash at the reserved-directory mkdir
-    // (generateStory fs.mkdirSync, line 59), and stops create from racing a
+    // (generateStory fs.mkdirSync, line 64), and stops create from racing a
     // resume already running for the same story. The returned jobId releases
     // the slot when the background promise settles.
     const jobId = acquireStoryJob(storyId, 'create');

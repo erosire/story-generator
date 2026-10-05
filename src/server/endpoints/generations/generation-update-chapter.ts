@@ -657,9 +657,10 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
     }
 
     // ── Re-expansion path ─────────────────────────────────────────────────
-    // expandChapterIndex is guaranteed to be defined here: we returned early
-    // if both expandChapterIndex and rewriteChapterIndex were undefined (line 110),
-    // and the rewrite path above already returned if rewriteChapterIndex was defined.
+    // expandChapterIndex is guaranteed to be defined here: the metadata-only
+    // early return above fires when both expandChapterIndex and
+    // rewriteChapterIndex are undefined, and the rewrite path above already
+    // returned if rewriteChapterIndex was defined.
     const expandIdx = expandChapterIndex!;
 
     if (expandIdx < 0) {

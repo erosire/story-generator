@@ -1,7 +1,8 @@
 /**
  * @vitest-environment node
- * story-utils imports @runtime/secret/private (via generation-config) which
- * transitively imports OpenAI SDK — that SDK throws in jsdom environments.
+ * story-utils imports generation-config, which constructs the real LLM
+ * simpleClient at module load (the former @runtime/secret/private OpenAI SDK
+ * client) — that client throws in jsdom environments.
  *
  * Tests for expandChapter's RETRY BUDGET (the infinite-retry bug fix) and
  * its TERMINATION + ROLLBACK contract (the chain-of-broken-chapters fix).

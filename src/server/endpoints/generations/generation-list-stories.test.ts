@@ -1,7 +1,9 @@
 /**
  * @vitest-environment node
- * This test imports from story-utils which transitively imports @runtime/secret/private
- * — that module creates an OpenAI client that throws in jsdom browser-like environments.
+ * This test imports from story-utils, which transitively imports
+ * generation-config — that module constructs the real LLM simpleClient at
+ * module load (the former @runtime/secret/private OpenAI client, now the
+ * local STANDARD_CLIENT copy), which throws in jsdom browser-like environments.
  */
 import fs from 'node:fs';
 import os from 'node:os';

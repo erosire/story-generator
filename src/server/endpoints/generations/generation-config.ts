@@ -136,14 +136,14 @@ export const DATABASE_BASE_DIR = 'storyboard';
 // Pre-configured LLM Client
 // ---------------------------------------------------------------------------
 
-// SGLang-compatible defaults for the GLM-5.2 API. These values are attached to
+// SGLang-compatible defaults for the GLM-5.3 API. These values are attached to
 // every story-generation client so plotpoint, validation, chapter expansion,
 // retry, fork, and rewrite requests all use the same sampling behavior.
 // EXCEPTION: the SOL entry (lightning/gpt-6-sol) clones with
 // SOL_SAMPLING_PARAMS below instead — the gpt-6.1-sol Responses model rejects
 // `top_p`, so that entry drops the key (see SOL_SAMPLING_PARAMS).
 // `max_tokens: 32768` is the explicit completion limit for EVERY story client:
-// EXPAND_TIMEOUT_MS (15 min) + TARGET_WORD_COUNT_PROMPT (4000 words) mean a
+// EXPAND_TIMEOUT_MS (15 min) + TARGET_WORD_COUNT_PROMPT (6000 words) mean a
 // single chapter easily exceeds backends' own default completion caps (e.g.
 // SGLang /v1/chat/completions defaults to 32/64k only when left unset, and
 // Telnyx caps at provider defaults), causing silent mid-chapter truncation
@@ -162,15 +162,13 @@ export const DEFAULT_SAMPLING_PARAMS = {
     // WARNING: some backends reject -1 (they require top_k >= 0 and use 0 as
     // the "disabled" sentinel) — see QWEN3_8_SAMPLING_PARAMS below for that
     // variant. The value is passed through verbatim into the chat request body
-    // by simple-client.ts (SimpleClientSamplingParams, line 80); passthrough
-    // asserted at simple-client.test.ts:1348 / :1398.
+    // by simple-client.ts (SimpleClientSamplingParams, line 89); passthrough
+    // asserted at simple-client.test.ts:1377 / :1427.
     top_k: -1,
     // OpenAI Chat Completions completion-limit field; flows into stream(),
     // structure() and format() request bodies via the defaultSampling spread
-    // (simple-client.ts lines 919/982/1191/1526). Backend translation is
-    // already handled by the provider layer: the Telnyx gateway strips
-    // max_tokens for function-tool bodies (telnyx-shared.ts
-    // toTelnyxRequestBody, Telnyx error 10015 workaround) and Lightning maps
+    // (simple-client.ts lines 920/983/1192/1527). Backend translation is
+    // already handled by the provider layer: Lightning maps
     // it to Responses-API max_output_tokens (lightning-client.ts:203).
     max_tokens: 32768,
     min_p: 0.0,
@@ -195,7 +193,7 @@ export const QWEN3_8_SAMPLING_PARAMS = {
 // "Unsupported parameter: 'top_p' is not supported with this model." — the
 // production failure that motivated this variant. The Lightning transport
 // (packages/agentic/provider/src/lightning/lightning-client.ts,
-// toLightningResponseRequest, lines 179-205) forwards ONLY temperature,
+// toLightningResponseRequest, lines 179-210) forwards ONLY temperature,
 // top_p and max_tokens (→ max_output_tokens; plus reasoning_effort →
 // reasoning.effort) out of the sampling map — top_k / min_p /
 // presence_penalty / frequency_penalty / repetition_penalty are dropped at
@@ -204,7 +202,7 @@ export const QWEN3_8_SAMPLING_PARAMS = {
 // and the endpoint named only top_p (1.0 is also the model default).
 // objectFilter removes the top_p KEY entirely rather than assigning
 // undefined: simple-client spreads defaultSampling verbatim into every
-// request body (simple-client.ts:684/920/983/1191/1527), and
+// request body (simple-client.ts:684/920/983/1192/1527), and
 // toLightningResponseRequest skips a key only when
 // objectHasKey(body, key) && body[key] !== undefined — a present-but-undefined
 // key would still survive JSON.stringify's undefined-drop in some transports,
@@ -266,7 +264,7 @@ const STANDARD_CLIENT = simpleClient({
  * upstream), which surfaces as "400 only response_format {type:text} is
  * supported". Tool-call STREAMING on that backend: the proxy forwards both
  * the request and the native SSE stream VERBATIM (deployment/qwen3_8/
- * modal_qwen3_8_rtx6000_ninfer.py — _stream_tool_call_verified_response).
+ * stable/modal_qwen3_8_rtx6000_ninfer.py — _stream_tool_call_verified_response).
  * Natively the engine buffers tool calls post-generation: ordinary content
  * (including pre-tool reasoning) streams incrementally, and the complete
  * delta.tool_calls arrive in ONE final frame just before finish_reason — so
@@ -355,7 +353,7 @@ export const resolveClient = (clientId?: string | null) => {
     // prototype methods. The requestId is a runtime string, not the literal
     // keys of CLIENTS, hence the Record widening (every client is a
     // SimpleClient from simpleClient() in
-    // packages/agentic/harness/simple/modules/simple-client.ts:550).
+    // packages/agentic/harness/simple/modules/simple-client.ts:644).
     // Explicit malformed payloads are rejected upstream by parseClientId;
     // the ?? CLIENT fallback covers ids absent from this deployment.
     const selected: SimpleClient | undefined = Object.prototype.hasOwnProperty.call(CLIENTS, clientId)

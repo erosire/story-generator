@@ -31,7 +31,7 @@ export const generationGetStoryData = asHandlerMethod(async (_, parameters, vari
     const plotpointJsonPath = path.join(databaseDir, 'plotpoint.json');
     // meta.status is the RAW plotpoint.json status ('generating' | 'completed' |
     // 'failed') — included so the dashboard can tell an interrupted/failed
-    // plotline (resume button, SectionStoryContent) from a finished one; the
+    // plotline (resume button, StoryContent) from a finished one; the
     // list endpoint's deriveStatus (generation-list-stories.ts) stays the
     // authoritative computed status.
     // meta.lastUpdatedAt mirrors the list endpoint's lastUpdatedDate (mtime of

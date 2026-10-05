@@ -92,7 +92,7 @@
 // activity (processing / job count) so the "active" family still reads
 // brighter on the selected tile. The processing badge text is still the
 //   literal ⏳ so the test that asserts `not.toContain('⏳')` after polling
-//   completes keeps working (App.test.tsx:625).
+//   completes keeps working (App.test.tsx:960).
 //
 // Moved from the old src/components/sections/SectionStoryTabs.tsx — this is a
 // feature (owns the sort/filter/refresh business logic + store access).

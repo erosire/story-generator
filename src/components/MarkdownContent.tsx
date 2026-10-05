@@ -12,8 +12,7 @@
 // @presource/react-backed styled() factory (../styles/styled.tsx).
 //
 // Usage:
-//   <MarkdownContent>{data.plotlines}</MarkdownContent>
-//   <MarkdownContent>{ch.content}</MarkdownContent>
+//   <MarkdownContent>{ch.revisions?.[i]?.content ?? ''}</MarkdownContent>
 //
 // Visual: pulls colors from src/styles/theme.ts so headings, links, code, and
 // blockquotes coordinate with the rest of the dashboard rather than reading as
@@ -292,8 +291,8 @@ export type MarkdownContentProps = {
 };
 
 // Renders a markdown string as React elements with dark-theme styling.
-// Used by SectionStoryContent to replace plain-text PlotBlock and ChapterCard
-// with properly formatted markdown output.
+// Used by the story content feature (features/content.tsx) to replace
+// plain-text PlotBlock and ChapterCard with properly formatted markdown output.
 export const MarkdownContent: React.FC<MarkdownContentProps> = React.memo(
     ({ children, 'data-testid': testId }) => (
         <MarkdownWrapper data-testid={testId}>

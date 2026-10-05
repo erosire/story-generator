@@ -3,7 +3,7 @@
 // On submit it creates a new story entry locally (generating a fresh storyId),
 // adds it to the store, selects it, and POSTs to /v1/storyboard/generations/:storyId
 // with the entered storyline + chapterCount (matching the server's POST body —
-// see generation-create-new-story.ts:219).
+// see generation-create-new-story.ts:1000).
 //
 // After a successful POST the form is cleared and collapsed so the user can
 // immediately start the next story. The new story tab appears in the sidebar

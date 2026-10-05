@@ -26,9 +26,9 @@
 //     both-tiers-dead device stops showing the hedged copy, and
 //     BootstrapLayer rehydrates the durable copy at boot.
 //
-// Unlike localContextStore, this distribution package cannot import @presource/react
-// (it is not in package.json deps — see distribution/story-generator/package.json).
-// We use plain React context + useState instead, exposing a custom hook
+// Unlike localContextStore, the store here is plain React context + useState
+// (the package's @presource/react dependency is used for styling only — see
+// distribution/story-generator/package.json), exposing a custom hook
 // `useStoryStore` that mirrors the lightning-agent `lightningAgentStore()` accessor
 // pattern (read + mutate triggers re-render).
 
@@ -53,7 +53,7 @@ const STORAGE_KEY_RECORDS = 'storyGenerator:records';
 // ~5MB quota, the weight-shedding ladder NULLLED OTHER STORIES' cached
 // chapter data to fit (the reported bug: one story generating = every other
 // story's cache cleared). With one key per storyId, a story's progress only
-// ever rewrites its own key, and quota shedding (see saveSingleStoryToStorage)
+// ever rewrites its own key, and quota shedding (see saveStoryAtRung)
 // can only ever shed the story that caused it.
 const STORAGE_KEY_STORY_PREFIX = 'storyGenerator:story:';
 // The last-selected LLM client id. NOTE: this is a client-side convenience
@@ -354,7 +354,7 @@ export const loadRecordsFromStorage = (): StoryEntry[] => {
  *
  * This is the single cache↔server sync path used by BOTH the initial
  * bootstrap (BootstrapLayer) and the periodic sidebar refresh
- * (SectionStoryTabs), so the cache-first contract stays consistent:
+ * (StorySidebar), so the cache-first contract stays consistent:
  *
  *   load cache → check server → update cache (via the records-persist
  *   effect downstream) → repeat at interval.
@@ -443,7 +443,7 @@ export const mergeServerStoryList = (
                         : false,
                 // Track the server's latest timestamp as the entry's
                 // lastUpdatedAt. NOTE: this field doubles as "when our cached
-                // data was fetched" — SectionStoryContent updates it when it
+                // data was fetched" — StoryContent updates it when it
                 // stores fetched data, so between syncs it reflects the fetch,
                 // and a list sync only marks dataStale when the server moved
                 // BEYOND what the fetch saw. A server write that happens and
@@ -454,7 +454,7 @@ export const mergeServerStoryList = (
         }
         // New server story — negative id namespace (see BootstrapLayer) so
         // server-seeded entries never collide with locally created
-        // Date.now() ids. data starts null; SectionStoryContent polls it in
+        // Date.now() ids. data starts null; StoryContent polls it in
         // on selection.
         return {
             id: -(Date.now() + index + 1),
@@ -1050,7 +1050,7 @@ export const loadRecordsFromIdbMirror = async (): Promise<StoryEntry[] | null> =
  * holds RICHER content (per story) — and APPEND stories that exist ONLY in
  * the mirror.
  *
- * WHY: the localStorage quota ladder (saveSingleStoryToStorage) sheds weight
+ * WHY: the localStorage quota ladder (saveStoryAtRung) sheds weight
  * under quota — a story that no longer fits loses revisions or its whole
  * chapter payload. The IndexedDB mirror NEVER sheds, so after a shed session
  * the mirror holds chapters the localStorage copy no longer does. At boot,
@@ -1201,7 +1201,7 @@ export type Chapter = {
     chapterIndex: number; // 0-based index
     title: string; // chapter title from the LLM
     plotpoints: string[]; // plotpoints for this chapter
-    expanded: boolean; // true if chapter-XXX.json has non-empty result.content
+    expanded: boolean; // true if chapter-XXX.json revisions[] carries non-empty content
     canReExpand: boolean; // true if chapter-XXX.json exists (created by the chapter's own expansion)
     revisions?: Array<{
         content: string; // raw markdown body
@@ -1212,9 +1212,9 @@ export type Chapter = {
 
 // Shape of the story data returned by the GET endpoint.
 // chapters is the unified array of all chapters (expanded or not).
-// meta contains story metadata from story.json (or null if absent).
+// meta contains story metadata from plotpoint.json (or null if absent).
 // meta.status is the raw plotpoint.json status when present ('generating' |
-// 'completed' | 'failed') — SectionStoryContent uses it (with the chapter
+// 'completed' | 'failed') — StoryContent uses it (with the chapter
 // count) to offer the resume action for interrupted plotline generation.
 // meta.lastUpdatedAt mirrors the list endpoint's lastUpdatedDate (mtime of
 // plotpoint.json) — the staleness key the static memory compares against the
@@ -1262,7 +1262,7 @@ export type StoryEntry = {
     // mtime of plotpoint.json. Tracked in THREE places, and they must agree:
     //   - list endpoint: StoryMeta.lastUpdatedDate (mergeServerStoryList copies
     //     it here on every sync)
-    //   - per-story GET: StoryData.meta.lastUpdatedAt (SectionStoryContent
+    //   - per-story GET: StoryData.meta.lastUpdatedAt (StoryContent
     //     refreshes it whenever it fetches fresh data)
     // Undefined means "unknown" — legacy servers predating the field, stories
     // the server cannot stat, cache entries persisted before the feature.
@@ -1274,14 +1274,14 @@ export type StoryEntry = {
     // must trigger a one-shot re-fetch instead of showing stale content.
     // Set by mergeServerStoryList (delta between the server's
     // lastUpdatedDate and the entry's stored lastUpdatedAt) and cleared by
-    // SectionStoryContent once fresh data lands. Persisted so a reload while
+    // StoryContent once fresh data lands. Persisted so a reload while
     // stale doesn't wrongly show the old payload as fresh. Optional because
     // entries seeded by tests / initialStore may omit it.
     dataStale?: boolean;
     status: 'generating' | 'completed' | 'failed';
     // Progressive data fetched via GET polling. Starts as an empty story (status 200
     // returns { chapters: [], meta: null } for an existing-but-empty dir — see
-    // generation-get-story-data.test.ts:110-142). We use null to mean "not yet
+    // generation-get-story-data.test.ts:222-241). We use null to mean "not yet
     // fetched/pending first poll" and a StoryData object once fetched.
     data: StoryData | null;
     isProcessing: boolean; // true while polling for new chapters
@@ -1298,7 +1298,7 @@ export type StoryEntry = {
     // or Refresh). The collection endpoint returns metadata (storyId, chapterRequested,
     // createdDate, status) but not storyline (which is free-form user text). Remote
     // entries are seeded with the server's chapterRequested but have an empty storyline.
-    // Locally-added entries (Add button / SectionStoryInput) have isRemote = false
+    // Locally-added entries (the footer input feature, StoryInput) have isRemote = false
     // and may carry a storyline from the input form.
     isRemote: boolean;
     // True when the story exists in the local cache but was ABSENT from the last
@@ -1321,7 +1321,7 @@ export type StoryStore = {
         // Poll cadence for the per-chapter completion pollers (re-expand /
         // rewrite). The MAIN story poll loop no longer uses this interval:
         // it polls at activePollIntervalMs while a background job runs and
-        // does not poll at all otherwise (see SectionStoryContent).
+        // does not poll at all otherwise (see StoryContent).
         pollIntervalMs: number;
         // FAST poll cadence used while a background job is running for the
         // selected story (create/append/resume stream chapters one at a time;
@@ -1460,7 +1460,7 @@ const DEFAULT_CONFIG: StoryStore['config'] = {
     // Override via config in production by wrapping with a different provider value.
     baseUrl: `http://${resolveStoryboardApiHostName()}:${LOCAL_AREA_NETWORK_STORYBOARD_PORT}/v1/storyboard/generations`,
     // Poll every 10s. The generation-create-new-story handler writes plotpoint.md
-    // almost immediately and chapter files one at a time (see generation-create-new-story.ts:181),
+    // almost immediately and chapter files one at a time (see generation-create-new-story.ts:115 and :705),
     // so 10s gives a smooth progressive reveal without hammering the server.
     pollIntervalMs: 10000,
     // Fast cadence for ACTIVE background work (see StoryStore['config']).
@@ -1522,7 +1522,7 @@ export const StoryStoreProvider: React.FC<{
     //
     // BACKSTOP ONLY: the primary write happens synchronously in the dropdown's
     // change handler (HeaderControls.handleClientChange in
-    // src/components/StoryGeneratorApp.tsx). Passive effects are deferred and
+    // src/features/header.tsx). Passive effects are deferred and
     // not guaranteed to flush before page unload, so this effect must NOT be
     // the only persistence path — it exists to cover any OTHER caller that
     // writes config.clientId directly through setStore (tests, future
@@ -1540,7 +1540,7 @@ export const StoryStoreProvider: React.FC<{
     // the viewed story never reached localStorage). The synchronous write
     // makes every fetch that lands in the store durable immediately.
     // Writes are PER STORY (one key per storyId, change-detected) and quota-
-    // resilient (per-story shedding ladder in saveSingleStoryToStorage) — a
+    // resilient (per-story shedding ladder in saveStoryAtRung) — a
     // generating story's poll ticks rewrite only its own key, and a story
     // that exceeds the quota sheds only its own weight, never another
     // story's cached chapters.

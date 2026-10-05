@@ -72,7 +72,7 @@
 // → storyCacheSet → traceLog) and crashed <StoryStoreProvider> on load. Tracing
 // is a vitest/Node-only diagnostic: resolve to "disabled" whenever `process` is
 // absent (browser, SSR sandbox). Cross-reference: store.tsx saveRecordsToStorage
-// (~line 694) and App.tsx <StoryStoreProvider> are the browser call sites.
+// (~line 874) and App.tsx <StoryStoreProvider> are the browser call sites.
 const traceLog = (message: string): void => {
     // `typeof process` is safe in every environment; only the bare `process`
     // reference throws. Optional-chained env access covers exotic Node builds

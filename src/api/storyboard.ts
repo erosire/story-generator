@@ -83,7 +83,7 @@
 //   - a non-200/non-404 error occurs, OR
 //   - the caller signals cancellation via shouldStop().
 //
-// The caller (SectionStoryContent) supplies shouldStop() so unmounting or
+// The caller (StoryContent) supplies shouldStop() so unmounting or
 // selecting a different story cancels the active poll loop.
 
 import type { StoryData } from '../context';
@@ -174,7 +174,7 @@ export async function createNewStory(
 
     if (!response.ok) {
         // Server returns 400 with { error } for invalid bodies (see
-        // generation-create-new-story.ts:213, :222, :230). Surface the message.
+        // generation-create-new-story.ts:1003, :1010). Surface the message.
         let message = `Failed to create story (HTTP ${response.status})`;
         try {
             const data = await response.json();
@@ -302,7 +302,7 @@ export async function resumeStoryPlotpoints(
 }
 
 // Terminate every active background job for a story via PATCH { abortJob: true }.
-// The dashboard's Terminate button (SectionStoryContent) calls this while the
+// The dashboard's Terminate button (StoryContent) calls this while the
 // story is processing: the server marks the story aborted in its in-memory
 // job registry (generation-job-registry.ts requestStoryAbort) and every
 // active background flow (create/fork/append/resume/expand/rewrite) stops at
@@ -360,7 +360,7 @@ export async function fetchStoryData(
     if (response.status === 404) {
         // Background generation hasn't created the dir yet — expected right
         // after POST, since generateStory runs fire-and-forget (see
-        // generation-create-new-story.ts:236).
+        // generation-create-new-story.ts:1041).
         return { status: 'not-found' };
     }
 
@@ -376,7 +376,7 @@ export async function fetchStoryData(
     }
 
     // 200 — server always returns { chapters, meta } (may both be empty
-    // for a freshly created dir; see generation-get-story-data.test.ts:128-133).
+    // for a freshly created dir; see generation-get-story-data.test.ts:222-241).
     const data = (await response.json()) as StoryData;
     return { status: 'data', data };
 }
@@ -430,7 +430,7 @@ export async function fetchStoryList(baseUrl: string): Promise<{ stories: StoryM
 //     terminate after the data has been stable across `stablePolls` consecutive
 //     polls (i.e. chapter count and expanded count both unchanged). The server writes
 //     plotpoint.md first then adds chapter-NNN.md files one at a time
-//     (generation-create-new-story.ts:74 then :181), so stability implies the
+//     (generation-create-new-story.ts:115 then :705), so stability implies the
 //     background generation has finished for an already-existing story too.
 //   - PollResult is 'error' (hard failure — we give up), OR
 //   - shouldStop() returns true (caller cancelled: unmount, selection changed).
@@ -507,8 +507,8 @@ export async function pollStoryData(params: {
 
             if (hasTarget) {
                 // Completion check: once the server has written all requested chapters
-                // AND all of them have been expanded (result.content is non-empty),
-                // we stop polling. Checking only chapter count is not enough because
+                // AND all of them have been expanded (each carries non-empty
+                // revision content), we stop polling. Checking only chapter count is not enough because
                 // plotpoint.json is written with all chapter entries before any
                 // chapter expansion starts — see generation-create-new-story.ts.
                 //
@@ -517,7 +517,7 @@ export async function pollStoryData(params: {
                 // polling (doubles as a live refresh) until every chapter is expanded
                 // through its own PATCH flow, or the loop is cancelled via shouldStop()
                 // (story switch / unmount). Individual expansions stop it early: the
-                // per-chapter re-expand poller (SectionStoryContent) clears
+                // per-chapter re-expand poller (StoryContent) clears
                 // isProcessing when the expanded chapter completes.
                 const allExpanded =
                     result.data.chapters.length >= expectedChapterCount &&

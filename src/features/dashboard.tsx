@@ -155,7 +155,7 @@ export const Dashboard: React.FC<DashboardProps> = React.memo(
                     {/* Sidebar width is dynamic — passed as a merged inline style
                         on top of the styledComponent class. Width 12.5rem when
                         open / 0 when closed is part of the public test contract
-                        (App.test.tsx:64). */}
+                        (App.test.tsx:424-445). */}
                     <DashboardSidebarPanel
                         data-testid="sidebar-panel"
                         className="sg-scroll"

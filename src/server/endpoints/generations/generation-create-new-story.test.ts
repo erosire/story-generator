@@ -1,7 +1,9 @@
 /**
  * @vitest-environment node
- * This test needs the Node environment because the handler imports @runtime/secret/private
- * which transitively imports OpenAI SDK — that SDK throws in jsdom browser-like environments.
+ * This test needs the Node environment because the handler imports
+ * generation-config, which constructs the real LLM simpleClient at module load
+ * (the former @runtime/secret/private OpenAI SDK client) — that client throws
+ * in jsdom browser-like environments. The config module is also mocked below.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -163,7 +165,7 @@ const createMockParameters = (storyId: string, body: Record<string, any> = {}) =
 const SUMMARY_SEP = '\n\n\n\n\n\n';
 
 // Generate `count` deterministic plotpoints sharing one label. The mocked
-// MIN_PLOTPOINTS_PER_CHAPTER is 10 (mirrors production generation-config.ts:58),
+// MIN_PLOTPOINTS_PER_CHAPTER is 10 (mirrors production generation-config.ts:89),
 // so every plotline fixture must carry >= 10 plotpoints to pass the
 // per-chapter minimum-count validation (generation-create-new-story.ts) on its
 // first attempt — fewer is retried as an invalid response.
@@ -675,7 +677,7 @@ describe('generationCreateNewStory', () => {
         );
 
         // Exact tool-call message committed after each accepted chapter —
-        // mirrors the 'respond' tool convention (simple-client.ts:1025).
+        // mirrors the 'respond' tool convention (simple-client.ts:1129).
         const toolCallMessage = (label: number, chapter: (typeof chapterFixtures)[number]) =>
             JSON.stringify({
                 tool_calls: [

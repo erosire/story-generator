@@ -1,8 +1,9 @@
 /**
  * @vitest-environment node
  * The service-route modules transitively import the generation handlers, which
- * pull in story-utils → @runtime/secret/private — that chain creates OpenAI
- * clients that throw in jsdom browser-like environments (same reason
+ * pull in story-utils → generation-config — that chain constructs the real LLM
+ * simpleClient at module load (the former @runtime/secret/private OpenAI
+ * client), which throws in jsdom browser-like environments (same reason
  * generation-list-stories.test.ts declares the node environment).
  */
 import { describe, it, expect } from 'vitest';
