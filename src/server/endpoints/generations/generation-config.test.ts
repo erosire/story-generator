@@ -46,7 +46,7 @@ const mocks = vi.hoisted(() => {
 // LOCAL standard gateway copy (STANDARD_CLIENT), which replaced the retired
 // '@runtime/secret/private' (QWEN3_8_CLIENT) and
 // '@runtime/secret/private/telnyx' (TELNYX_CLIENT) imports once every
-// CLIENTS entry — including Qwen27B ('local/qwen3.8-27b') — reduced to a
+// CLIENTS entry — including Qwen27B ('local/qwen3.8') — reduced to a
 // .clone({ model, sampling }) of the standard copy. A missing name surfaces
 // as "No ... export is defined on the mock" at import time. No
 // '@runtime/secret/private*' mock remains because generation-config.ts no
@@ -205,10 +205,10 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // Qwen27B re-pins the local qwen3.8-27b model (the model the
+            // Qwen27B re-pins the local qwen3.8 model (the model the
             // retired runtime QWEN3_8_CLIENT carried) onto the standard
             // copy's localhost endpoint, with the ninfer-compliant sampling.
-            model: 'local/qwen3.8-27b',
+            model: 'local/qwen3.8',
             sampling: QWEN3_8_SAMPLING_PARAMS
         });
         expect(Object.keys(CLIENTS)).toEqual([

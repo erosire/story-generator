@@ -41,7 +41,7 @@ const mocks = vi.hoisted(() => {
 // LOCAL standard gateway copy (STANDARD_CLIENT), which replaced the retired
 // '@runtime/secret/private' (QWEN3_8_CLIENT) and '@runtime/secret/private/
 // telnyx' (TELNYX_CLIENT) imports once every CLIENTS entry — including
-// Qwen27B ('local/qwen3.8-27b') — reduced to a .clone({ model, sampling }) of
+// Qwen27B ('local/qwen3.8') — reduced to a .clone({ model, sampling }) of
 // the standard copy. A missing name surfaces as "No ... export is defined on
 // the mock" at import time. No '@runtime/secret/private*' mock remains
 // because generation-config.ts no longer imports that barrel at all.

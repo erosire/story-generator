@@ -22,7 +22,7 @@ import type { SimpleClient } from '@agentic/harness';
 // that client is consumed here — every CLIENTS entry model-configures on the
 // fly via .clone({ model, sampling }) — so the construction was copied into
 // this file (see that section). Qwen27B is likewise cloned from
-// STANDARD_CLIENT with model 'local/qwen3.8-27b' (the same endpoint the
+// STANDARD_CLIENT with model 'local/qwen3.8' (the same endpoint the
 // runtime local/qwen3_8.ts client used), so NO '@runtime/secret/private'
 // import remains in this file.
 import { simpleClient, simpleConfig } from '@agentic/harness';
@@ -288,8 +288,8 @@ export const CLIENTS = {
     // supported with this model") — see SOL_SAMPLING_PARAMS above.
     SOL: STANDARD_CLIENT.clone({ model: 'lightning/gpt-6-sol', sampling: SOL_SAMPLING_PARAMS }),
     // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
-    // Qwen27B clones STANDARD_CLIENT with the local qwen3.8-27b model — the
-    // same 'local/qwen3.8-27b' model string the runtime QWEN3_8_CLIENT
+    // Qwen27B clones STANDARD_CLIENT with the local qwen3.8 model — the
+    // same 'local/qwen3.8' model string the runtime QWEN3_8_CLIENT
     // (runtime/secret/private/local/qwen3_8.ts) pinned, now served by the
     // local standard copy's localhost:5500 endpoint (identical to that
     // client's endpoint; the clone additionally inherits STANDARD_CLIENT's
@@ -300,7 +300,7 @@ export const CLIENTS = {
     // wire id (DEFAULT_CLIENT_ID = 'Qwen27B' in src/context/store.tsx), and
     // parseClientId/resolveClient match CLIENTS keys verbatim — an all-caps
     // 'QWEN27B' key would reject every default UI payload.
-    Qwen27B: STANDARD_CLIENT.clone({ model: 'local/qwen3.8-27b', sampling: QWEN3_8_SAMPLING_PARAMS }),
+    QWEN38: STANDARD_CLIENT.clone({ model: 'local/qwen3.8', sampling: QWEN3_8_SAMPLING_PARAMS }),
     // VULTR is the renamed GLM53 entry — the key now names the GATEWAY
     // (vultr/) instead of the model, matching the PARTICLE/LIGHTNING/MODAL
     // gateway-style naming (GLM53Flash keeps its model-derived name for UI
@@ -321,7 +321,7 @@ export const CLIENTS = {
  * directly — treat resolveClient() as the canonical selector.
  *
  * Qwen27B is the renamed Qwen3_8 entry (same QWEN3_8_SAMPLING_PARAMS and the
- * same 'local/qwen3.8-27b' model the runtime QWEN3_8_CLIENT pinned — see the
+ * same 'local/qwen3.8' model the runtime QWEN3_8_CLIENT pinned — see the
  * CLIENTS map above); the UI pins the same
  * id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and a
  * server-only fallback can never disagree on which model writes a story.
