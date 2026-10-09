@@ -837,8 +837,18 @@ export const generationUpdateChapter = asHandlerMethod(async (_, parameters, var
  *
  * This ensures that re-expanding an early chapter automatically brings all
  * downstream pending chapters up-to-date in a single background task.
+ *
+ * EXPORTED for the direct-create auto-expand flow (generation-create-new-
+ * story.ts): when a POST arrives with autoExpand: true, the same background
+ * create job that generated the plotline awaits this chain immediately after
+ * the plotline-only completion write — one implementation of the expansion/
+ * retry/context-propagation logic shared by BOTH entrypoints (PATCH manual
+ * expansion and POST auto expansion). The caller supplies the same option
+ * shape the PATCH handler builds (context for the FIRST chain chapter via
+ * buildExpansionContext, request via buildExpandRequest, assertStoryExists
+ * guard, per-request clientId).
  */
-const reExpandChapter = async (options: {
+export const reExpandChapter = async (options: {
     storyId: string;
     storyline: string;
     chapterCount: number;

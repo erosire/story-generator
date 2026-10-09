@@ -17,12 +17,14 @@ import {
 } from './generation-config';
 import {
     buildExpandRequest,
+    buildExpansionContext,
     callStructured,
     createStoryClient,
     expandChapter,
     writeChapterFiles,
     writeChapterPayload
 } from './story-utils';
+import { reExpandChapter } from './generation-update-chapter';
 import { forkStory } from './generation-fork-story';
 import { appendStoryChapters, validateAppendableStory } from './generation-append-story';
 import { resumeStoryPlotlines, validateResumableStory } from './generation-resume-story';
@@ -49,6 +51,26 @@ const generateStory = async (options: {
     // flows never write the same files, so a chapter can be expanded while
     // the plotline is still streaming with zero shared-file races.
     plotOnly?: boolean;
+    // Auto-expand opt-in (the dashboard Generate button's "auto expand"
+    // checkbox, src/features/input.tsx). When true AND the plotline completes
+    // successfully, the SAME background job chains full chapter expansion via
+    // the PATCH flow's reExpandChapter (generation-update-chapter.ts) — one
+    // implementation of the expansion/retry/context-propagation logic shared
+    // by both entrypoints. The chain runs INSIDE this generateStory promise:
+    //   - the exclusive job slot (acquireStoryJob 'create') stays held for the
+    //     whole handoff, so a concurrent append/resume (which would race
+    //     plotpoint.json's chapterCompleted counter) answers a clean 400 while
+    //     the chain runs — PATCH expand/rewrite stay allowed (tracked-only
+    //     jobs, the long-standing blind-fire trade-off);
+    //   - a user abort (PATCH abortJob) or folder deletion throws at the
+    //     chain's next assertStoryExists boundary and retires through the
+    //     standard .finally(releaseStoryJob);
+    //   - the per-request clientId is forwarded verbatim, so the chain is
+    //     written by the SAME model the plotline used (R3) regardless of any
+    //     later UI dropdown change.
+    // Ignored when plotOnly is false (fork/legacy full-generation already
+    // expand inline) and never persisted — the flag is per-request only.
+    autoExpand?: boolean;
 }) => {
     const { storyId, storyName, storyline, chapterCount, root: projectRoot } = options;
     const plotOnly = options.plotOnly ?? false;
@@ -663,6 +685,69 @@ const generateStory = async (options: {
         console.log(
             `Plotline generation complete for storyId: ${storyId} (${chapters.length} chapters) — plot-only, chapter expansion skipped`
         );
+
+        // ── Auto-expand handoff (POST autoExpand: true) ─────────────────────
+        // Only reached on a SUCCESSFUL completed plotline: every failure path
+        // above (markStoryFailed return, abort/folder-deletion throws) exits
+        // before this point, so a failed/aborted generation never chains (R2).
+        // The chain reuses the PATCH expansion machinery verbatim: chapter 0's
+        // context comes from buildExpansionContext over the just-written
+        // plotpoint.json (identical entry shape the PATCH handler builds), the
+        // request prompt from buildExpandRequest, and reExpandChapter
+        // (generation-update-chapter.ts) then walks chapters 0..N-1 — writing
+        // the skeleton payloads, propagating context, and stopping on already-
+        // expanded chapters. For a fresh plotline-only story NOTHING is
+        // expanded yet, so the chain expands every chapter exactly once.
+        //
+        // AWAITED, not fire-and-forget: chaining inside this generateStory
+        // promise keeps the exclusive job slot held (append/resume 400 while
+        // it runs — they both rewrite plotpoint.json), lets abort/folder
+        // deletion terminate at the chain's next checkpoint, and retires the
+        // registry entry exactly once via the caller's .finally(releaseStoryJob).
+        // An expansion failure (retry budget exhausted, abort, deleted folder)
+        // rejects THIS promise → the handler's .catch logs it and the story
+        // keeps its completed plotline plus every chapter expanded before the
+        // failure — the same end state a manual PATCH expansion failure leaves.
+        if (options.autoExpand === true) {
+            // Chain target: the larger of the requested chapterCount and the
+            // generated chapter list (same drift guard as the PATCH handler's
+            // chainChapterCount). The plotline loop structurally guarantees
+            // chapters.length === chapterCount, so these always agree here.
+            const chainChapterCount = Math.max(chapterCount, chapters.length);
+            // First chain chapter — position 0 of the completed plotline.
+            const firstChapter = chapters[0] ?? { number: '1', title: '', plotpoints: [] };
+            // Rebuild the LLM context for chapter 0 from the story's CURRENT
+            // on-disk state (plotpoint.json written above): for index 0 every
+            // entry is a plotpoint summary — the same array the PATCH flow
+            // passes for a fresh story. One context-building path shared with
+            // the PATCH handler (generation-update-chapter.ts:723).
+            const contextAppending = buildExpansionContext({ databaseDir, chapterDir, targetIndex: 0 });
+            const firstRequest = buildExpandRequest(firstChapter.number, firstChapter.title);
+            console.log(
+                `Auto-expand requested for storyId: ${storyId} — chaining expansion of ${chainChapterCount} chapter(s) with the plotline's client` +
+                    (options.clientId ? ` (${options.clientId})` : ' (default)')
+            );
+            await reExpandChapter({
+                storyId,
+                storyline,
+                chapterCount: chainChapterCount,
+                chapterIndex: 0,
+                chapterNumber: firstChapter.number,
+                chapterTitle: firstChapter.title,
+                plotpoints: Array.isArray(firstChapter.plotpoints) ? firstChapter.plotpoints : [],
+                appending: contextAppending,
+                request: firstRequest,
+                assertStoryExists,
+                databaseDir,
+                chapterDir,
+                // Same resolved clientId the plotline used — createStoryClient
+                // resolves it inside the chain (same model, R3). Absent id →
+                // the default client, identical to the plotline fallback.
+                clientId: options.clientId
+            });
+            console.log(`Auto-expand chain complete for storyId: ${storyId} (${chainChapterCount} chapter(s) expanded)`);
+        }
+
         return;
     }
 
@@ -1013,6 +1098,20 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         };
     }
 
+    // ── autoExpand validation (the "auto expand" checkbox flag) ───────────
+    // Validated ONLY in this direct-create branch — the flag is scoped to
+    // new-story generation (R-scope) and fork/append/resume ignore it, so a
+    // bad value must not broaden 400s onto workflows that never read it.
+    // Contract: absent → plotline-only (exact legacy behavior + wire shape);
+    // false → plotline-only; true → chain expansion after plotline completion;
+    // any other value (string/number/object) → 400 before the job is acquired.
+    if (body.autoExpand !== undefined && typeof body.autoExpand !== 'boolean') {
+        return {
+            status: 400,
+            response: { error: 'autoExpand must be a boolean' }
+        };
+    }
+
     // Derive storyName from the storyline: first line, truncated to 120 chars
     const storyName = storyline.split('\n')[0].trim().slice(0, 120) || storyline.slice(0, 120);
 
@@ -1023,8 +1122,14 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
     // plotline: chapters are produced as plotpoints and stop there. No LLM
     // chapter expansion happens in this request; the user expands individual
     // chapters afterwards via PATCH expandChapterIndex (generation-update-chapter.ts),
-    // which consumes the skeleton chapter payloads written by the plotline
-    // pass. Fork requests above keep the full plotline + expansion flow.
+    // which writes the chapter's skeleton payload itself at expansion time
+    // (payload ownership lives in the PATCH flow — see story-utils
+    // writeChapterPayload + the plotline completion block). Fork requests
+    // above keep the full plotline + expansion flow.
+    //
+    // autoExpand (optional): the footer's "auto expand" checkbox chains the
+    // PATCH expansion machinery onto THIS background job once the plotline
+    // completes — same client, same job, abort/error semantics preserved.
     //
     // The job registry guard turns a duplicate POST for the same storyId into
     // a clean 400 instead of a background crash at the reserved-directory mkdir
@@ -1045,6 +1150,11 @@ export const generationCreateNewStory = asHandlerMethod(async (_, parameters, va
         chapterCount,
         clientId,
         plotOnly: true,
+        // The "auto expand" checkbox (src/features/input.tsx) rides the POST
+        // body: true chains the PATCH expansion machinery onto this same
+        // background job after plotline completion (see the plotOnly block).
+        // false/undefined keeps plotline-only semantics byte-for-byte.
+        autoExpand: body.autoExpand === true,
         root: projectRoot
     })
         .catch((err) => {

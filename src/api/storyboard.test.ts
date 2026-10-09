@@ -125,6 +125,64 @@ describe('createNewStory', () => {
         expect(result).toEqual({ storyId: 'fork-abc' });
     });
 
+    // ── autoExpand (the "auto expand" checkbox, src/features/input.tsx) ────
+    // The flag is serialized ONLY when explicitly true: an absent or false
+    // value must keep the exact legacy wire shape (the exact-body assertions
+    // above would fail on an extra key), matching the server contract that
+    // treats omitted/false as plotline-only.
+    it('serializes autoExpand: true in the POST body when the checkbox is checked', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { storyId: 'auto-story' })
+        );
+
+        const result = await createNewStory(
+            BASE_URL,
+            'auto-story',
+            { storyline: 'A sci-fi adventure.', chapterCount: 3 },
+            undefined,
+            'Qwen27B',
+            true
+        );
+
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/auto-story`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                storyline: 'A sci-fi adventure.',
+                chapterCount: 3,
+                clientId: 'Qwen27B',
+                autoExpand: true
+            })
+        });
+        expect(result).toEqual({ storyId: 'auto-story' });
+    });
+
+    it('omits autoExpand when the flag is false (legacy wire shape)', async () => {
+        (globalThis.fetch as any).mockResolvedValueOnce(
+            mockResponse(200, { storyId: 'plain-story' })
+        );
+
+        await createNewStory(
+            BASE_URL,
+            'plain-story',
+            { storyline: 'A sci-fi adventure.', chapterCount: 3 },
+            undefined,
+            'Qwen27B',
+            false
+        );
+
+        // Exact body: autoExpand:false adds NO key — the server's plotline-only
+        // path and its exact-body tests stay byte-identical.
+        expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/plain-story`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ storyline: 'A sci-fi adventure.', chapterCount: 3, clientId: 'Qwen27B' })
+        });
+    });
+    // autoExpand undefined is covered by the FIRST test above ('posts storyline
+    // + chapterCount and returns the storyId on success') — the 3-argument
+    // legacy call site pins the omitted-flag wire shape.
+
     it('throws an Error containing the server message on 400 (missing storyline)', async () => {
         (globalThis.fetch as any).mockResolvedValueOnce(
             mockResponse(400, { error: 'storyline is required' })

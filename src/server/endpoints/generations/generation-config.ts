@@ -296,11 +296,25 @@ export const CLIENTS = {
     // 429 → pause-10s-and-retry handler). Uses QWEN3_8_SAMPLING_PARAMS
     // (top_k: 0) because the ninfer backend rejects the SGLang-style
     // top_k: -1 sentinel; all other values unchanged.
-    // Key casing is load-bearing: the UI round-trips this exact string as the
-    // wire id (DEFAULT_CLIENT_ID = 'Qwen27B' in src/context/store.tsx), and
-    // parseClientId/resolveClient match CLIENTS keys verbatim — an all-caps
-    // 'QWEN27B' key would reject every default UI payload.
-    QWEN38: STANDARD_CLIENT.clone({ model: 'local/qwen3.8', sampling: QWEN3_8_SAMPLING_PARAMS }),
+    //
+    // KEY RENAME GUARD (ee54c79 half-rename regression): the "Updated and
+    // pending cleanup" commit renamed the MODEL string
+    // ('local/qwen3.8-27b' → 'local/qwen3.8', kept) and also retitled the
+    // key 'Qwen27B' → 'QWEN38', which left the rest of the contract on
+    // 'Qwen27B' and broke it: CLIENT = CLIENTS.Qwen27B resolved to
+    // undefined (every absent-clientId generation crashed in
+    // resolveClient().clone()), the UI's DEFAULT_CLIENT_ID ('Qwen27B',
+    // src/context/store.tsx:1444) was rejected by parseClientId (every
+    // default UI payload 400'd), and generation-config.test.ts /
+    // generation-list-clients.test.ts pinned 'Qwen27B'. The key is restored
+    // to 'Qwen27B' — the model string above is the intended rename and is
+    // preserved verbatim. Key casing is load-bearing: the UI round-trips
+    // this exact string as the wire id (DEFAULT_CLIENT_ID = 'Qwen27B' in
+    // src/context/store.tsx), and parseClientId/resolveClient match CLIENTS
+    // keys verbatim — an all-caps 'QWEN27B' key would reject every default
+    // UI payload. Any future key rename must move DEFAULT_CLIENT_ID,
+    // CLIENT, and the config/list-clients tests in the same commit.
+    Qwen27B: STANDARD_CLIENT.clone({ model: 'local/qwen3.8', sampling: QWEN3_8_SAMPLING_PARAMS }),
     // VULTR is the renamed GLM53 entry — the key now names the GATEWAY
     // (vultr/) instead of the model, matching the PARTICLE/LIGHTNING/MODAL
     // gateway-style naming (GLM53Flash keeps its model-derived name for UI

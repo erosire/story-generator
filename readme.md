@@ -84,15 +84,19 @@ Storyline is intentionally omitted from the list — it is free-form user text n
 
 Starts background story generation. Returns the `storyId` immediately while generation continues asynchronously.
 
-**Direct create (the dashboard Generate button) is plotline-only:** the server generates and validates the plot outline, writes `plotpoint.json` with `status: "completed"`, and writes a skeleton `chapter-NNN.json` payload per chapter (stored LLM context, `revisions: []`). **Chapters are NOT auto-expanded** — the client expands them individually with `PATCH { expandChapterIndex }`, which consumes each skeleton's stored context.
+**Direct create (the dashboard Generate button) is plotline-only:** the server generates and validates the plot outline, writes `plotpoint.json` with `status: "completed"`, and stops. **Chapters are NOT auto-expanded by default** — the client expands them individually with `PATCH { expandChapterIndex }`, which rebuilds the LLM context at expansion time.
 
 **Request body:**
 ```json
 {
   "storyline": "A sci-fi adventure about a crew discovering alien artifacts on Mars.",
-  "chapterCount": 5
+  "chapterCount": 5,
+  "clientId": "Qwen27B",
+  "autoExpand": true
 }
 ```
+
+`clientId` (optional) selects the LLM client for this generation; `autoExpand` (optional, default off — the footer's "auto expand" checkbox) makes the SAME background job chain full chapter expansion right after the plotline completes, reusing the PATCH expansion machinery with the SAME per-request `clientId`. Omitted/false keeps the plotline-only behavior exactly as before; the flag is per-request and never stored with the story.
 
 **Fork mode** (alternative to creating from scratch):
 ```json

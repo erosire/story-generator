@@ -15,7 +15,8 @@
 //
 // Route 2 — Story-specific: /v1/storyboard/generations/:storyId
 //   - POST /v1/storyboard/generations/:storyId
-//       body: { storyline: string, chapterCount: number, clientId?: string }
+//       body: { storyline: string, chapterCount: number, clientId?: string,
+//               autoExpand?: boolean }
 //       (or { forkFrom: { sourceStoryId, chapterIndex }, clientId?: string })
 //       returns: { storyId: string }
 //       behavior: fire-and-forget background generation. For direct creates
@@ -27,6 +28,10 @@
 //       + on-disk revisions at expansion time. This keeps plotline generation
 //       and chapter expansion on disjoint files, so a chapter can be expanded
 //       while the plotline is still generating without any shared-file race.
+//       autoExpand: true (the footer's "auto expand" checkbox) makes the SAME
+//       background create job chain full chapter expansion right after the
+//       plotline completes — reusing the PATCH expansion chain with the same
+//       clientId; false/omitted keeps plotline-only semantics exactly as before.
 //       Fork mode still re-expands chapters from the fork point.
 //       clientId selects the LLM client on the server (see Route 3 +
 //       fetchClientOptions); it is NEVER stored with the story.
@@ -151,21 +156,37 @@ export type PollResult =
 // for this generation — chosen from the top-right dropdown (options fetched
 // via fetchClientOptions). The server validates it against its CLIENTS map
 // (400 on unknown ids) and never stores it; absent clientId → default client.
+//
+// `autoExpand` (optional, default false) is the footer input's "auto expand"
+// checkbox (src/features/input.tsx). When true the server's direct-create
+// flow CHAINS full chapter expansion onto the same background job once the
+// plotline completes — reusing the PATCH expandChapterIndex machinery
+// (reExpandChapter, generation-update-chapter.ts) with the SAME per-request
+// clientId, so plotline + every chapter come from the model the user had
+// selected at submit time (unaffected by later dropdown changes). The flag
+// is serialized ONLY when true: an absent/false field keeps the exact
+// legacy wire shape, so disabled requests are byte-identical to the
+// pre-feature POST (see generation-create-new-story.ts autoExpand branch).
 export async function createNewStory(
     baseUrl: string,
     storyId: string,
     body: { storyline: string; chapterCount: number },
     forkFrom?: { sourceStoryId: string; chapterIndex: number },
-    clientId?: string
+    clientId?: string,
+    autoExpand?: boolean
 ): Promise<{ storyId: string }> {
     const url = `${baseUrl}/${encodeURIComponent(storyId)}`;
     // clientId is only serialized when provided — the server treats an absent
     // value as "use the default client", so callers without a selection keep
     // the old wire shape.
     const clientField = clientId !== undefined && clientId.length > 0 ? { clientId } : {};
+    // autoExpand is only serialized when EXPLICITLY true — false/undefined
+    // must not introduce a new key (the exact-body POST assertions in
+    // src/api/storyboard.test.ts + src/App.test.tsx pin the legacy shape).
+    const autoExpandField = autoExpand === true ? { autoExpand: true } : {};
     const payload = forkFrom
         ? { forkFrom, ...clientField }
-        : { ...body, ...clientField };
+        : { ...body, ...clientField, ...autoExpandField };
     const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -512,12 +533,21 @@ export async function pollStoryData(params: {
                 // plotpoint.json is written with all chapter entries before any
                 // chapter expansion starts — see generation-create-new-story.ts.
                 //
-                // NOTE: direct creates (Generate button) are plotline-only — the API
-                // never auto-expands chapters, so for those stories this loop keeps
-                // polling (doubles as a live refresh) until every chapter is expanded
-                // through its own PATCH flow, or the loop is cancelled via shouldStop()
-                // (story switch / unmount). Individual expansions stop it early: the
-                // per-chapter re-expand poller (StoryContent) clears
+                // NOTE (poll semantics by create mode — see
+                // generation-create-new-story.ts): a DEFAULT direct create
+                // (Generate button, autoExpand omitted/false) is plotline-only —
+                // the API never expands chapters for it, so this loop keeps
+                // polling (doubles as a live refresh) until every chapter is
+                // expanded through its own PATCH flow, or the loop is cancelled
+                // via shouldStop() (story switch / unmount). An OPT-IN direct
+                // create (autoExpand: true, the footer's "auto expand" checkbox)
+                // chains full chapter expansion onto the SAME background job
+                // after the plotline completes — for those stories the normal
+                // allExpanded condition above is what terminates the loop: the
+                // final poll observes every chapter expanded once the server's
+                // chain finishes (the chain never leaves a pending chapter on
+                // success). In BOTH modes individual manual expansions stop it
+                // early: the per-chapter re-expand poller (StoryContent) clears
                 // isProcessing when the expanded chapter completes.
                 const allExpanded =
                     result.data.chapters.length >= expectedChapterCount &&

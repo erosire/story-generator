@@ -271,6 +271,77 @@ describe('StoryGeneratorApp', () => {
         });
     });
 
+    // ── "auto expand" checkbox (footer input, src/features/input.tsx) ────────
+    // R1: an accessible checkbox beside Generate, default UNCHECKED. When
+    // checked the POST body carries autoExpand: true and the server chains
+    // chapter expansion after plotline completion with the same client
+    // (generation-create-new-story.ts autoExpand branch); unchecked requests
+    // keep the exact legacy wire shape (no autoExpand key — pinned by the
+    // exact-body assertion in the dropdown test above).
+    it('renders the auto expand checkbox beside Generate, unchecked by default', async () => {
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        // The checkbox lives in the ControlRow, which renders only once the
+        // storyline input is focused.
+        fireEvent.focus(screen.getByTestId('storyline-input'));
+        await waitFor(() => {
+            expect(screen.getByTestId('generate-button')).toBeDefined();
+        });
+
+        // The MUI root span carries the test id (unknown props spread to the
+        // Checkbox root); the NATIVE input is resolved through its
+        // accessible name (slotProps.input.aria-label in input.tsx) — read
+        // and toggle the real checkbox state through it.
+        const checkboxRoot = screen.getByTestId('auto-expand-checkbox');
+        expect(checkboxRoot).toBeDefined();
+        const checkbox = screen.getByLabelText('auto expand') as HTMLInputElement;
+        expect(checkbox.checked).toBe(false);
+        // The visible label text is the feature name, verbatim (R1).
+        expect(screen.getByTestId('auto-expand-control').textContent).toContain('auto expand');
+    });
+
+    it('posts autoExpand: true when the checkbox is checked before Generate', async () => {
+        const fetchMock = globalThis.fetch as any;
+        fetchMock.mockImplementation((url: string, init?: any) => {
+            if (init?.method === 'POST') {
+                const storyId = String(url.split('/').pop() ?? '');
+                return Promise.resolve(mockResponse(200, { storyId }));
+            }
+            return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
+        });
+
+        render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
+
+        fireEvent.focus(screen.getByTestId('storyline-input'));
+        await waitFor(() => {
+            expect(screen.getByTestId('generate-button')).toBeDefined();
+        });
+        fireEvent.change(screen.getByTestId('storyline-input'), {
+            target: { value: 'A test story with auto expand' }
+        });
+        // Toggle via the native input (clicking it flips checked and fires
+        // the change MUI's controlled Checkbox forwards to setAutoExpand).
+        fireEvent.click(screen.getByLabelText('auto expand'));
+        expect((screen.getByLabelText('auto expand') as HTMLInputElement).checked).toBe(true);
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('generate-button'));
+        });
+
+        // Exact POST body: the checked flag rides along with the captured
+        // clientId (default 'Qwen27B' — no dropdown interaction in this test).
+        await waitFor(() => {
+            const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
+            expect(postCall).toBeDefined();
+            expect(JSON.parse(postCall![1].body)).toEqual({
+                storyline: 'A test story with auto expand',
+                chapterCount: 3,
+                clientId: 'Qwen27B',
+                autoExpand: true
+            });
+        });
+    });
+
     // Retries the /v1/storyboard/clients fetch against a STALE deployment:
     // the first response is a 404 (route not deployed yet), the retry after
     // CLIENTS_FETCH_RETRY_MS (10s, see features/header.tsx) hits the

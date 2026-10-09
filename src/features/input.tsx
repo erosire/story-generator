@@ -5,6 +5,15 @@
 // with the entered storyline + chapterCount (matching the server's POST body —
 // see generation-create-new-story.ts:1000).
 //
+// The row also carries the "auto expand" checkbox (default OFF, R1): when
+// checked the POST adds autoExpand: true and the server chains full chapter
+// expansion onto the same background job once the plotline completes — with
+// the SAME per-request clientId (R3: the model captured at submit time, not
+// whatever the dropdown shows later). See generation-create-new-story.ts
+// (autoExpand branch → reExpandChapter chain) and src/api/storyboard.ts
+// createNewStory. Server-side chaining (not a client poll effect) is what
+// makes the expansion survive page closes and background stories (R4).
+//
 // After a successful POST the form is cleared and collapsed so the user can
 // immediately start the next story. The new story tab appears in the sidebar
 // and the content feature starts polling for generation progress.
@@ -20,7 +29,7 @@
 // the modular primary Button (components/Button.tsx, MUI Button-backed).
 
 import React from 'react';
-import { TextField } from '@mui/material';
+import { TextField, Checkbox } from '@mui/material';
 import { styled, theme } from '../styles';
 import { useStoryStore } from '../context';
 import { createNewStory } from '../api';
@@ -81,6 +90,41 @@ const ChaptersLabel = styled('label', {
     fontWeight: 500
 });
 
+// "auto expand" control — the accessible <label> wrapping the MUI Checkbox.
+// The label wraps the checkbox so clicking the TEXT toggles it too (implicit
+// label association); htmlFor is not needed with a wrapped control. Colors
+// mirror ChaptersLabel so the row reads as one control strip; the checkbox
+// itself is themed via CHECKBOX_SX below (MUI Checkbox ignores CSS color on
+// its root — the checked/unchecked states are styled through its sx slots).
+const AutoExpandControl = styled('label', {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    color: theme.textMuted,
+    fontSize: theme.fontSize.md,
+    fontWeight: 500,
+    cursor: 'pointer',
+    userSelect: 'none',
+    whiteSpace: 'nowrap'
+});
+
+// MUI Checkbox theming: unchecked = border color (theme.borderStrong), checked
+// = accent fill (theme.accent) on the surface background. MUI Checkbox renders
+// an SVG icon — colors must come through the sx slot props, not CSS color.
+// The 8px dense padding keeps the control strip the same height as the
+// chapter-count field and the Generate button.
+const AUTO_EXPAND_CHECKBOX_SX = {
+    padding: '4px',
+    color: theme.borderStrong,
+    '& .MuiSvgIcon-root': {
+        fontSize: 16
+    },
+    '&.Mui-checked': {
+        color: theme.accent
+    }
+};
+
 // Error message line under the form.
 const ErrorLine = styled('div', {
     color: theme.danger,
@@ -101,6 +145,14 @@ export const StoryInput: React.FC = React.memo(() => {
     // every consumer on every keystroke.
     const [storyline, setStoryline] = React.useState('');
     const [chapterCount, setChapterCount] = React.useState(3);
+    // "auto expand" opt-in (R1: default OFF). Local form state like the other
+    // fields — it is transient per-Generate, never persisted. Deliberately
+    // NOT reset by the selection-prefill effect below: it is an authoring
+    // preference for the NEXT generate, and keeping it across selections lets
+    // the user batch several auto-expanded stories without re-checking; the
+    // storyline/chapterCount fields are the ones seeded from the selected
+    // story. Each request carries the flag captured AT SUBMIT TIME.
+    const [autoExpand, setAutoExpand] = React.useState(false);
     const [isSubmitting, setIsSubmitting] = React.useState(false);
     const [error, setError] = React.useState('');
 
@@ -195,6 +247,14 @@ export const StoryInput: React.FC = React.memo(() => {
             // (persisted in store.config.clientId, default 'Qwen27B') — the
             // server validates it against its CLIENTS map and applies it to
             // this generation only; it is never stored with the story.
+            //
+            // R3 — same-model capture: clientId is read HERE, at submit time,
+            // and travels with the POST; when autoExpand is checked the server
+            // chains chapter expansion with the SAME resolved client, so later
+            // dropdown changes can never swap the model mid-story. autoExpand
+            // is forwarded only when true — the API client omits the field
+            // otherwise, keeping disabled requests on the exact legacy wire
+            // shape (generation-create-new-story.ts plotline-only contract).
             await createNewStory(
                 store.config.baseUrl,
                 storyId,
@@ -203,7 +263,8 @@ export const StoryInput: React.FC = React.memo(() => {
                     chapterCount
                 },
                 undefined,
-                store.config.clientId
+                store.config.clientId,
+                autoExpand ? true : undefined
             );
 
             setIsFocused(false);
@@ -280,6 +341,34 @@ export const StoryInput: React.FC = React.memo(() => {
                             data-testid="chapter-count-input"
                         />
                         {error && <ErrorLine data-testid="input-error">{error}</ErrorLine>}
+                        {/* "auto expand" — accessible checkbox beside Generate
+                            (R1). Wrapping <label> makes the text clickable;
+                            default unchecked; disabled while submitting like
+                            every other control in the row. When checked, the
+                            POST carries autoExpand: true and the server
+                            chains chapter expansion after plotline completion
+                            with the SAME client (see the onSubmit comment). */}
+                        <AutoExpandControl data-testid="auto-expand-control">
+                            <Checkbox
+                                id="auto-expand"
+                                // data-testid lands on the MUI root (unknown
+                                // props spread to the root element); the
+                                // NATIVE input is reachable in tests via its
+                                // aria-label (slotProps.input below — MUI v9
+                                // replaced Checkbox's inputProps with
+                                // slotProps.input; the storyline TextField
+                                // above uses the TextField-specific
+                                // slotProps.htmlInput name instead).
+                                data-testid="auto-expand-checkbox"
+                                checked={autoExpand}
+                                onChange={(e) => setAutoExpand(e.target.checked)}
+                                disabled={isSubmitting}
+                                size="small"
+                                sx={AUTO_EXPAND_CHECKBOX_SX}
+                                slotProps={{ input: { 'aria-label': 'auto expand' } }}
+                            />
+                            auto expand
+                        </AutoExpandControl>
                         {/* Generate — the modular MUI-backed primary Button
                             (solid accent fill; the sg-primary hook drives the
                             hover swap). marginLeft auto pushes it to the row's

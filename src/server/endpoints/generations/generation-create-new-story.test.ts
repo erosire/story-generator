@@ -100,8 +100,11 @@ vi.mock('./generation-config', () => {
         },
         // story-utils createStoryClient() resolves the per-request clientId
         // through this — the handler already validated via parseClientId, so
-        // the mock pins every id back to the shared client.
-        resolveClient: (_clientId?: string | null) => mockClient
+        // the mock pins every id back to the shared client. Wrapped in vi.fn
+        // so tests can assert WHICH ids were resolved and in what order
+        // (plotline flow vs auto-expand chain — the same-model propagation
+        // contract, R3).
+        resolveClient: vi.fn((_clientId?: string | null) => mockClient)
     };
 });
 
@@ -126,13 +129,16 @@ vi.mock('@presource/core', async (importOriginal) => {
 });
 
 // Import handler AND mock target AFTER mocks are set up
-import { CLIENT } from './generation-config';
+import { CLIENT, resolveClient, DATABASE_BASE_DIR } from './generation-config';
 import { generationCreateNewStory } from './generation-create-new-story';
 // buildExpandRequest is the real (non-mocked, prompt-only) helper from
 // story-utils — used to build exact expected context.request values in the
 // plotline-only tests so the assertions stay in lockstep with the prompt.
 import { buildExpandRequest } from './story-utils';
-import { DATABASE_BASE_DIR } from './generation-config';
+// The job registry is REAL here (module-level in-memory state) — the
+// auto-expand abort test uses requestStoryAbort/isStoryJobActive to drive and
+// observe the abort lifecycle exactly as the PATCH abortJob handler would.
+import { isStoryJobActive, requestStoryAbort } from './generation-job-registry';
 
 // Use an isolated temp directory as the project root so tests never pollute the
 // source tree. The service normally passes temporary/database via variables.root,
@@ -508,6 +514,377 @@ describe('generationCreateNewStory', () => {
             { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot B') }
         ]);
     });
+
+    // ── Auto-expand (the "auto expand" checkbox → POST autoExpand: true) ─────
+    // The opt-in flag chains the PATCH expansion machinery (reExpandChapter,
+    // generation-update-chapter.ts — exported for exactly this reuse) onto the
+    // SAME background create job once the plotline completes. For a 2-chapter
+    // story the exact expected LLM request sequence is
+    //   plot(1) → plot(2) → expand(1) → expand(2)
+    // — one expansion per chapter, exactly once each, served by the SAME
+    // per-request client id the plotline used (same-model propagation).
+    //
+    // Expansion fixture constants — the stub below answers every
+    // "Expand the chapter" prompt with this exact title/content pair; the
+    // module-level config mock in the vi.mock factory answers identically
+    // (MIN_WORDS_PER_CHAPTER is mocked at 3000; this content is 3509 words,
+    // so the expansion passes the quality gate on its first attempt).
+    const EXPANSION_TITLE = 'Expanded Chapter';
+    const EXPANSION_CONTENT = 'This is the expanded content of the chapter. ' + 'word '.repeat(3500);
+    // wordCount as writeChapterFiles computes it: content.split(' ').length
+    // (the trailing 'word ' adds one empty final split element).
+    const EXPANSION_WORD_COUNT = EXPANSION_CONTENT.split(' ').length;
+
+    // Shared LLM stub for the auto-expand tests: ONE client instance (every
+    // createStoryClient call in both the plotline flow and the chain funnels
+    // through it via the overridden CLIENT.clone) that records EVERY request
+    // in arrival order and serves plotline fixtures for the progressive
+    // plotline prompts ("chapter N of M") and the fixed expansion fixture for
+    // the "Expand the chapter" prompts.
+    const stubClientForAutoExpand = (plotTitles: string[]): { seenRequests: string[] } => {
+        const seenRequests: string[] = [];
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                seenRequests.push(request);
+                if (request.includes('Expand the chapter')) {
+                    return Promise.resolve({ response: { title: EXPANSION_TITLE, content: EXPANSION_CONTENT } });
+                }
+                const idx = Number(request.match(/chapter (\d+) of \d+/)?.[1] ?? '1') - 1;
+                return Promise.resolve({
+                    response: {
+                        title: plotTitles[idx] ?? plotTitles[0],
+                        plotpoints: plotpointsFor(`Plot ${idx + 1}`)
+                    }
+                });
+            })
+        } as any);
+        return { seenRequests };
+    };
+
+    // Exact plotpoint-summary context entry the production writers produce
+    // (see SUMMARY_SEP above): heading + six newlines + the bullet list.
+    const summaryEntry = (chapter: { number: string; title: string; plotpoints: string[] }): string =>
+        `> ${chapter.number}: ${chapter.title}${SUMMARY_SEP}${bulletList(chapter.plotpoints)}`;
+
+    it('chains full chapter expansion exactly once after a successful plotline when autoExpand is true', async () => {
+        const storyId = `test-story-auto-expand-${Date.now()}`;
+        createdStoryIds.push(storyId);
+        const storyboardDir = getStoryboardDir(storyId);
+        const chapterDir = path.join(storyboardDir, 'chapter');
+        const plotpointJsonPath = path.join(storyboardDir, 'plotpoint.json');
+
+        const plotFixtures = [
+            { number: '1', title: 'Chapter One', plotpoints: plotpointsFor('Plot 1') },
+            { number: '2', title: 'Chapter Two', plotpoints: plotpointsFor('Plot 2') }
+        ];
+        const { seenRequests } = stubClientForAutoExpand(['Chapter One', 'Chapter Two']);
+
+        // Same-model propagation (R3): pin the resolved-id history. The slice
+        // isolates the calls THIS test produced (the mock accumulates across
+        // tests in this file).
+        const resolveCallsBefore = vi.mocked(resolveClient).mock.calls.length;
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, {
+                storyline: TEST_STORYLINE,
+                chapterCount: 2,
+                clientId: 'Qwen3_8',
+                autoExpand: true
+            }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+        expect(result.response.storyId).toBe(storyId);
+
+        // Deterministic completion signal: chapterCompleted reaches 2 only
+        // when BOTH chained expansions have finalized (incrementPlotpointChapter
+        // Completed bumps once per chapter's first finalized revision).
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).chapterCompleted).toBe(2);
+            },
+            { timeout: 10000, interval: 10 }
+        );
+
+        // Exactly-once handoff: the exact 4-request arrival order — one
+        // plotline request per chapter, then ONE expansion request per
+        // chapter. No extra/repeated expansion call may appear.
+        expect(seenRequests).toEqual([
+            basePlotRequest(1, 2),
+            basePlotRequest(2, 2),
+            buildExpandRequest('1', 'Chapter One'),
+            buildExpandRequest('2', 'Chapter Two')
+        ]);
+
+        // Same-model propagation: the plotline flow and the chained expansion
+        // each resolved the SAME per-request clientId (plotline + chain = 2
+        // createStoryClient calls with the identical id).
+        expect(
+            vi
+                .mocked(resolveClient)
+                .mock.calls.slice(resolveCallsBefore)
+                .map((call) => call[0])
+        ).toEqual(['Qwen3_8', 'Qwen3_8']);
+
+        // Terminal metadata: the plotline-only completion write stands (status
+        // 'completed', validation 'plotline complete', chapter list untouched
+        // by the chain) and chapterCompleted advanced to 2 via the expansions.
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.status).toBe('completed');
+        expect(finalMeta.validation).toEqual({ valid: true, reason: 'plotline complete', attempt: 0 });
+        expect(finalMeta.chapterCount).toBe(2);
+        expect(finalMeta.chapters).toEqual(plotFixtures);
+
+        // Chapter 1 payload: exactly ONE finalized revision carrying the exact
+        // mocked expansion content, the chain's plotline-driven request, and
+        // the both-summaries context the chain started chapter 0 with.
+        const chapter1 = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-001.json'), 'utf-8'));
+        expect(chapter1.title).toBe(EXPANSION_TITLE);
+        expect(chapter1.chapterNumber).toBe('1');
+        expect(chapter1.context.request).toBe(buildExpandRequest('1', 'Chapter One'));
+        expect(chapter1.context.appending).toEqual([summaryEntry(plotFixtures[0]), summaryEntry(plotFixtures[1])]);
+        expect(chapter1.revisions).toEqual([
+            { content: EXPANSION_CONTENT, wordCount: EXPANSION_WORD_COUNT, generationTimeMs: expect.any(Number) }
+        ]);
+        // Markdown mirror carries the same finalized content.
+        expect(fs.readFileSync(path.join(chapterDir, 'chapter-001.md'), 'utf-8')).toBe(
+            `## ${EXPANSION_TITLE}\n\n${EXPANSION_CONTENT}`
+        );
+
+        // Chapter 2 payload: the chain propagated chapter 1's expanded prose
+        // into appending[0] (rolling-context pattern) and wrote the skeleton's
+        // plotline-driven request for chapter 2 before expanding it.
+        const chapter2 = JSON.parse(fs.readFileSync(path.join(chapterDir, 'chapter-002.json'), 'utf-8'));
+        expect(chapter2.title).toBe(EXPANSION_TITLE);
+        expect(chapter2.chapterNumber).toBe('2');
+        expect(chapter2.context.request).toBe(buildExpandRequest('2', 'Chapter Two'));
+        expect(chapter2.context.appending).toEqual([
+            `## ${EXPANSION_TITLE}\n\n${EXPANSION_CONTENT}`,
+            summaryEntry(plotFixtures[1])
+        ]);
+        expect(chapter2.revisions).toEqual([
+            { content: EXPANSION_CONTENT, wordCount: EXPANSION_WORD_COUNT, generationTimeMs: expect.any(Number) }
+        ]);
+        expect(fs.readFileSync(path.join(chapterDir, 'chapter-002.md'), 'utf-8')).toBe(
+            `## ${EXPANSION_TITLE}\n\n${EXPANSION_CONTENT}`
+        );
+    }, 30000);
+
+    it('does not chain expansion when autoExpand is false (plotline-only legacy semantics)', async () => {
+        const storyId = `test-story-auto-expand-false-${Date.now()}`;
+        createdStoryIds.push(storyId);
+        const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+
+        const { seenRequests } = stubClientForAutoExpand(['Chapter One', 'Chapter Two']);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, {
+                storyline: TEST_STORYLINE,
+                chapterCount: 2,
+                autoExpand: false
+            }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('completed');
+            },
+            { timeout: 5000, interval: 10 }
+        );
+
+        // Plotline requests only — no "Expand the chapter" prompt ever
+        // reached the LLM, and no chapter payload was written (payload
+        // ownership stays with the PATCH expansion flow).
+        expect(seenRequests).toEqual([basePlotRequest(1, 2), basePlotRequest(2, 2)]);
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.md'))).toEqual([]);
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json'))).toEqual([]);
+
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.status).toBe('completed');
+        // Precise plotline-only contract: the completion write carries NO
+        // chapterCompleted field at all — the counter first appears when a
+        // PATCH expansion finalizes a chapter (incrementPlotpointChapter
+        // Completed). The list endpoint defaults its absence to 0.
+        expect(finalMeta).not.toHaveProperty('chapterCompleted');
+    });
+
+    it('returns 400 when autoExpand is present but not a boolean', async () => {
+        const storyId = `test-story-auto-expand-type-${Date.now()}`;
+        createdStoryIds.push(storyId);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, {
+                storyline: TEST_STORYLINE,
+                chapterCount: TEST_CHAPTER_COUNT,
+                autoExpand: 'yes'
+            }),
+            { root: projectRoot }
+        );
+
+        expect(result.status).toBe(400);
+        expect(result.response).toHaveProperty('error');
+        expect(result.response.error).toBe('autoExpand must be a boolean');
+        // Validation happens before the job is acquired and before any
+        // background work — no story dir may exist.
+        expect(fs.existsSync(getStoryboardDir(storyId))).toBe(false);
+    });
+
+    it('does not chain expansion when the plotline generation fails (status failed)', async () => {
+        const storyId = `test-story-auto-expand-fail-${Date.now()}`;
+        createdStoryIds.push(storyId);
+        const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+
+        // Every plotline call returns a below-minimum chapter (3 plotpoints
+        // vs the mocked MIN_PLOTPOINTS_PER_CHAPTER = 10): the per-chapter
+        // retry budget exhausts (1 initial + MAX_PLOT_ATTEMPTS = 3 retries)
+        // and markStoryFailed commits the failure BEFORE the plotOnly
+        // completion block — the chain must never run on a failed plotline.
+        // The stub records every request in arrival order (same shape as
+        // stubClientForAutoExpand above).
+        const seenRequests: string[] = [];
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                seenRequests.push(request);
+                return Promise.resolve({
+                    response: { title: 'Chapter One', plotpoints: ['a short plotpoint', 'another', 'a third'] }
+                });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, {
+                storyline: TEST_STORYLINE,
+                chapterCount: 2,
+                autoExpand: true
+            }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        await vi.waitFor(
+            () => {
+                expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('failed');
+            },
+            { timeout: 10000, interval: 10 }
+        );
+
+        // ONLY chapter-1 plotline requests reached the LLM — the byte-identical
+        // retry chain (1 initial + MAX_PLOT_ATTEMPTS = 3 retries) — and NO
+        // expansion request was ever issued for the failed story. Chapter 2
+        // was never asked for either (the flow stops at the failed chapter).
+        const failedPlotRequest = basePlotRequest(1, 2);
+        expect(seenRequests).toEqual([
+            failedPlotRequest,
+            failedPlotRequest,
+            failedPlotRequest,
+            failedPlotRequest
+        ]);
+
+        const finalMeta = JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8'));
+        expect(finalMeta.status).toBe('failed');
+        expect(finalMeta.validation).toEqual({
+            valid: false,
+            reason: 'chapter 1 returned 3 plotpoints (minimum: 10)',
+            attempt: 3
+        });
+        // No chapter payloads — the failed story stays plotline-only.
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json'))).toEqual([]);
+    }, 30000);
+
+    it('does not chain expansion when the plotline generation is aborted mid-flight', async () => {
+        const storyId = `test-story-auto-expand-abort-${Date.now()}`;
+        createdStoryIds.push(storyId);
+        const chapterDir = path.join(getStoryboardDir(storyId), 'chapter');
+        const plotpointJsonPath = path.join(getStoryboardDir(storyId), 'plotpoint.json');
+
+        // The FIRST plotline call hangs until the test aborts the story — the
+        // exact in-flight window a user's Terminate click targets.
+        let releaseFirstCall: () => void = () => {};
+        const firstCallGate = new Promise<void>((resolve) => {
+            releaseFirstCall = resolve;
+        });
+        const seenRequests: string[] = [];
+        vi.mocked(CLIENT.clone).mockReturnValue({
+            system: vi.fn(),
+            user: vi.fn(),
+            assistant: vi.fn(),
+            clone: vi.fn().mockReturnThis(),
+            messages: [],
+            format: vi.fn().mockImplementation((config: any) => {
+                const request = typeof config?.request === 'string' ? config.request : '';
+                seenRequests.push(request);
+                if (seenRequests.length === 1) {
+                    return firstCallGate.then(() => ({
+                        response: { title: 'Chapter One', plotpoints: plotpointsFor('Plot 1') }
+                    }));
+                }
+                return Promise.resolve({ response: { title: EXPANSION_TITLE, content: EXPANSION_CONTENT } });
+            })
+        } as any);
+
+        const result = await generationCreateNewStory(
+            mockContext,
+            createMockParameters(storyId, {
+                storyline: TEST_STORYLINE,
+                chapterCount: 2,
+                autoExpand: true
+            }),
+            { root: projectRoot }
+        );
+        expect(result.status).toBe(200);
+
+        // Placeholder written synchronously; the create job is the story's
+        // single active background job.
+        await vi.waitFor(
+            () => {
+                expect(fs.existsSync(plotpointJsonPath)).toBe(true);
+            },
+            { timeout: 5000, interval: 10 }
+        );
+        expect(isStoryJobActive(storyId)).toBe(true);
+
+        // User termination (the same registry call PATCH abortJob makes —
+        // generation-update-chapter.ts requestStoryAbort branch).
+        expect(requestStoryAbort(storyId)).toBe(1);
+
+        // Release the plotline call: the flow reaches its next checkpoint,
+        // sees the abort, and unwinds through the standard .finally.
+        releaseFirstCall();
+        await vi.waitFor(
+            () => {
+                expect(isStoryJobActive(storyId)).toBe(false);
+            },
+            { timeout: 10000, interval: 10 }
+        );
+
+        // No expansion request ever reached the LLM (only the single released
+        // plotline call), the plotpoint.json keeps the interrupted-create
+        // status ('generating' — abort never commits 'completed'), and the
+        // story stays unexpanded.
+        expect(seenRequests).toEqual([basePlotRequest(1, 2)]);
+        expect(JSON.parse(fs.readFileSync(plotpointJsonPath, 'utf-8')).status).toBe('generating');
+        expect(fs.readdirSync(chapterDir).filter((f) => f.endsWith('.json'))).toEqual([]);
+    }, 30000);
 
     // ── Race regression: expansion concurrent with plotline generation ─────
     // The missing-revision bug: a chapter expanded (via PATCH) while the

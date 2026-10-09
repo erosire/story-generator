@@ -391,6 +391,17 @@ components:
             with every request. Absent value → the server's default client.
             Unknown value → 400 listing the available clients.
           example: Qwen3_8
+        autoExpand:
+          type: boolean
+          description: >-
+            Optional opt-in (the dashboard's "auto expand" checkbox). When
+            true, the SAME background create job chains full chapter
+            expansion immediately after a successful plotline completion —
+            reusing the PATCH expandChapterIndex machinery with the SAME
+            per-request clientId, so the plotline and every chapter come from
+            the model selected at submit time. False/omitted keeps
+            plotline-only semantics. A non-boolean value is a 400.
+          example: true
     CreateStoryResponse:
       type: object
       properties:
