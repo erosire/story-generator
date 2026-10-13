@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => {
 
     // The LOCAL standard gateway copy inside generation-config.ts is built by
     // simpleClient(simpleConfig(...)) — this mock instance is what those
-    // factories hand back, and it is ALSO what the Qwen27B clone (the mocked
+    // factories hand back, and it is ALSO what the QWEN38 clone (the mocked
     // clone returns itself) hands back. Every selectable CLIENTS entry
     // therefore shares this single mock instance.
     const STANDARD_CLIENT = createClient();
@@ -41,7 +41,7 @@ const mocks = vi.hoisted(() => {
 // LOCAL standard gateway copy (STANDARD_CLIENT), which replaced the retired
 // '@runtime/secret/private' (QWEN3_8_CLIENT) and '@runtime/secret/private/
 // telnyx' (TELNYX_CLIENT) imports once every CLIENTS entry — including
-// Qwen27B ('local/qwen3.8') — reduced to a .clone({ model, sampling }) of
+// QWEN38 ('local/qwen3.8') — reduced to a .clone({ model, sampling }) of
 // the standard copy. A missing name surfaces as "No ... export is defined on
 // the mock" at import time. No '@runtime/secret/private*' mock remains
 // because generation-config.ts no longer imports that barrel at all.
@@ -61,7 +61,7 @@ describe('generationListClients', () => {
         // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH / PARTICLE /
         // LIGHTNING / MODAL are all served by the merge/vultr/modal
         // gateways; SOL pins Lightning's gpt-6-sol (top_p-less sampling),
-        // and Qwen27B is the renamed 'Qwen3_8' entry. 4a8a3f6 "Updated
+        // and QWEN38 pins the local qwen3.8 model. 4a8a3f6 "Updated
         // Merge" retired the MERGEK3 duplicate, renamed MERGEK26 to KIMIK26,
         // and dropped GLMFLASH; GLM53 was renamed to VULTR (gateway-style
         // naming), the SONNET/OPUS Lightning GPT entries were retired in
@@ -73,7 +73,7 @@ describe('generationListClients', () => {
             'KIMIK26',
             'MIMO26',
             'SOL',
-            'Qwen27B',
+            'QWEN38',
             'MERGE',
             'VULTR',
             'FLASH',
@@ -100,7 +100,7 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 11 selectable ids: KIMIK3, KIMIK26, MIMO26, SOL, Qwen27B, MERGE,
+        // 11 selectable ids: KIMIK3, KIMIK26, MIMO26, SOL, QWEN38, MERGE,
         // VULTR, FLASH, PARTICLE, LIGHTNING, MODAL (retired entries removed
         // from CLIENTS).
         expect(result.response.clients.length).toBe(11);

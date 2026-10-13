@@ -244,7 +244,7 @@ export const StoryInput: React.FC = React.memo(() => {
             }));
 
             // POST to the server. clientId is the top-right dropdown selection
-            // (persisted in store.config.clientId, default 'Qwen27B') — the
+            // (persisted in store.config.clientId, default 'QWEN38') — the
             // server validates it against its CLIENTS map and applies it to
             // this generation only; it is never stored with the story.
             //

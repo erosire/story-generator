@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => {
 
     // The LOCAL standard gateway copy inside generation-config.ts is built by
     // simpleClient(simpleConfig(...)) — this mock instance is what those
-    // factories hand back, and it is ALSO what the Qwen27B clone (the mocked
+    // factories hand back, and it is ALSO what the QWEN38 clone (the mocked
     // clone returns itself) hands back. Every selectable CLIENTS entry
     // therefore shares this single mock instance.
     const STANDARD_CLIENT = createClient();
@@ -46,7 +46,7 @@ const mocks = vi.hoisted(() => {
 // LOCAL standard gateway copy (STANDARD_CLIENT), which replaced the retired
 // '@runtime/secret/private' (QWEN3_8_CLIENT) and
 // '@runtime/secret/private/telnyx' (TELNYX_CLIENT) imports once every
-// CLIENTS entry — including Qwen27B ('local/qwen3.8') — reduced to a
+// CLIENTS entry — including QWEN38 ('local/qwen3.8') — reduced to a
 // .clone({ model, sampling }) of the standard copy. A missing name surfaces
 // as "No ... export is defined on the mock" at import time. No
 // '@runtime/secret/private*' mock remains because generation-config.ts no
@@ -95,7 +95,7 @@ describe('generation sampling defaults', () => {
     });
 
     it('derives the Qwen3_8 defaults with a nonnegative top_k', () => {
-        // The ninfer backend behind the Qwen27B entry rejects top_k: -1 (HTTP 400
+        // The ninfer backend behind the QWEN38 entry rejects top_k: -1 (HTTP 400
         // "top_k must be nonnegative"); top_k: 0 is the vLLM-style sentinel for
         // "consider all tokens" — same behavior as -1, compliant encoding.
         // max_tokens: 32768 is inherited from DEFAULT_SAMPLING_PARAMS via the
@@ -146,12 +146,12 @@ describe('generation sampling defaults', () => {
         // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH /
         // PARTICLE / LIGHTNING / MODAL all clone the STANDARD_CLIENT
         // copy with their own model override (the merge/lightning/vultr/modal
-        // gateways serve every Kimi/GLM/MiMo deployment; Qwen27B pins the
+        // gateways serve every Kimi/GLM/MiMo deployment; QWEN38 pins the
         // local ninfer model). 4a8a3f6 "Updated Merge" retired the MERGEK3
         // duplicate (KIMIK3 was retargeted to merge/kimi-k3), renamed MERGEK26
         // to KIMIK26, and dropped the GLMFLASH plain-default clone; the
         // SONNET/OPUS Lightning GPT entries were retired and SOL added.
-        // Qwen27B uses the nonnegative top_k sampling variant; SOL drops top_p.
+        // QWEN38 uses the nonnegative top_k sampling variant; SOL drops top_p.
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             model: 'merge/kimi-k3',
             sampling: DEFAULT_SAMPLING_PARAMS
@@ -205,9 +205,8 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // Qwen27B re-pins the local qwen3.8 model (the model the
-            // retired runtime QWEN3_8_CLIENT carried) onto the standard
-            // copy's localhost endpoint, with the ninfer-compliant sampling.
+            // QWEN38 pins the local qwen3.8 model onto the standard copy's
+            // localhost endpoint, with the ninfer-compliant sampling.
             model: 'local/qwen3.8',
             sampling: QWEN3_8_SAMPLING_PARAMS
         });
@@ -216,7 +215,7 @@ describe('generation sampling defaults', () => {
             'KIMIK26',
             'MIMO26',
             'SOL',
-            'Qwen27B',
+            'QWEN38',
             'MERGE',
             'VULTR',
             'FLASH',
@@ -235,8 +234,8 @@ describe('generation sampling defaults', () => {
         expect(resolveClient('KIMIK26')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('MIMO26')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('SOL')).toBe(mocks.STANDARD_CLIENT);
-        // Qwen27B is the renamed Qwen3_8 entry — same STANDARD_CLIENT mock.
-        expect(resolveClient('Qwen27B')).toBe(mocks.STANDARD_CLIENT);
+        // QWEN38 — same STANDARD_CLIENT mock as every other entry.
+        expect(resolveClient('QWEN38')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('MERGE')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('VULTR')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('FLASH')).toBe(mocks.STANDARD_CLIENT);
@@ -245,11 +244,11 @@ describe('generation sampling defaults', () => {
         expect(resolveClient('MODAL')).toBe(mocks.STANDARD_CLIENT);
     });
 
-    it('falls back to the default client (CLIENT = CLIENTS.Qwen27B) for absent or unknown ids', () => {
-        // The server-side default must be the same Qwen27B the UI defaults to
+    it('falls back to the default client (CLIENT = CLIENTS.QWEN38) for absent or unknown ids', () => {
+        // The server-side default must be the same QWEN38 the UI defaults to
         // (store.tsx DEFAULT_CLIENT_ID), so a payload without clientId and a
         // UI-driven payload for the default id hit the same client.
-        expect(CLIENT).toBe(CLIENTS.Qwen27B);
+        expect(CLIENT).toBe(CLIENTS.QWEN38);
         expect(resolveClient()).toBe(CLIENT);
         expect(resolveClient(null)).toBe(CLIENT);
         expect(resolveClient('')).toBe(CLIENT);
@@ -277,7 +276,7 @@ describe('local STANDARD_CLIENT copy', () => {
 
     it('is built locally with the runtime telnyx.ts construction', () => {
         // Exactly ONE simpleClient call in this test graph: the local copy.
-        // Every CLIENTS entry (including Qwen27B) derives from it via the
+        // Every CLIENTS entry (including QWEN38) derives from it via the
         // mocked clone, which never re-enters the factory.
         expect(mocks.simpleClient).toHaveBeenCalledTimes(1);
         expect(mocks.simpleConfig).toHaveBeenCalledTimes(1);
@@ -318,7 +317,7 @@ describe('parseClientId', () => {
         expect(parseClientId('KIMIK26')).toEqual({ clientId: 'KIMIK26' });
         expect(parseClientId('MIMO26')).toEqual({ clientId: 'MIMO26' });
         expect(parseClientId('SOL')).toEqual({ clientId: 'SOL' });
-        expect(parseClientId('Qwen27B')).toEqual({ clientId: 'Qwen27B' });
+        expect(parseClientId('QWEN38')).toEqual({ clientId: 'QWEN38' });
         expect(parseClientId('MERGE')).toEqual({ clientId: 'MERGE' });
         expect(parseClientId('VULTR')).toEqual({ clientId: 'VULTR' });
         expect(parseClientId('FLASH')).toEqual({ clientId: 'FLASH' });
@@ -338,7 +337,7 @@ describe('parseClientId', () => {
     it('rejects unknown clientId values, listing every available client', () => {
         // The available-client list is Object.keys(CLIENTS) in insertion order.
         const AVAILABLE =
-            'KIMIK3, KIMIK26, MIMO26, SOL, Qwen27B, MERGE, VULTR, FLASH, PARTICLE, LIGHTNING, MODAL';
+            'KIMIK3, KIMIK26, MIMO26, SOL, QWEN38, MERGE, VULTR, FLASH, PARTICLE, LIGHTNING, MODAL';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`

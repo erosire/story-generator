@@ -91,7 +91,7 @@ Starts background story generation. Returns the `storyId` immediately while gene
 {
   "storyline": "A sci-fi adventure about a crew discovering alien artifacts on Mars.",
   "chapterCount": 5,
-  "clientId": "Qwen27B",
+  "clientId": "QWEN38",
   "autoExpand": true
 }
 ```

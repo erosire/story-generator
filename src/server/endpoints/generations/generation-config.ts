@@ -21,7 +21,7 @@ import type { SimpleClient } from '@agentic/harness';
 // '@runtime/secret/private/telnyx' was removed because nothing dedicated to
 // that client is consumed here — every CLIENTS entry model-configures on the
 // fly via .clone({ model, sampling }) — so the construction was copied into
-// this file (see that section). Qwen27B is likewise cloned from
+// this file (see that section). QWEN38 is likewise cloned from
 // STANDARD_CLIENT with model 'local/qwen3.8' (the same endpoint the
 // runtime local/qwen3_8.ts client used), so NO '@runtime/secret/private'
 // import remains in this file.
@@ -287,8 +287,7 @@ export const CLIENTS = {
     // Responses model rejects top_p ("Unsupported parameter: 'top_p' is not
     // supported with this model") — see SOL_SAMPLING_PARAMS above.
     SOL: STANDARD_CLIENT.clone({ model: 'lightning/gpt-6-sol', sampling: SOL_SAMPLING_PARAMS }),
-    // GLMFLASH: GLM53FLASH_CLIENT.clone({ sampling: DEFAULT_SAMPLING_PARAMS }),
-    // Qwen27B clones STANDARD_CLIENT with the local qwen3.8 model — the
+    // QWEN38 clones STANDARD_CLIENT with the local qwen3.8 model — the
     // same 'local/qwen3.8' model string the runtime QWEN3_8_CLIENT
     // (runtime/secret/private/local/qwen3_8.ts) pinned, now served by the
     // local standard copy's localhost:5500 endpoint (identical to that
@@ -297,24 +296,15 @@ export const CLIENTS = {
     // (top_k: 0) because the ninfer backend rejects the SGLang-style
     // top_k: -1 sentinel; all other values unchanged.
     //
-    // KEY RENAME GUARD (ee54c79 half-rename regression): the "Updated and
-    // pending cleanup" commit renamed the MODEL string
-    // ('local/qwen3.8-27b' → 'local/qwen3.8', kept) and also retitled the
-    // key 'Qwen27B' → 'QWEN38', which left the rest of the contract on
-    // 'Qwen27B' and broke it: CLIENT = CLIENTS.Qwen27B resolved to
-    // undefined (every absent-clientId generation crashed in
-    // resolveClient().clone()), the UI's DEFAULT_CLIENT_ID ('Qwen27B',
-    // src/context/store.tsx:1444) was rejected by parseClientId (every
-    // default UI payload 400'd), and generation-config.test.ts /
-    // generation-list-clients.test.ts pinned 'Qwen27B'. The key is restored
-    // to 'Qwen27B' — the model string above is the intended rename and is
-    // preserved verbatim. Key casing is load-bearing: the UI round-trips
-    // this exact string as the wire id (DEFAULT_CLIENT_ID = 'Qwen27B' in
-    // src/context/store.tsx), and parseClientId/resolveClient match CLIENTS
-    // keys verbatim — an all-caps 'QWEN27B' key would reject every default
-    // UI payload. Any future key rename must move DEFAULT_CLIENT_ID,
-    // CLIENT, and the config/list-clients tests in the same commit.
-    Qwen27B: STANDARD_CLIENT.clone({ model: 'local/qwen3.8', sampling: QWEN3_8_SAMPLING_PARAMS }),
+    // KEY RENAME GUARD: the key IS the wire id — the UI round-trips it
+    // verbatim (DEFAULT_CLIENT_ID = 'QWEN38' in src/context/store.tsx) and
+    // parseClientId/resolveClient match CLIENTS keys exactly. Any key
+    // rename must therefore move DEFAULT_CLIENT_ID, CLIENT, and the
+    // config/list-clients tests in the SAME commit; a half-rename breaks
+    // every default/unspecified-clientId generation. A stale id persisted
+    // in the UI's localStorage is rejected by parseClientId with the
+    // current id list (the user re-picks the client once).
+    QWEN38: STANDARD_CLIENT.clone({ model: 'local/qwen3.8', sampling: QWEN3_8_SAMPLING_PARAMS }),
     // VULTR is the renamed GLM53 entry — the key now names the GATEWAY
     // (vultr/) instead of the model, matching the PARTICLE/LIGHTNING/MODAL
     // gateway-style naming (GLM53Flash keeps its model-derived name for UI
@@ -334,13 +324,11 @@ export const CLIENTS = {
  * clientId. Kept for backward compatibility with code/tests that import CLIENT
  * directly — treat resolveClient() as the canonical selector.
  *
- * Qwen27B is the renamed Qwen3_8 entry (same QWEN3_8_SAMPLING_PARAMS and the
- * same 'local/qwen3.8' model the runtime QWEN3_8_CLIENT pinned — see the
- * CLIENTS map above); the UI pins the same
- * id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and a
- * server-only fallback can never disagree on which model writes a story.
+ * QWEN38 is the local-qwen3.8 entry (see the CLIENTS map above); the UI pins
+ * the same id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and
+ * a server-only fallback can never disagree on which model writes a story.
  */
-export const CLIENT = CLIENTS.Qwen27B;
+export const CLIENT = CLIENTS.QWEN38;
 
 // ---------------------------------------------------------------------------
 // Client Selection (per-request clientId)
@@ -355,7 +343,7 @@ export const CLIENT = CLIENTS.Qwen27B;
  * here, the single source of truth for selectable story clients.
  *
  * Fallback behaviour: an absent, empty, or unknown clientId resolves to the
- * default client (CLIENT = CLIENTS.Qwen27B) so a missing value can never
+ * default client (CLIENT = CLIENTS.QWEN38) so a missing value can never
  * crash a generation. Request payloads that carry an EXPLICIT unknown id are
  * rejected earlier by parseClientId() — this fallback only covers calls that
  * never set a clientId at all.
