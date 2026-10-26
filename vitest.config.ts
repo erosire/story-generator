@@ -32,5 +32,11 @@ export default defineConfig({
         // workspace root). The 'auto' entry installs the fake globals BEFORE
         // any test module loads.
         setupFiles: ['./src/test/setup.ts'],
+        // Under a wide monorepo test run (yarn runs every workspace in
+        // parallel) this suite's app-boot tests regularly exceed vitest's
+        // default 5s testTimeout. Explicit headroom keeps a margin without
+        // masking hangs.
+        testTimeout: 60_000,
+        hookTimeout: 60_000
     },
 });

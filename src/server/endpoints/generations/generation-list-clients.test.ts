@@ -59,27 +59,27 @@ describe('generationListClients', () => {
         expect(result.status).toBe(200);
         // Order is the object insertion order of CLIENTS — the UI preserves it.
         // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH / PARTICLE /
-        // LIGHTNING / MODAL are all served by the merge/vultr/modal
-        // gateways; SOL pins Lightning's gpt-6-sol (top_p-less sampling),
+        // LIGHTNING are all served by the merge/vultr
+        // gateways; DS4 pins the merge/ds4-flash Makora DeepSeek sibling,
         // and QWEN38 pins the local qwen3.8 model. 4a8a3f6 "Updated
         // Merge" retired the MERGEK3 duplicate, renamed MERGEK26 to KIMIK26,
         // and dropped GLMFLASH; GLM53 was renamed to VULTR (gateway-style
-        // naming), the SONNET/OPUS Lightning GPT entries were retired in
-        // favor of SOL, and the retired Modal (GLM52), Makora, DeepSeek,
-        // Router (OpenRouter) and standalone Nvidia/Telnyx deployments were
-        // dropped from CLIENTS.
+        // naming), the SONNET/OPUS Lightning GPT entries were retired and
+        // SOL added — itself retired (lightning/gpt-6-sol left the registry)
+        // with DS4 taking its slot — and the retired Modal (GLM52), Makora,
+        // DeepSeek, Router (OpenRouter) and standalone Nvidia/Telnyx
+        // deployments were dropped from CLIENTS.
         expect(result.response.clients).toEqual([
             'KIMIK3',
             'KIMIK26',
             'MIMO26',
-            'SOL',
+            'DS4',
             'QWEN38',
             'MERGE',
             'VULTR',
             'FLASH',
             'PARTICLE',
-            'LIGHTNING',
-            'MODAL'
+            'LIGHTNING'
         ]);
     });
 
@@ -100,9 +100,10 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 11 selectable ids: KIMIK3, KIMIK26, MIMO26, SOL, QWEN38, MERGE,
-        // VULTR, FLASH, PARTICLE, LIGHTNING, MODAL (retired entries removed
-        // from CLIENTS).
-        expect(result.response.clients.length).toBe(11);
+        // 10 selectable ids: KIMIK3, KIMIK26, MIMO26, DS4, QWEN38, MERGE,
+        // VULTR, FLASH, PARTICLE, LIGHTNING (retired entries removed
+        // from CLIENTS, including MODAL after the modal/glm-5.3 client was
+        // removed).
+        expect(result.response.clients.length).toBe(10);
     });
 });

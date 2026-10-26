@@ -111,7 +111,7 @@ describe('createNewStory', () => {
             // passes in StoryContent.handleFork.
             {} as any,
             { sourceStoryId: 'source-story', chapterIndex: 1 },
-            'Modal'
+            'VULTR'
         );
 
         expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/fork-abc`, {
@@ -119,7 +119,7 @@ describe('createNewStory', () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 forkFrom: { sourceStoryId: 'source-story', chapterIndex: 1 },
-                clientId: 'Modal'
+                clientId: 'VULTR'
             })
         });
         expect(result).toEqual({ storyId: 'fork-abc' });

@@ -144,14 +144,17 @@ describe('generation sampling defaults', () => {
 
     it('attaches the defaults to every selectable story-generation client', () => {
         // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH /
-        // PARTICLE / LIGHTNING / MODAL all clone the STANDARD_CLIENT
-        // copy with their own model override (the merge/lightning/vultr/modal
+        // PARTICLE / LIGHTNING all clone the STANDARD_CLIENT
+        // copy with their own model override (the merge/lightning/vultr
         // gateways serve every Kimi/GLM/MiMo deployment; QWEN38 pins the
         // local ninfer model). 4a8a3f6 "Updated Merge" retired the MERGEK3
         // duplicate (KIMIK3 was retargeted to merge/kimi-k3), renamed MERGEK26
         // to KIMIK26, and dropped the GLMFLASH plain-default clone; the
-        // SONNET/OPUS Lightning GPT entries were retired and SOL added.
-        // QWEN38 uses the nonnegative top_k sampling variant; SOL drops top_p.
+        // SONNET/OPUS Lightning GPT entries were retired and SOL added, and
+        // SOL itself was retired (lightning/gpt-6-sol left the registry) with
+        // DS4 taking its slot. MODAL was retired when the modal/glm-5.3
+        // provider client was removed from the registry.
+        // QWEN38 uses the nonnegative top_k sampling variant.
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             model: 'merge/kimi-k3',
             sampling: DEFAULT_SAMPLING_PARAMS
@@ -167,11 +170,12 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // SOL pins Lightning's gpt-6-sol id with the top_p-less sampling
-            // variant (the model rejects top_p — see the SOL_SAMPLING_PARAMS
-            // test above).
-            model: 'lightning/gpt-6-sol',
-            sampling: SOL_SAMPLING_PARAMS
+            // DS4 pins the merge/ds4-flash Makora DeepSeek sibling with the
+            // plain defaults (the slot the retired SOL entry —
+            // lightning/gpt-6-sol with the top_p-less sampling variant —
+            // used to hold before lightning/gpt-6-sol left the registry).
+            model: 'merge/ds4-flash',
+            sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             // VULTR is the renamed GLM53 entry — the key now names the
@@ -201,10 +205,6 @@ describe('generation sampling defaults', () => {
             sampling: DEFAULT_SAMPLING_PARAMS
         });
         expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'modal/glm-5.3',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
             // QWEN38 pins the local qwen3.8 model onto the standard copy's
             // localhost endpoint, with the ninfer-compliant sampling.
             model: 'local/qwen3.8',
@@ -214,14 +214,13 @@ describe('generation sampling defaults', () => {
             'KIMIK3',
             'KIMIK26',
             'MIMO26',
-            'SOL',
+            'DS4',
             'QWEN38',
             'MERGE',
             'VULTR',
             'FLASH',
             'PARTICLE',
-            'LIGHTNING',
-            'MODAL'
+            'LIGHTNING'
         ]);
     });
 
@@ -233,7 +232,7 @@ describe('generation sampling defaults', () => {
         expect(resolveClient('KIMIK3')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('KIMIK26')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('MIMO26')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('SOL')).toBe(mocks.STANDARD_CLIENT);
+        expect(resolveClient('DS4')).toBe(mocks.STANDARD_CLIENT);
         // QWEN38 — same STANDARD_CLIENT mock as every other entry.
         expect(resolveClient('QWEN38')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('MERGE')).toBe(mocks.STANDARD_CLIENT);
@@ -241,7 +240,6 @@ describe('generation sampling defaults', () => {
         expect(resolveClient('FLASH')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('PARTICLE')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('LIGHTNING')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('MODAL')).toBe(mocks.STANDARD_CLIENT);
     });
 
     it('falls back to the default client (CLIENT = CLIENTS.QWEN38) for absent or unknown ids', () => {
@@ -316,14 +314,13 @@ describe('parseClientId', () => {
         expect(parseClientId('KIMIK3')).toEqual({ clientId: 'KIMIK3' });
         expect(parseClientId('KIMIK26')).toEqual({ clientId: 'KIMIK26' });
         expect(parseClientId('MIMO26')).toEqual({ clientId: 'MIMO26' });
-        expect(parseClientId('SOL')).toEqual({ clientId: 'SOL' });
+        expect(parseClientId('DS4')).toEqual({ clientId: 'DS4' });
         expect(parseClientId('QWEN38')).toEqual({ clientId: 'QWEN38' });
         expect(parseClientId('MERGE')).toEqual({ clientId: 'MERGE' });
         expect(parseClientId('VULTR')).toEqual({ clientId: 'VULTR' });
         expect(parseClientId('FLASH')).toEqual({ clientId: 'FLASH' });
         expect(parseClientId('PARTICLE')).toEqual({ clientId: 'PARTICLE' });
         expect(parseClientId('LIGHTNING')).toEqual({ clientId: 'LIGHTNING' });
-        expect(parseClientId('MODAL')).toEqual({ clientId: 'MODAL' });
     });
 
     it('rejects non-string clientId values with the type error', () => {
@@ -337,7 +334,7 @@ describe('parseClientId', () => {
     it('rejects unknown clientId values, listing every available client', () => {
         // The available-client list is Object.keys(CLIENTS) in insertion order.
         const AVAILABLE =
-            'KIMIK3, KIMIK26, MIMO26, SOL, QWEN38, MERGE, VULTR, FLASH, PARTICLE, LIGHTNING, MODAL';
+            'KIMIK3, KIMIK26, MIMO26, DS4, QWEN38, MERGE, VULTR, FLASH, PARTICLE, LIGHTNING';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`
@@ -350,7 +347,8 @@ describe('parseClientId', () => {
         // the key switched to gateway naming — or the retired Lightning
         // 'SONNET' / 'OPUS' GPT entries) surfaces this message on the
         // next generation, which is why the UI default moved in lockstep with
-        // the map changes.
+        // the map changes. 'MODAL' was retired when the modal/glm-5.3 provider
+        // client was removed from the registry.
         expect(parseClientId('Qwen3_8')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Qwen3_8'. Available clients: ${AVAILABLE}`
@@ -378,6 +376,10 @@ describe('parseClientId', () => {
         expect(parseClientId('OPUS')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'OPUS'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('SOL')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'SOL'. Available clients: ${AVAILABLE}`
         });
         expect(parseClientId('Nvidia')).toEqual({
             clientId: undefined,

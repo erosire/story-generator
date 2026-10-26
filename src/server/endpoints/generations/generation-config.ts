@@ -283,10 +283,7 @@ export const CLIENTS = {
     KIMIK3: STANDARD_CLIENT.clone({ model: 'merge/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMIK26: STANDARD_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
     MIMO26: STANDARD_CLIENT.clone({ model: 'vultr/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
-    // SOL uses SOL_SAMPLING_PARAMS (top_p dropped): Lightning's gpt-6.1-sol
-    // Responses model rejects top_p ("Unsupported parameter: 'top_p' is not
-    // supported with this model") — see SOL_SAMPLING_PARAMS above.
-    SOL: STANDARD_CLIENT.clone({ model: 'lightning/gpt-6-sol', sampling: SOL_SAMPLING_PARAMS }),
+    DS4: STANDARD_CLIENT.clone({ model: 'merge/ds4-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     // QWEN38 clones STANDARD_CLIENT with the local qwen3.8 model — the
     // same 'local/qwen3.8' model string the runtime QWEN3_8_CLIENT
     // (runtime/secret/private/local/qwen3_8.ts) pinned, now served by the
@@ -306,7 +303,7 @@ export const CLIENTS = {
     // current id list (the user re-picks the client once).
     QWEN38: STANDARD_CLIENT.clone({ model: 'local/qwen3.8', sampling: QWEN3_8_SAMPLING_PARAMS }),
     // VULTR is the renamed GLM53 entry — the key now names the GATEWAY
-    // (vultr/) instead of the model, matching the PARTICLE/LIGHTNING/MODAL
+    // (vultr/) instead of the model, matching the PARTICLE/LIGHTNING
     // gateway-style naming (GLM53Flash keeps its model-derived name for UI
     // backward compatibility). Model string is unchanged ('vultr/glm-5.3');
     // a stale 'GLM53' id persisted in the UI's localStorage is rejected by
@@ -315,8 +312,7 @@ export const CLIENTS = {
     VULTR: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
     FLASH: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     PARTICLE: STANDARD_CLIENT.clone({ model: 'merge/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    LIGHTNING: STANDARD_CLIENT.clone({ model: 'lightning/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
-    MODAL: STANDARD_CLIENT.clone({ model: 'modal/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS })
+    LIGHTNING: STANDARD_CLIENT.clone({ model: 'lightning/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
 /**
