@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => {
 
     // The LOCAL standard gateway copy inside generation-config.ts is built by
     // simpleClient(simpleConfig(...)) — this mock instance is what those
-    // factories hand back, and it is ALSO what the QWEN38 clone (the mocked
+    // factories hand back, and it is ALSO what the STRATA clone (the mocked
     // clone returns itself) hands back. Every selectable CLIENTS entry
     // therefore shares this single mock instance.
     const STANDARD_CLIENT = createClient();
@@ -41,7 +41,8 @@ const mocks = vi.hoisted(() => {
 // LOCAL standard gateway copy (STANDARD_CLIENT), which replaced the retired
 // '@runtime/secret/private' (QWEN3_8_CLIENT) and '@runtime/secret/private/
 // telnyx' (TELNYX_CLIENT) imports once every CLIENTS entry — including
-// QWEN38 ('local/qwen3.8') — reduced to a .clone({ model, sampling }) of
+// STRATA ('local/strata') and BASALT ('local/basalt') — reduced to a
+// .clone({ model, sampling }) of
 // the standard copy. A missing name surfaces as "No ... export is defined on
 // the mock" at import time. No '@runtime/secret/private*' mock remains
 // because generation-config.ts no longer imports that barrel at all.
@@ -61,7 +62,8 @@ describe('generationListClients', () => {
         // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH / PARTICLE /
         // LIGHTNING are all served by the merge/vultr
         // gateways; DS4 pins the merge/ds4-flash Makora DeepSeek sibling,
-        // and QWEN38 pins the local qwen3.8 model. 4a8a3f6 "Updated
+        // and STRATA pins the local strata model, BASALT its basalt sibling.
+        // 4a8a3f6 "Updated
         // Merge" retired the MERGEK3 duplicate, renamed MERGEK26 to KIMIK26,
         // and dropped GLMFLASH; GLM53 was renamed to VULTR (gateway-style
         // naming), the SONNET/OPUS Lightning GPT entries were retired and
@@ -74,7 +76,8 @@ describe('generationListClients', () => {
             'KIMIK26',
             'MIMO26',
             'DS4',
-            'QWEN38',
+            'STRATA',
+            'BASALT',
             'MERGE',
             'VULTR',
             'FLASH',
@@ -100,10 +103,10 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 10 selectable ids: KIMIK3, KIMIK26, MIMO26, DS4, QWEN38, MERGE,
+        // 11 selectable ids: KIMIK3, KIMIK26, MIMO26, DS4, STRATA, BASALT, MERGE,
         // VULTR, FLASH, PARTICLE, LIGHTNING (retired entries removed
         // from CLIENTS, including MODAL after the modal/glm-5.3 client was
         // removed).
-        expect(result.response.clients.length).toBe(10);
+        expect(result.response.clients.length).toBe(11);
     });
 });

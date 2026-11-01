@@ -1434,14 +1434,14 @@ type StoryStoreContextValue = {
 };
 
 // Default LLM client id. Must stay in sync with the server-side fallback in
-// generation-config.ts (`CLIENT = CLIENTS.QWEN38`) — the server applies the
+// generation-config.ts (`CLIENT = CLIENTS.STRATA`) — the server applies the
 // same default when a payload carries no clientId, so a fresh UI and a
 // server-only fallback can never disagree on which model a story is written by.
-// This constant must move in lockstep with the CLIENTS map ('QWEN38' is the
-// local-qwen3.8 entry's key — see generation-config.ts): a stale id persisted
+// This constant must move in lockstep with the CLIENTS map ('STRATA' is the
+// local-strata entry's key — see generation-config.ts): a stale id persisted
 // in localStorage is rejected by the server's parseClientId with the current
 // id list.
-export const DEFAULT_CLIENT_ID = 'QWEN38';
+export const DEFAULT_CLIENT_ID = 'STRATA';
 
 const DEFAULT_CONFIG: StoryStore['config'] = {
     // Every storyboard endpoint (list stories, story CRUD, clients) lives on

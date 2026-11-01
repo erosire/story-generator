@@ -21,8 +21,9 @@ import type { SimpleClient } from '@agentic/harness';
 // '@runtime/secret/private/telnyx' was removed because nothing dedicated to
 // that client is consumed here — every CLIENTS entry model-configures on the
 // fly via .clone({ model, sampling }) — so the construction was copied into
-// this file (see that section). QWEN38 is likewise cloned from
-// STANDARD_CLIENT with model 'local/qwen3.8' (the same endpoint the
+// this file (see that section). STRATA and BASALT are likewise cloned from
+// STANDARD_CLIENT with models 'local/strata' and 'local/basalt' (the same
+// endpoint the
 // runtime local/qwen3_8.ts client used), so NO '@runtime/secret/private'
 // import remains in this file.
 import { simpleClient, simpleConfig } from '@agentic/harness';
@@ -284,8 +285,8 @@ export const CLIENTS = {
     KIMIK26: STANDARD_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
     MIMO26: STANDARD_CLIENT.clone({ model: 'vultr/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
     DS4: STANDARD_CLIENT.clone({ model: 'merge/ds4-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    // QWEN38 clones STANDARD_CLIENT with the local qwen3.8 model — the
-    // same 'local/qwen3.8' model string the runtime QWEN3_8_CLIENT
+    // STRATA clones STANDARD_CLIENT with the local strata model — the
+    // same 'local/strata' model string the runtime QWEN3_8_CLIENT
     // (runtime/secret/private/local/qwen3_8.ts) pinned, now served by the
     // local standard copy's localhost:5500 endpoint (identical to that
     // client's endpoint; the clone additionally inherits STANDARD_CLIENT's
@@ -294,14 +295,19 @@ export const CLIENTS = {
     // top_k: -1 sentinel; all other values unchanged.
     //
     // KEY RENAME GUARD: the key IS the wire id — the UI round-trips it
-    // verbatim (DEFAULT_CLIENT_ID = 'QWEN38' in src/context/store.tsx) and
+    // verbatim (DEFAULT_CLIENT_ID = 'STRATA' in src/context/store.tsx) and
     // parseClientId/resolveClient match CLIENTS keys exactly. Any key
     // rename must therefore move DEFAULT_CLIENT_ID, CLIENT, and the
     // config/list-clients tests in the SAME commit; a half-rename breaks
     // every default/unspecified-clientId generation. A stale id persisted
     // in the UI's localStorage is rejected by parseClientId with the
     // current id list (the user re-picks the client once).
-    QWEN38: STANDARD_CLIENT.clone({ model: 'local/qwen3.8', sampling: QWEN3_8_SAMPLING_PARAMS }),
+    STRATA: STANDARD_CLIENT.clone({ model: 'local/strata', sampling: QWEN3_8_SAMPLING_PARAMS }),
+    // BASALT is STRATA's sibling: the same Qwen Flash Next model underneath,
+    // reached through the separate 'local/basalt' registry entry (its own
+    // basalt.ts endpoint listing in the provider layer). Same ninfer backend,
+    // so it clones with the identical QWEN3_8_SAMPLING_PARAMS (top_k: 0).
+    BASALT: STANDARD_CLIENT.clone({ model: 'local/basalt', sampling: QWEN3_8_SAMPLING_PARAMS }),
     // VULTR is the renamed GLM53 entry — the key now names the GATEWAY
     // (vultr/) instead of the model, matching the PARTICLE/LIGHTNING
     // gateway-style naming (GLM53Flash keeps its model-derived name for UI
@@ -320,11 +326,11 @@ export const CLIENTS = {
  * clientId. Kept for backward compatibility with code/tests that import CLIENT
  * directly — treat resolveClient() as the canonical selector.
  *
- * QWEN38 is the local-qwen3.8 entry (see the CLIENTS map above); the UI pins
+ * STRATA is the local/strata entry (see the CLIENTS map above); the UI pins
  * the same id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and
  * a server-only fallback can never disagree on which model writes a story.
  */
-export const CLIENT = CLIENTS.QWEN38;
+export const CLIENT = CLIENTS.STRATA;
 
 // ---------------------------------------------------------------------------
 // Client Selection (per-request clientId)
@@ -339,7 +345,7 @@ export const CLIENT = CLIENTS.QWEN38;
  * here, the single source of truth for selectable story clients.
  *
  * Fallback behaviour: an absent, empty, or unknown clientId resolves to the
- * default client (CLIENT = CLIENTS.QWEN38) so a missing value can never
+ * default client (CLIENT = CLIENTS.STRATA) so a missing value can never
  * crash a generation. Request payloads that carry an EXPLICIT unknown id are
  * rejected earlier by parseClientId() — this fallback only covers calls that
  * never set a clientId at all.
