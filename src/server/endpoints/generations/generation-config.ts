@@ -14,7 +14,7 @@
 // Type-only import: every selectable client is a SimpleClient instance
 // (simpleClient() in @agentic/harness), used to widen CLIENTS for the
 // request-driven string indexing in resolveClient().
-import type { SimpleClient } from '@agentic/harness';
+import type {SimpleClient} from '@agentic/harness';
 // simpleClient/simpleConfig build the LOCAL standard gateway client below
 // (STANDARD_CLIENT — a copy of runtime/secret/private/telnyx.ts's shared
 // TELNYX_CLIENT). The shared TELNYX_CLIENT import from
@@ -26,14 +26,14 @@ import type { SimpleClient } from '@agentic/harness';
 // endpoint the
 // runtime local/qwen3_8.ts client used), so NO '@runtime/secret/private'
 // import remains in this file.
-import { simpleClient, simpleConfig } from '@agentic/harness';
+import {simpleClient, simpleConfig} from '@agentic/harness';
 // 429 rate-limit retry pause for the local standard copy (see status handler).
 // objectFilter builds the SOL sampling variant below (drops the top_p key
 // entirely — see SOL_SAMPLING_PARAMS).
-import { objectFilter, scriptPause } from '@presource/core';
+import {objectFilter, scriptPause} from '@presource/core';
 // Standalone replacement for the monorepo's @config/environment package
 // (same constant names, port 5500) — used by the local copy's endpoint.
-import { LOCAL_AREA_NETWORK_PROVIDER_PORT } from '../../../config';
+import {LOCAL_AREA_NETWORK_PROVIDER_PORT} from '../../../config';
 
 /** First user message seeded into the conversation history. */
 export const OPENING_USER_MESSAGE = 'Hey ENI';
@@ -208,7 +208,7 @@ export const QWEN3_8_SAMPLING_PARAMS = {
 // objectHasKey(body, key) && body[key] !== undefined — a present-but-undefined
 // key would still survive JSON.stringify's undefined-drop in some transports,
 // so absence at the object level is the only guarantee.
-export const SOL_SAMPLING_PARAMS = objectFilter(DEFAULT_SAMPLING_PARAMS, ({ key }) => key !== 'top_p');
+export const SOL_SAMPLING_PARAMS = objectFilter(DEFAULT_SAMPLING_PARAMS, ({key}) => key !== 'top_p');
 
 // ---------------------------------------------------------------------------
 // Standard Gateway Client (local copy)
@@ -281,44 +281,13 @@ export const useApiMethod: 'structure' | 'format' = 'structure';
 
 // List of possible clients
 export const CLIENTS = {
-    KIMIK3: STANDARD_CLIENT.clone({ model: 'merge/kimi-k3', sampling: DEFAULT_SAMPLING_PARAMS }),
-    KIMIK26: STANDARD_CLIENT.clone({ model: 'merge/kimi-k2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
-    MIMO26: STANDARD_CLIENT.clone({ model: 'vultr/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
-    DS4: STANDARD_CLIENT.clone({ model: 'merge/ds4-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    // STRATA clones STANDARD_CLIENT with the local strata model — the
-    // same 'local/strata' model string the runtime QWEN3_8_CLIENT
-    // (runtime/secret/private/local/qwen3_8.ts) pinned, now served by the
-    // local standard copy's localhost:5500 endpoint (identical to that
-    // client's endpoint; the clone additionally inherits STANDARD_CLIENT's
-    // 429 → pause-10s-and-retry handler). Uses QWEN3_8_SAMPLING_PARAMS
-    // (top_k: 0) because the ninfer backend rejects the SGLang-style
-    // top_k: -1 sentinel; all other values unchanged.
-    //
-    // KEY RENAME GUARD: the key IS the wire id — the UI round-trips it
-    // verbatim (DEFAULT_CLIENT_ID = 'STRATA' in src/context/store.tsx) and
-    // parseClientId/resolveClient match CLIENTS keys exactly. Any key
-    // rename must therefore move DEFAULT_CLIENT_ID, CLIENT, and the
-    // config/list-clients tests in the SAME commit; a half-rename breaks
-    // every default/unspecified-clientId generation. A stale id persisted
-    // in the UI's localStorage is rejected by parseClientId with the
-    // current id list (the user re-picks the client once).
-    STRATA: STANDARD_CLIENT.clone({ model: 'local/strata', sampling: QWEN3_8_SAMPLING_PARAMS }),
-    // BASALT is STRATA's sibling: the same Qwen Flash Next model underneath,
-    // reached through the separate 'local/basalt' registry entry (its own
-    // basalt.ts endpoint listing in the provider layer). Same ninfer backend,
-    // so it clones with the identical QWEN3_8_SAMPLING_PARAMS (top_k: 0).
-    BASALT: STANDARD_CLIENT.clone({ model: 'local/basalt', sampling: QWEN3_8_SAMPLING_PARAMS }),
-    // VULTR is the renamed GLM53 entry — the key now names the GATEWAY
-    // (vultr/) instead of the model, matching the PARTICLE/LIGHTNING
-    // gateway-style naming (GLM53Flash keeps its model-derived name for UI
-    // backward compatibility). Model string is unchanged ('vultr/glm-5.3');
-    // a stale 'GLM53' id persisted in the UI's localStorage is rejected by
-    // parseClientId until the user re-picks the client.
-    MERGE: STANDARD_CLIENT.clone({ model: 'merge/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
-    VULTR: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
-    FLASH: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    PARTICLE: STANDARD_CLIENT.clone({ model: 'merge/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    LIGHTNING: STANDARD_CLIENT.clone({ model: 'lightning/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS })
+    SAIL: STANDARD_CLIENT.clone({model: 'sail/glm5', sampling: DEFAULT_SAMPLING_PARAMS}),
+    BASALT: STANDARD_CLIENT.clone({model: 'local/basalt', sampling: QWEN3_8_SAMPLING_PARAMS}),
+    VULTR: STANDARD_CLIENT.clone({model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS}),
+    MAKORA: STANDARD_CLIENT.clone({model: "makora/glm5-flash", sampling: DEFAULT_SAMPLING_PARAMS}),
+    KIMI: STANDARD_CLIENT.clone({model: 'sail/kimi3', sampling: DEFAULT_SAMPLING_PARAMS}),
+    DS4: STANDARD_CLIENT.clone({model: 'sail/ds4-flash', sampling: DEFAULT_SAMPLING_PARAMS}),
+    FLASH: STANDARD_CLIENT.clone({model: 'sail/glm5-flash', sampling: DEFAULT_SAMPLING_PARAMS}),
 };
 
 /**
@@ -330,7 +299,7 @@ export const CLIENTS = {
  * the same id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and
  * a server-only fallback can never disagree on which model writes a story.
  */
-export const CLIENT = CLIENTS.STRATA;
+export const CLIENT = CLIENTS.BASALT;
 
 // ---------------------------------------------------------------------------
 // Client Selection (per-request clientId)
@@ -385,7 +354,7 @@ export const parseClientId = (raw: unknown): { clientId?: string; error?: string
     // Absent values are legal — generation falls back to the default client.
     if (raw === undefined || raw === null) return {};
     if (typeof raw !== 'string' || raw.length === 0) {
-        return { error: 'clientId must be a non-empty string' };
+        return {error: 'clientId must be a non-empty string'};
     }
     // hasOwnProperty guards against 'toString', 'constructor', etc. being
     // passed as a clientId when CLIENTS (a plain object) is indexed.
@@ -394,5 +363,5 @@ export const parseClientId = (raw: unknown): { clientId?: string; error?: string
             error: `Unknown clientId '${raw}'. Available clients: ${Object.keys(CLIENTS).join(', ')}`
         };
     }
-    return { clientId: raw };
+    return {clientId: raw};
 };
