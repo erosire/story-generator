@@ -179,10 +179,10 @@ describe('StoryGeneratorApp', () => {
         expect(screen.getByTestId('sidebar-version').textContent).toBe(`v${__APP_VERSION__}`);
         // The top-right LLM client dropdown is always rendered. Before the
         // server's client list arrives it offers only the default client id
-        // (localStorage cleared in beforeEach → DEFAULT_CLIENT_ID 'STRATA').
+        // (localStorage cleared in beforeEach → DEFAULT_CLIENT_ID 'BASALT').
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
         expect(clientSelect).toBeDefined();
-        expect(clientSelect.value).toBe('STRATA');
+        expect(clientSelect.value).toBe('BASALT');
         // Theming contract: the native select opts into the dark color scheme
         // (inline, so the UA paints the control + popup dark instead of the
         // default grey-on-white) and carries the sg-select/sg-input class
@@ -222,7 +222,7 @@ describe('StoryGeneratorApp', () => {
             }
             if (url === CLIENTS_URL) {
                 // Server advertises its selectable CLIENTS keys (generation-config.ts).
-                return Promise.resolve(mockResponse(200, { clients: ['Nvidia', 'KIMIK3', 'STRATA'] }));
+                return Promise.resolve(mockResponse(200, { clients: ['SAIL', 'VULTR', 'BASALT'] }));
             }
             return Promise.resolve(mockResponse(200, { chapters: [], meta: null }));
         });
@@ -231,17 +231,17 @@ describe('StoryGeneratorApp', () => {
 
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
         // Default selection is the package default client id.
-        expect(clientSelect.value).toBe('STRATA');
+        expect(clientSelect.value).toBe('BASALT');
 
         // The options fetch resolves and replaces the options list.
         await waitFor(() => {
             const options = Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value);
-            expect(options).toEqual(['Nvidia', 'KIMIK3', 'STRATA']);
+            expect(options).toEqual(['SAIL', 'VULTR', 'BASALT']);
         });
 
         // Pick a different LLM client.
-        fireEvent.change(clientSelect, { target: { value: 'Nvidia' } });
-        expect(clientSelect.value).toBe('Nvidia');
+        fireEvent.change(clientSelect, { target: { value: 'SAIL' } });
+        expect(clientSelect.value).toBe('SAIL');
 
         // Focus the storyline input to reveal the controls, fill the form, generate.
         fireEvent.focus(screen.getByTestId('storyline-input'));
@@ -249,7 +249,7 @@ describe('StoryGeneratorApp', () => {
             expect(screen.getByTestId('generate-button')).toBeDefined();
         });
         fireEvent.change(screen.getByTestId('storyline-input'), {
-            target: { value: 'A test story for Nvidia' }
+            target: { value: 'A test story for SAIL' }
         });
         fireEvent.change(screen.getByTestId('chapter-count-input'), {
             target: { value: '2' }
@@ -264,9 +264,9 @@ describe('StoryGeneratorApp', () => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
             expect(postCall).toBeDefined();
             expect(JSON.parse(postCall![1].body)).toEqual({
-                storyline: 'A test story for Nvidia',
+                storyline: 'A test story for SAIL',
                 chapterCount: 2,
-                clientId: 'Nvidia'
+                clientId: 'SAIL'
             });
         });
     });
@@ -329,14 +329,14 @@ describe('StoryGeneratorApp', () => {
         });
 
         // Exact POST body: the checked flag rides along with the captured
-        // clientId (default 'STRATA' — no dropdown interaction in this test).
+        // clientId (default 'BASALT' — no dropdown interaction in this test).
         await waitFor(() => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
             expect(postCall).toBeDefined();
             expect(JSON.parse(postCall![1].body)).toEqual({
                 storyline: 'A test story with auto expand',
                 chapterCount: 3,
-                clientId: 'STRATA',
+                clientId: 'BASALT',
                 autoExpand: true
             });
         });
@@ -353,7 +353,7 @@ describe('StoryGeneratorApp', () => {
         const CLIENTS_URL = `${BASE_URL.replace(/\/generations$/, '/clients')}`;
         let clientsCalls = 0;
         // Full key set from the server's CLIENTS map (generation-config.ts).
-        const ALL_CLIENTS = ['Nvidia', 'KIMIK3', 'STRATA', 'Makora', 'DeepSeek', 'Telnyx'];
+        const ALL_CLIENTS = ['SAIL', 'VULTR', 'BASALT', 'MAKORA', 'KIMI', 'FLASH'];
         fetchMock.mockImplementation((url: string, init?: any) => {
             if (url === CLIENTS_URL && (!init || init.method === 'GET')) {
                 clientsCalls++;
@@ -378,7 +378,7 @@ describe('StoryGeneratorApp', () => {
         await act(async () => {
             for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
         });
-        expect(readOptions()).toEqual(['STRATA']);
+        expect(readOptions()).toEqual(['BASALT']);
 
         // Advance past CLIENTS_FETCH_RETRY_MS (10s) to fire the first retry.
         await act(async () => {
@@ -405,7 +405,7 @@ describe('StoryGeneratorApp', () => {
         const CLIENTS_URL = `${BASE_URL.replace(/\/generations$/, '/clients')}`;
         let clientsCalls = 0;
         // Full key set from the server's CLIENTS map (generation-config.ts).
-        const ALL_CLIENTS = ['Nvidia', 'KIMIK3', 'STRATA', 'Makora', 'DeepSeek', 'Telnyx'];
+        const ALL_CLIENTS = ['SAIL', 'VULTR', 'BASALT', 'MAKORA', 'KIMI', 'FLASH'];
         fetchMock.mockImplementation((url: string, init?: any) => {
             if (url === CLIENTS_URL && (!init || init.method === 'GET')) {
                 clientsCalls++;
@@ -427,11 +427,11 @@ describe('StoryGeneratorApp', () => {
 
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
         // Before any fetch resolves the dropdown offers only the default id.
-        expect(clientSelect.value).toBe('STRATA');
+        expect(clientSelect.value).toBe('BASALT');
 
         // The StrictMode remount's own fetch must complete and populate the
         // dropdown with every client — not just the first (disposed) attempt,
-        // which would leave the options pinned to STRATA.
+        // which would leave the options pinned to BASALT.
         await waitFor(() => {
             const options = Array.from(clientSelect.querySelectorAll('option')).map((o) => o.value);
             expect(options).toEqual(ALL_CLIENTS);
@@ -449,14 +449,14 @@ describe('StoryGeneratorApp', () => {
         const view = render(<StoryGeneratorApp configOverrides={{ baseUrl: BASE_URL, pollIntervalMs: POLL_INTERVAL_MS }} />);
 
         const clientSelect = screen.getByTestId('client-select') as HTMLSelectElement;
-        expect(clientSelect.value).toBe('STRATA'); // no stored choice yet → default
+        expect(clientSelect.value).toBe('BASALT'); // no stored choice yet → default
         // Default fetch mock answers the clients URL with 200 { stories: [] } →
         // fetchClientOptions degrades to [] (no clients key), so the option
-        // list stays pinned to the selected id and 'Nvidia' is not selectable.
-        // Simulate the server advertising Nvidia to make the choice meaningful.
+        // list stays pinned to the selected id and 'SAIL' is not selectable.
+        // Simulate the server advertising SAIL to make the choice meaningful.
         (globalThis.fetch as any).mockImplementation((url: string, init?: any) => {
             if (url === `${BASE_URL.replace(/\/generations$/, '/clients')}`) {
-                return Promise.resolve(mockResponse(200, { clients: ['STRATA', 'Nvidia'] }));
+                return Promise.resolve(mockResponse(200, { clients: ['BASALT', 'SAIL'] }));
             }
             return Promise.resolve(mockResponse(200, { stories: [] }));
         });
@@ -466,10 +466,10 @@ describe('StoryGeneratorApp', () => {
         const select2 = screen.getByTestId('client-select') as HTMLSelectElement;
         await waitFor(() => {
             const options = Array.from(select2.querySelectorAll('option')).map((o) => o.value);
-            expect(options).toEqual(['STRATA', 'Nvidia']);
+            expect(options).toEqual(['BASALT', 'SAIL']);
         });
 
-        // Choose Nvidia — the change handler persists it SYNCHRONOUSLY (the
+        // Choose SAIL — the change handler persists it SYNCHRONOUSLY (the
         // write completes before the event dispatch returns). This is the real
         // durability contract: passive useEffect writes are deferred and can be
         // skipped when the page reloads/unloads before the flush, which lost
@@ -477,10 +477,10 @@ describe('StoryGeneratorApp', () => {
         // passive effects too, so this line cannot fail for an effect-based
         // write in isolation — the reload-restore round-trip below is the
         // regression guard; keep both.)
-        fireEvent.change(select2, { target: { value: 'Nvidia' } });
-        expect(localStorage.getItem('storyGenerator:clientId')).toBe('Nvidia');
+        fireEvent.change(select2, { target: { value: 'SAIL' } });
+        expect(localStorage.getItem('storyGenerator:clientId')).toBe('SAIL');
         await waitFor(() => {
-            expect(localStorage.getItem('storyGenerator:clientId')).toBe('Nvidia');
+            expect(localStorage.getItem('storyGenerator:clientId')).toBe('SAIL');
         });
         view2.unmount();
 
@@ -489,7 +489,7 @@ describe('StoryGeneratorApp', () => {
         const select3 = screen.getByTestId('client-select') as HTMLSelectElement;
         // The provider reads localStorage before any options fetch resolves,
         // so the FIRST render already reflects the user's previous choice.
-        expect(select3.value).toBe('Nvidia');
+        expect(select3.value).toBe('SAIL');
     });
 
     it('toggles the sidebar open and closed via the hamburger icon', async () => {
@@ -821,7 +821,7 @@ describe('StoryGeneratorApp', () => {
         // The POST should have been made.
         //
         // The payload carries the top-right dropdown selection as clientId
-        // (store.config.clientId, default 'STRATA' — localStorage is cleared
+        // (store.config.clientId, default 'BASALT' — localStorage is cleared
         // in beforeEach so the package default always applies in tests).
         await waitFor(() => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
@@ -829,7 +829,7 @@ describe('StoryGeneratorApp', () => {
             expect(JSON.parse(postCall![1].body)).toEqual({
                 storyline: 'A test story',
                 chapterCount: 3,
-                clientId: 'STRATA'
+                clientId: 'BASALT'
             });
         });
     });
@@ -891,11 +891,11 @@ describe('StoryGeneratorApp', () => {
             expect(postCall).toBeDefined();
             expect(postCall![0]).toBe(`${BASE_URL}/${storyId}`);
             // clientId is the store's default client id (localStorage cleared
-            // in beforeEach → DEFAULT_CLIENT_ID = 'STRATA').
+            // in beforeEach → DEFAULT_CLIENT_ID = 'BASALT').
             expect(JSON.parse(postCall![1].body)).toEqual({
                 storyline: 'A sci-fi adventure on Mars.',
                 chapterCount: 3,
-                clientId: 'STRATA'
+                clientId: 'BASALT'
             });
         });
 
@@ -1844,14 +1844,14 @@ describe('StoryGeneratorApp', () => {
         });
 
         // The append POST hits the SAME storyId with the append envelope +
-        // the top-right dropdown's clientId (default 'STRATA' in tests).
+        // the top-right dropdown's clientId (default 'BASALT' in tests).
         await waitFor(() => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
             expect(postCall).toBeDefined();
             expect(postCall[0]).toBe(`${BASE_URL}/append-story-1`);
             expect(JSON.parse(postCall![1].body)).toEqual({
                 append: { chapterCount: 2, notes: 'the arc turns dark' },
-                clientId: 'STRATA'
+                clientId: 'BASALT'
             });
         });
 
@@ -2192,14 +2192,14 @@ describe('StoryGeneratorApp', () => {
 
         // POST hits the SAME storyId with the resume envelope: the target is
         // the larger of chapterRequested (5) and meta.chapterCount (5), plus
-        // the top-right dropdown's clientId (default 'STRATA' in tests).
+        // the top-right dropdown's clientId (default 'BASALT' in tests).
         await waitFor(() => {
             const postCall = fetchMock.mock.calls.find(([, init]: any[]) => init?.method === 'POST');
             expect(postCall).toBeDefined();
             expect(postCall[0]).toBe(`${BASE_URL}/resume-story-1`);
             expect(JSON.parse(postCall![1].body)).toEqual({
                 resume: { chapterCount: 5 },
-                clientId: 'STRATA'
+                clientId: 'BASALT'
             });
         });
 

@@ -18,5 +18,10 @@
         "types": ["node", "vitest/globals"]
     },
     "exclude": ["node_modules", "**/*.test.ts", "**/dist/*", "**/lib/*"],
-    "include": ["src/**/*", "vite.config.ts", "vitest.config.ts"]
+    // `scripts/**/*` is the CI helper folder run by `.github/workflows/deploy.yml`
+    // through `npx vite-node scripts/ci-strip-dep.ts`; listing it here (narrow, not
+    // `**/*`) is what puts that vite-node entrypoint under `tsc --noEmit` instead of
+    // leaving CI to execute untypechecked sources. The `exclude` list only drops
+    // node_modules/tests/dist/lib, so it does not fight this entry.
+    "include": ["src/**/*", "scripts/**/*", "vite.config.ts", "vitest.config.ts"]
 }

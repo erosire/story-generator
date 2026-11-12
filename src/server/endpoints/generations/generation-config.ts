@@ -21,11 +21,12 @@ import type {SimpleClient} from '@agentic/harness';
 // '@runtime/secret/private/telnyx' was removed because nothing dedicated to
 // that client is consumed here — every CLIENTS entry model-configures on the
 // fly via .clone({ model, sampling }) — so the construction was copied into
-// this file (see that section). STRATA and BASALT are likewise cloned from
-// STANDARD_CLIENT with models 'local/strata' and 'local/basalt' (the same
-// endpoint the
+// this file (see that section). BASALT is likewise cloned from STANDARD_CLIENT
+// with model 'local/basalt' (the same endpoint the
 // runtime local/qwen3_8.ts client used), so NO '@runtime/secret/private'
-// import remains in this file.
+// import remains in this file. Its 'local/strata' sibling was retired by
+// 3235df7 "Upgraded Engines" — 'STRATA' is therefore an UNKNOWN clientId now
+// and parseClientId() rejects it (see the CLIENTS map below).
 import {simpleClient, simpleConfig} from '@agentic/harness';
 // 429 rate-limit retry pause for the local standard copy (see status handler).
 // objectFilter builds the SOL sampling variant below (drops the top_p key
@@ -295,9 +296,13 @@ export const CLIENTS = {
  * clientId. Kept for backward compatibility with code/tests that import CLIENT
  * directly — treat resolveClient() as the canonical selector.
  *
- * STRATA is the local/strata entry (see the CLIENTS map above); the UI pins
- * the same id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and
+ * BASALT is the local/basalt entry (see the CLIENTS map above) and the client
+ * the 3235df7 "Upgraded Engines" retarget made the default; the UI pins the
+ * same id as DEFAULT_CLIENT_ID (src/context/store.tsx) so a fresh UI and
  * a server-only fallback can never disagree on which model writes a story.
+ * The 'local/strata' entry this used to name no longer exists in CLIENTS, so
+ * 'STRATA' is now an unknown clientId — DEFAULT_CLIENT_ID moved to 'BASALT' in
+ * lockstep, otherwise every default-client payload would 400.
  */
 export const CLIENT = CLIENTS.BASALT;
 
@@ -314,7 +319,7 @@ export const CLIENT = CLIENTS.BASALT;
  * here, the single source of truth for selectable story clients.
  *
  * Fallback behaviour: an absent, empty, or unknown clientId resolves to the
- * default client (CLIENT = CLIENTS.STRATA) so a missing value can never
+ * default client (CLIENT = CLIENTS.BASALT) so a missing value can never
  * crash a generation. Request payloads that carry an EXPLICIT unknown id are
  * rejected earlier by parseClientId() — this fallback only covers calls that
  * never set a clientId at all.

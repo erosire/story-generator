@@ -1434,14 +1434,19 @@ type StoryStoreContextValue = {
 };
 
 // Default LLM client id. Must stay in sync with the server-side fallback in
-// generation-config.ts (`CLIENT = CLIENTS.STRATA`) — the server applies the
+// generation-config.ts (`CLIENT = CLIENTS.BASALT`) — the server applies the
 // same default when a payload carries no clientId, so a fresh UI and a
 // server-only fallback can never disagree on which model a story is written by.
-// This constant must move in lockstep with the CLIENTS map ('STRATA' is the
-// local-strata entry's key — see generation-config.ts): a stale id persisted
-// in localStorage is rejected by the server's parseClientId with the current
-// id list.
-export const DEFAULT_CLIENT_ID = 'STRATA';
+// This constant must move in lockstep with the CLIENTS map ('BASALT' is the
+// local/basalt entry's key — see generation-config.ts, and its model string is
+// the live deployment's NEXUS_DEFAULT_MODEL in
+// services/molab/deploy/molab-basalt-runtime.py): a stale id persisted
+// in localStorage — or this constant itself, when it drifts — is rejected by
+// the server's parseClientId with the current id list. It did drift:
+// 3235df7 "Upgraded Engines" retired the 'local/strata' entry and moved
+// CLIENT to CLIENTS.BASALT, leaving 'STRATA' here, so every default-client
+// payload 400'd with "Unknown clientId 'STRATA'".
+export const DEFAULT_CLIENT_ID = 'BASALT';
 
 const DEFAULT_CONFIG: StoryStore['config'] = {
     // Every storyboard endpoint (list stories, story CRUD, clients) lives on

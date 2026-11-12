@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => {
 
     // The LOCAL standard gateway copy inside generation-config.ts is built by
     // simpleClient(simpleConfig(...)) — this mock instance is what those
-    // factories hand back, and it is ALSO what the STRATA clone (the mocked
+    // factories hand back, and it is ALSO what every CLIENTS clone (the mocked
     // clone returns itself) hands back. Every selectable CLIENTS entry
     // therefore shares this single mock instance.
     const STANDARD_CLIENT = createClient();
@@ -46,8 +46,7 @@ const mocks = vi.hoisted(() => {
 // LOCAL standard gateway copy (STANDARD_CLIENT), which replaced the retired
 // '@runtime/secret/private' (QWEN3_8_CLIENT) and
 // '@runtime/secret/private/telnyx' (TELNYX_CLIENT) imports once every
-// CLIENTS entry — including STRATA ('local/strata') and BASALT
-// ('local/basalt') — reduced to a
+// CLIENTS entry — BASALT ('local/basalt') included — reduced to a
 // .clone({ model, sampling }) of the standard copy. A missing name surfaces
 // as "No ... export is defined on the mock" at import time. No
 // '@runtime/secret/private*' mock remains because generation-config.ts no
@@ -96,7 +95,7 @@ describe('generation sampling defaults', () => {
     });
 
     it('derives the Qwen3_8 defaults with a nonnegative top_k', () => {
-        // The ninfer backend behind the STRATA entry rejects top_k: -1 (HTTP 400
+        // The ninfer backend behind the BASALT entry rejects top_k: -1 (HTTP 400
         // "top_k must be nonnegative"); top_k: 0 is the vLLM-style sentinel for
         // "consider all tokens" — same behavior as -1, compliant encoding.
         // max_tokens: 32768 is inherited from DEFAULT_SAMPLING_PARAMS via the
@@ -144,123 +143,109 @@ describe('generation sampling defaults', () => {
     });
 
     it('attaches the defaults to every selectable story-generation client', () => {
-        // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH /
-        // PARTICLE / LIGHTNING all clone the STANDARD_CLIENT
-        // copy with their own model override (the merge/lightning/vultr
-        // gateways serve every Kimi/GLM/MiMo deployment; STRATA pins the local
-        // strata model and BASALT its basalt sibling. 4a8a3f6 "Updated Merge" retired the MERGEK3
-        // duplicate (KIMIK3 was retargeted to merge/kimi-k3), renamed MERGEK26
-        // to KIMIK26, and dropped the GLMFLASH plain-default clone; the
-        // SONNET/OPUS Lightning GPT entries were retired and SOL added, and
-        // SOL itself was retired (lightning/gpt-6-sol left the registry) with
-        // DS4 taking its slot. MODAL was retired when the modal/glm-5.3
-        // provider client was removed from the registry.
-        // STRATA and its BASALT sibling use the nonnegative top_k sampling variant.
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'merge/kimi-k3',
+        // 3235df7 "Upgraded Engines" replaced the CLIENTS map wholesale: the
+        // retired KIMIK3 / KIMIK26 / MIMO26 / MERGE / PARTICLE / LIGHTNING /
+        // STRATA entries are gone and the registry is the 7 gateway-routed
+        // entries asserted below (generation-config.ts:283-291). Clone order
+        // is the CLIENTS object-literal insertion order, so these nth-call
+        // assertions pin BOTH the model string and the map position — a
+        // dropped, renamed or reordered entry fails exactly the affected
+        // assertion instead of silently matching another call. Retarget a
+        // model => update here (that is this test's whole purpose).
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledTimes(7);
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenNthCalledWith(1, {
+            // SAIL routes GLM-5 through the sail gateway.
+            model: 'sail/glm5',
             sampling: DEFAULT_SAMPLING_PARAMS
         });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'merge/kimi-k2-6',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // MIMO26 routes MiMo-2.6 through the Vultr gateway
-            // ('vultr/mimo-2-6' — the canonical ${provider}/mimo-2-6 id).
-            model: 'vultr/mimo-2-6',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // DS4 pins the merge/ds4-flash Makora DeepSeek sibling with the
-            // plain defaults (the slot the retired SOL entry —
-            // lightning/gpt-6-sol with the top_p-less sampling variant —
-            // used to hold before lightning/gpt-6-sol left the registry).
-            model: 'merge/ds4-flash',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // VULTR is the renamed GLM53 entry — the key now names the
-            // gateway instead of the model. The model routes through the
-            // Vultr gateway; the deployment has been retargeted repeatedly
-            // ('telnyx/glm-5.3' → 'merge/glm-5.3' → 'token-router/glm-5.3' →
-            // 'vultr/glm-5.3', the value committed in bc075ea "Fixed Story
-            // Generator"). This expectation pins the CURRENT
-            // generation-config.ts value; retarget again => update here.
-            model: 'vultr/glm-5.3',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // FLASH is the plain-default flash model on the Vultr gateway
-            // (the sibling of the VULTR entry above).
-            model: 'vultr/glm-5.3-flash',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            model: 'merge/glm-5.3-flash',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // LIGHTNING routes MiMo-2.6 through the lightning gateway
-            // ('lightning/mimo-2-6' — the canonical ${provider}/mimo-2-6 id).
-            model: 'lightning/mimo-2-6',
-            sampling: DEFAULT_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // STRATA pins the local strata model onto the standard copy's
-            // localhost endpoint, with the ninfer-compliant sampling.
-            model: 'local/strata',
-            sampling: QWEN3_8_SAMPLING_PARAMS
-        });
-        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenCalledWith({
-            // BASALT pins the local basalt model — the same Qwen Flash Next
-            // underneath as STRATA, through its own registry entry — with the
-            // identical ninfer-compliant sampling.
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenNthCalledWith(2, {
+            // BASALT pins the local basalt model onto the standard copy's
+            // localhost endpoint with the ninfer-compliant (top_k: 0) sampling
+            // variant — the ONLY entry that does not clone with the plain
+            // defaults, and the entry CLIENT (the server default) points at.
             model: 'local/basalt',
             sampling: QWEN3_8_SAMPLING_PARAMS
         });
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenNthCalledWith(3, {
+            // VULTR is the gateway-named GLM-5.3 entry (renamed from GLM53 in
+            // 4a8a3f6 "Updated Merge"). Its model string was retargeted
+            // repeatedly ('telnyx/glm-5.3' → 'merge/glm-5.3' →
+            // 'token-router/glm-5.3' → 'vultr/glm-5.3', the value committed in
+            // bc075ea "Fixed Story Generator") and survived the 3235df7
+            // rewrite unchanged.
+            model: 'vultr/glm-5.3',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenNthCalledWith(4, {
+            // MAKORA is the new Makora-gateway glm5 flash sibling (written
+            // double-quoted in the source — irrelevant to the assertion, which
+            // compares the resolved string).
+            model: 'makora/glm5-flash',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenNthCalledWith(5, {
+            // KIMI is the sail-gateway Kimi entry that replaced the retired
+            // merge-gateway KIMIK3 / KIMIK26 pair.
+            model: 'sail/kimi3',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenNthCalledWith(6, {
+            // DS4 moved off 'merge/ds4-flash' onto the sail gateway.
+            model: 'sail/ds4-flash',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        expect(mocks.STANDARD_CLIENT.clone).toHaveBeenNthCalledWith(7, {
+            // FLASH moved off 'vultr/glm-5.3-flash' onto the sail gateway (the
+            // plain-default flash sibling of SAIL / VULTR).
+            model: 'sail/glm5-flash',
+            sampling: DEFAULT_SAMPLING_PARAMS
+        });
+        // Explicit literal, NOT Object.keys(CLIENTS): this key set is the
+        // wire contract of GET /v1/storyboard/clients (generation-list-clients
+        // .ts), so it is pinned as written — deriving it from the subject
+        // would make the assertion tautological.
         expect(Object.keys(CLIENTS)).toEqual([
-            'KIMIK3',
-            'KIMIK26',
-            'MIMO26',
-            'DS4',
-            'STRATA',
+            'SAIL',
             'BASALT',
-            'MERGE',
             'VULTR',
-            'FLASH',
-            'PARTICLE',
-            'LIGHTNING'
+            'MAKORA',
+            'KIMI',
+            'DS4',
+            'FLASH'
         ]);
     });
 
     it('resolves each known clientId to its own (mocked) client instance', () => {
         // Every selectable entry shares the same mock instance (the mocked
-        // clone returns itself), so these identity assertions prove the
-        // lookup is KEY-accurate — a broken map that dropped an id or added
-        // a misspelled one would fail exactly the affected assertion.
-        expect(resolveClient('KIMIK3')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('KIMIK26')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('MIMO26')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('DS4')).toBe(mocks.STANDARD_CLIENT);
-        // STRATA and BASALT — same STANDARD_CLIENT mock as every other entry.
-        expect(resolveClient('STRATA')).toBe(mocks.STANDARD_CLIENT);
+        // clone returns itself), so identity alone cannot tell two entries
+        // apart — what makes these assertions bite is that each id below is a
+        // key the CURRENT CLIENTS map actually has (pinned as a literal in the
+        // Object.keys assertion above), while every id outside that map takes
+        // the `?? CLIENT` branch instead (see the retired-id block below and
+        // the parseClientId suite).
+        expect(resolveClient('SAIL')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('BASALT')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('MERGE')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('VULTR')).toBe(mocks.STANDARD_CLIENT);
+        expect(resolveClient('MAKORA')).toBe(mocks.STANDARD_CLIENT);
+        expect(resolveClient('KIMI')).toBe(mocks.STANDARD_CLIENT);
+        expect(resolveClient('DS4')).toBe(mocks.STANDARD_CLIENT);
         expect(resolveClient('FLASH')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('PARTICLE')).toBe(mocks.STANDARD_CLIENT);
-        expect(resolveClient('LIGHTNING')).toBe(mocks.STANDARD_CLIENT);
     });
 
-    it('falls back to the default client (CLIENT = CLIENTS.STRATA) for absent or unknown ids', () => {
-        // The server-side default must be the same STRATA the UI defaults to
+    it('falls back to the default client (CLIENT = CLIENTS.BASALT) for absent or unknown ids', () => {
+        // The server-side default must be the same BASALT the UI defaults to
         // (store.tsx DEFAULT_CLIENT_ID), so a payload without clientId and a
         // UI-driven payload for the default id hit the same client.
-        expect(CLIENT).toBe(CLIENTS.STRATA);
+        expect(CLIENT).toBe(CLIENTS.BASALT);
         expect(resolveClient()).toBe(CLIENT);
         expect(resolveClient(null)).toBe(CLIENT);
         expect(resolveClient('')).toBe(CLIENT);
         expect(resolveClient('no-such-client')).toBe(CLIENT);
+        // 3235df7-retired ids must land on the default client, never on a
+        // stale entry: 'STRATA' ('local/strata', dropped from CLIENTS) is the
+        // regression guard for the DEFAULT_CLIENT_ID drift bug.
+        expect(resolveClient('STRATA')).toBe(CLIENT);
+        expect(resolveClient('KIMIK3')).toBe(CLIENT);
         // Inherited-prototype names must NOT resolve to prototype methods
         // (CLIENTS is a plain object) — the hasOwnProperty guard in
         // resolveClient covers this; without it resolveClient('toString')
@@ -284,7 +269,7 @@ describe('local STANDARD_CLIENT copy', () => {
 
     it('is built locally with the runtime telnyx.ts construction', () => {
         // Exactly ONE simpleClient call in this test graph: the local copy.
-        // Every CLIENTS entry (including STRATA and BASALT) derives from it via the
+        // Every CLIENTS entry (BASALT included) derives from it via the
         // mocked clone, which never re-enters the factory.
         expect(mocks.simpleClient).toHaveBeenCalledTimes(1);
         expect(mocks.simpleConfig).toHaveBeenCalledTimes(1);
@@ -321,17 +306,13 @@ describe('parseClientId', () => {
     });
 
     it('accepts every selectable client id, echoing the key verbatim', () => {
-        expect(parseClientId('KIMIK3')).toEqual({ clientId: 'KIMIK3' });
-        expect(parseClientId('KIMIK26')).toEqual({ clientId: 'KIMIK26' });
-        expect(parseClientId('MIMO26')).toEqual({ clientId: 'MIMO26' });
-        expect(parseClientId('DS4')).toEqual({ clientId: 'DS4' });
-        expect(parseClientId('STRATA')).toEqual({ clientId: 'STRATA' });
+        expect(parseClientId('SAIL')).toEqual({ clientId: 'SAIL' });
         expect(parseClientId('BASALT')).toEqual({ clientId: 'BASALT' });
-        expect(parseClientId('MERGE')).toEqual({ clientId: 'MERGE' });
         expect(parseClientId('VULTR')).toEqual({ clientId: 'VULTR' });
+        expect(parseClientId('MAKORA')).toEqual({ clientId: 'MAKORA' });
+        expect(parseClientId('KIMI')).toEqual({ clientId: 'KIMI' });
+        expect(parseClientId('DS4')).toEqual({ clientId: 'DS4' });
         expect(parseClientId('FLASH')).toEqual({ clientId: 'FLASH' });
-        expect(parseClientId('PARTICLE')).toEqual({ clientId: 'PARTICLE' });
-        expect(parseClientId('LIGHTNING')).toEqual({ clientId: 'LIGHTNING' });
     });
 
     it('rejects non-string clientId values with the type error', () => {
@@ -343,9 +324,10 @@ describe('parseClientId', () => {
     });
 
     it('rejects unknown clientId values, listing every available client', () => {
-        // The available-client list is Object.keys(CLIENTS) in insertion order.
-        const AVAILABLE =
-            'KIMIK3, KIMIK26, MIMO26, DS4, STRATA, BASALT, MERGE, VULTR, FLASH, PARTICLE, LIGHTNING';
+        // The available-client list is Object.keys(CLIENTS) in insertion order
+        // (generation-config.ts:283-291) — pinned as an explicit literal, the
+        // same contract GET /v1/storyboard/clients returns.
+        const AVAILABLE = 'SAIL, BASALT, VULTR, MAKORA, KIMI, DS4, FLASH';
         expect(parseClientId('Nope')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Nope'. Available clients: ${AVAILABLE}`
@@ -360,6 +342,30 @@ describe('parseClientId', () => {
         // next generation, which is why the UI default moved in lockstep with
         // the map changes. 'MODAL' was retired when the modal/glm-5.3 provider
         // client was removed from the registry.
+        //
+        // The four ids below are the 3235df7 "Upgraded Engines" casualties
+        // ('local/strata' dropped; the merge-gateway KIMIK3 / KIMIK26 / MIMO26
+        // trio replaced by the sail-gateway entries). They are kept here
+        // BECAUSE they are now invalid: 'STRATA' in particular is the id the
+        // UI's DEFAULT_CLIENT_ID was left pointing at after that commit, and
+        // these assertions are the regression guard for a stale default
+        // shipping a payload that 400s with exactly this message.
+        expect(parseClientId('STRATA')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'STRATA'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('KIMIK3')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'KIMIK3'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('KIMIK26')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'KIMIK26'. Available clients: ${AVAILABLE}`
+        });
+        expect(parseClientId('MIMO26')).toEqual({
+            clientId: undefined,
+            error: `Unknown clientId 'MIMO26'. Available clients: ${AVAILABLE}`
+        });
         expect(parseClientId('Qwen3_8')).toEqual({
             clientId: undefined,
             error: `Unknown clientId 'Qwen3_8'. Available clients: ${AVAILABLE}`

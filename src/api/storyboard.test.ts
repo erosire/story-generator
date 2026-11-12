@@ -140,7 +140,7 @@ describe('createNewStory', () => {
             'auto-story',
             { storyline: 'A sci-fi adventure.', chapterCount: 3 },
             undefined,
-            'STRATA',
+            'BASALT',
             true
         );
 
@@ -150,7 +150,7 @@ describe('createNewStory', () => {
             body: JSON.stringify({
                 storyline: 'A sci-fi adventure.',
                 chapterCount: 3,
-                clientId: 'STRATA',
+                clientId: 'BASALT',
                 autoExpand: true
             })
         });
@@ -167,7 +167,7 @@ describe('createNewStory', () => {
             'plain-story',
             { storyline: 'A sci-fi adventure.', chapterCount: 3 },
             undefined,
-            'STRATA',
+            'BASALT',
             false
         );
 
@@ -176,7 +176,7 @@ describe('createNewStory', () => {
         expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/plain-story`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ storyline: 'A sci-fi adventure.', chapterCount: 3, clientId: 'STRATA' })
+            body: JSON.stringify({ storyline: 'A sci-fi adventure.', chapterCount: 3, clientId: 'BASALT' })
         });
     });
     // autoExpand undefined is covered by the FIRST test above ('posts storyline

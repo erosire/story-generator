@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => {
 
     // The LOCAL standard gateway copy inside generation-config.ts is built by
     // simpleClient(simpleConfig(...)) — this mock instance is what those
-    // factories hand back, and it is ALSO what the STRATA clone (the mocked
+    // factories hand back, and it is ALSO what every CLIENTS clone (the mocked
     // clone returns itself) hands back. Every selectable CLIENTS entry
     // therefore shares this single mock instance.
     const STANDARD_CLIENT = createClient();
@@ -40,8 +40,8 @@ const mocks = vi.hoisted(() => {
 // simpleClient/simpleConfig from '@agentic/harness' — they build the file's
 // LOCAL standard gateway copy (STANDARD_CLIENT), which replaced the retired
 // '@runtime/secret/private' (QWEN3_8_CLIENT) and '@runtime/secret/private/
-// telnyx' (TELNYX_CLIENT) imports once every CLIENTS entry — including
-// STRATA ('local/strata') and BASALT ('local/basalt') — reduced to a
+// telnyx' (TELNYX_CLIENT) imports once every CLIENTS entry — BASALT
+// ('local/basalt') included — reduced to a
 // .clone({ model, sampling }) of
 // the standard copy. A missing name surfaces as "No ... export is defined on
 // the mock" at import time. No '@runtime/secret/private*' mock remains
@@ -59,30 +59,30 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         // Order is the object insertion order of CLIENTS — the UI preserves it.
-        // KIMIK3 / KIMIK26 / MIMO26 / MERGE / VULTR / FLASH / PARTICLE /
-        // LIGHTNING are all served by the merge/vultr
-        // gateways; DS4 pins the merge/ds4-flash Makora DeepSeek sibling,
-        // and STRATA pins the local strata model, BASALT its basalt sibling.
-        // 4a8a3f6 "Updated
-        // Merge" retired the MERGEK3 duplicate, renamed MERGEK26 to KIMIK26,
-        // and dropped GLMFLASH; GLM53 was renamed to VULTR (gateway-style
-        // naming), the SONNET/OPUS Lightning GPT entries were retired and
-        // SOL added — itself retired (lightning/gpt-6-sol left the registry)
-        // with DS4 taking its slot — and the retired Modal (GLM52), Makora,
-        // DeepSeek, Router (OpenRouter) and standalone Nvidia/Telnyx
-        // deployments were dropped from CLIENTS.
+        // 3235df7 "Upgraded Engines" rewrote the map (generation-config.ts:
+        // 283-291): SAIL / MAKORA / KIMI are new sail- and Makora-gateway
+        // entries, VULTR keeps its vultr/glm-5.3 model, DS4 and FLASH moved
+        // onto the sail gateway, and the retired KIMIK3 / KIMIK26 / MIMO26 /
+        // MERGE / PARTICLE / LIGHTNING / STRATA entries are gone. Earlier
+        // history still explains the surviving keys: 4a8a3f6 "Updated Merge"
+        // retired the MERGEK3 duplicate and renamed MERGEK26 to KIMIK26,
+        // GLM53 became VULTR (gateway-style naming), the SONNET/OPUS Lightning
+        // GPT entries were retired and SOL added — itself retired
+        // (lightning/gpt-6-sol left the registry) with DS4 taking its slot —
+        // and the retired Modal (GLM52), Makora, DeepSeek, Router (OpenRouter)
+        // and standalone Nvidia/Telnyx deployments were dropped from CLIENTS.
+        // Explicit literal, NOT Object.keys(CLIENTS): client ids are a server
+        // deployment detail and this endpoint's whole contract is the exact id
+        // set + order the UI dropdown renders, so deriving it from the subject
+        // would make the assertion tautological.
         expect(result.response.clients).toEqual([
-            'KIMIK3',
-            'KIMIK26',
-            'MIMO26',
-            'DS4',
-            'STRATA',
+            'SAIL',
             'BASALT',
-            'MERGE',
             'VULTR',
-            'FLASH',
-            'PARTICLE',
-            'LIGHTNING'
+            'MAKORA',
+            'KIMI',
+            'DS4',
+            'FLASH'
         ]);
     });
 
@@ -103,10 +103,12 @@ describe('generationListClients', () => {
 
         expect(result.status).toBe(200);
         expect(Array.isArray(result.response.clients)).toBe(true);
-        // 11 selectable ids: KIMIK3, KIMIK26, MIMO26, DS4, STRATA, BASALT, MERGE,
-        // VULTR, FLASH, PARTICLE, LIGHTNING (retired entries removed
-        // from CLIENTS, including MODAL after the modal/glm-5.3 client was
-        // removed).
-        expect(result.response.clients.length).toBe(11);
+        // 7 selectable ids: SAIL, BASALT, VULTR, MAKORA, KIMI, DS4, FLASH
+        // (the 3235df7 "Upgraded Engines" map — the retired KIMIK3, KIMIK26,
+        // MIMO26, MERGE, PARTICLE, LIGHTNING and STRATA entries were dropped
+        // from CLIENTS, as were MODAL after the modal/glm-5.3 client was
+        // removed and the older Nvidia / Makora / DeepSeek / Telnyx / Router
+        // deployments).
+        expect(result.response.clients.length).toBe(7);
     });
 });

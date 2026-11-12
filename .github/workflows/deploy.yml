@@ -30,8 +30,9 @@
 # - Environment constants (host + ports) live in the local src/config.ts —
 #   the monorepo's @config/environment package cannot be published to npm.
 # - @underload/service is unpublished and only used by server/test code —
-#   never by the static Pages build — so it is stripped from package.json
-#   below to keep `npm install` free of registry 404s.
+#   never by the static Pages build — so the "Strip server-only dependency"
+#   step below removes it from package.json (scripts/ci-strip-dep.ts, run with
+#   vite-node) to keep `npm install` free of registry 404s.
 
 name: Deploy to GitHub Pages
 
@@ -63,14 +64,15 @@ jobs:
         with:
           node-version: 24
 
+      # Committed script instead of an inline `EOF` heredoc: this monorepo only
+      # ever runs repo code through vite / vite-node / vitest (AGENTS.md
+      # "Runtime / runner policy" (a)), and vite-node is a declared
+      # devDependency of this package, so npx resolves it from the local
+      # node_modules/.bin in the standalone-mirror context of this workflow
+      # (which installs with npm, not yarn). The script is idempotent: a second
+      # run leaves package.json byte-identical.
       - name: Strip server-only dependency
-        run: |
-          node <<'EOF'
-          const fs = require('fs');
-          const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          delete manifest.dependencies['@underload/service'];
-          fs.writeFileSync('package.json', JSON.stringify(manifest, null, 4) + '\n');
-          EOF
+        run: npx vite-node scripts/ci-strip-dep.ts
 
       # --legacy-peer-deps: npm's strict peer resolver crashes with
       # "Cannot read properties of null (reading 'edgesOut')" on this
