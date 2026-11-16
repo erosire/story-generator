@@ -276,7 +276,7 @@ describe('local STANDARD_CLIENT copy', () => {
         // Endpoint mirrors runtime/secret/private/telnyx.ts: machine-local
         // localhost + the provider port from the distribution's own
         // src/config.ts (standalone replacement for @config/environment;
-        // both pin port 5500).
+        // both pin port 6660).
         expect(mocks.simpleConfig.mock.calls[0][0]).toEqual({
             endpoints: {
                 Standard: `http://localhost:${LOCAL_AREA_NETWORK_PROVIDER_PORT}/providers/private/v1`
