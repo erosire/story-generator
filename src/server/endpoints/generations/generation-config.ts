@@ -14,7 +14,7 @@
 // Type-only import: every selectable client is a SimpleClient instance
 // (simpleClient() in @agentic/harness), used to widen CLIENTS for the
 // request-driven string indexing in resolveClient().
-import type {SimpleClient} from '@agentic/harness';
+import type { SimpleClient } from '@agentic/harness';
 // simpleClient/simpleConfig build the LOCAL standard gateway client below
 // (STANDARD_CLIENT — a copy of runtime/secret/private/telnyx.ts's shared
 // TELNYX_CLIENT). The shared TELNYX_CLIENT import from
@@ -27,14 +27,14 @@ import type {SimpleClient} from '@agentic/harness';
 // import remains in this file. Its 'local/strata' sibling was retired by
 // 3235df7 "Upgraded Engines" — 'STRATA' is therefore an UNKNOWN clientId now
 // and parseClientId() rejects it (see the CLIENTS map below).
-import {simpleClient, simpleConfig} from '@agentic/harness';
+import { simpleClient, simpleConfig } from '@agentic/harness';
 // 429 rate-limit retry pause for the local standard copy (see status handler).
 // objectFilter builds the SOL sampling variant below (drops the top_p key
 // entirely — see SOL_SAMPLING_PARAMS).
-import {objectFilter, scriptPause} from '@presource/core';
+import { objectFilter, scriptPause } from '@presource/core';
 // Standalone replacement for the monorepo's @config/environment package
 // (same constant names, port 6660) — used by the local copy's endpoint.
-import {LOCAL_AREA_NETWORK_PROVIDER_PORT} from '../../../config';
+import { LOCAL_AREA_NETWORK_PROVIDER_PORT } from '../../../config';
 
 /** First user message seeded into the conversation history. */
 export const OPENING_USER_MESSAGE = 'Hey ENI';
@@ -209,7 +209,7 @@ export const QWEN3_8_SAMPLING_PARAMS = {
 // objectHasKey(body, key) && body[key] !== undefined — a present-but-undefined
 // key would still survive JSON.stringify's undefined-drop in some transports,
 // so absence at the object level is the only guarantee.
-export const SOL_SAMPLING_PARAMS = objectFilter(DEFAULT_SAMPLING_PARAMS, ({key}) => key !== 'top_p');
+export const SOL_SAMPLING_PARAMS = objectFilter(DEFAULT_SAMPLING_PARAMS, ({ key }) => key !== 'top_p');
 
 // ---------------------------------------------------------------------------
 // Standard Gateway Client (local copy)
@@ -288,13 +288,14 @@ export const useApiMethod: 'structure' | 'format' = 'structure';
 
 // List of possible clients
 export const CLIENTS = {
-    SAIL: STANDARD_CLIENT.clone({model: 'sail/glm5', sampling: DEFAULT_SAMPLING_PARAMS}),
-    BASALT: STANDARD_CLIENT.clone({model: 'local/basalt', sampling: QWEN3_8_SAMPLING_PARAMS}),
-    VULTR: STANDARD_CLIENT.clone({model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS}),
-    MAKORA: STANDARD_CLIENT.clone({model: "makora/glm5-flash", sampling: DEFAULT_SAMPLING_PARAMS}),
-    KIMI: STANDARD_CLIENT.clone({model: 'sail/kimi3', sampling: DEFAULT_SAMPLING_PARAMS}),
-    DS4: STANDARD_CLIENT.clone({model: 'sail/ds4-flash', sampling: DEFAULT_SAMPLING_PARAMS}),
-    FLASH: STANDARD_CLIENT.clone({model: 'sail/glm5-flash', sampling: DEFAULT_SAMPLING_PARAMS}),
+    MIMO: STANDARD_CLIENT.clone({ model: 'vultr/mimo-2-6', sampling: DEFAULT_SAMPLING_PARAMS }),
+    SAIL: STANDARD_CLIENT.clone({ model: 'sail/glm5', sampling: DEFAULT_SAMPLING_PARAMS }),
+    BASALT: STANDARD_CLIENT.clone({ model: 'local/basalt', sampling: QWEN3_8_SAMPLING_PARAMS }),
+    VULTR: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    MAKORA: STANDARD_CLIENT.clone({ model: 'makora/glm5-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
+    KIMI: STANDARD_CLIENT.clone({ model: 'sail/kimi3', sampling: DEFAULT_SAMPLING_PARAMS }),
+    DS4: STANDARD_CLIENT.clone({ model: 'sail/ds4-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
+    FLASH: STANDARD_CLIENT.clone({ model: 'sail/glm5-flash', sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
 /**
@@ -365,7 +366,7 @@ export const parseClientId = (raw: unknown): { clientId?: string; error?: string
     // Absent values are legal — generation falls back to the default client.
     if (raw === undefined || raw === null) return {};
     if (typeof raw !== 'string' || raw.length === 0) {
-        return {error: 'clientId must be a non-empty string'};
+        return { error: 'clientId must be a non-empty string' };
     }
     // hasOwnProperty guards against 'toString', 'constructor', etc. being
     // passed as a clientId when CLIENTS (a plain object) is indexed.
@@ -374,5 +375,5 @@ export const parseClientId = (raw: unknown): { clientId?: string; error?: string
             error: `Unknown clientId '${raw}'. Available clients: ${Object.keys(CLIENTS).join(', ')}`
         };
     }
-    return {clientId: raw};
+    return { clientId: raw };
 };
