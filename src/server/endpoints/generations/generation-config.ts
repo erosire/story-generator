@@ -33,7 +33,9 @@ import { simpleClient, simpleConfig } from '@agentic/harness';
 // entirely — see SOL_SAMPLING_PARAMS).
 import { objectFilter, scriptPause } from '@presource/core';
 // Standalone replacement for the monorepo's @config/environment package
-// (same constant names, port 6660) — used by the local copy's endpoint.
+// (same constant names). LOCAL_AREA_NETWORK_PROVIDER_PORT is the deployed
+// Rust provider's port (8800); the TypeScript provider's own 6660 listener
+// lives in @agentic/provider and is not consumed here.
 import { LOCAL_AREA_NETWORK_PROVIDER_PORT } from '../../../config';
 
 /** First user message seeded into the conversation history. */
@@ -229,20 +231,14 @@ export const SOL_SAMPLING_PARAMS = objectFilter(DEFAULT_SAMPLING_PARAMS, ({ key 
 //
 // HOST = 'localhost' (deliberately NOT LOCAL_AREA_NETWORK_HOST_NAME): this
 // endpoint is dialled by the SERVER layer — the underload service running the
-// story-generator's storyboard routes. startServer (packages/underload/service/
-// src/server/start.ts) binds every declared port (gateway 5000, storyboard
-// 5252, provider 6660) on ONE machine: since the process-isolation change the
-// gateway may hand the provider group to its OWN OS process
-// (packages/underload/service/provider-server.ts, supervised from
-// packages/underload/service/src/server/provider-process.ts) and keep only a
-// 307 tier for /providers/* — but that process is still machine-local, and
-// nothing about the hop changes, so 'localhost' stays correct (and
-// netns/firewall-friendliest). It is also what the fallback topology does when
-// the provider process is unavailable (flag UNDERLOAD_PROVIDER_PROCESS=0): the
-// group is served in-process, exactly as before. Browser→API traffic is the
-// only cross-host caller and it resolves its host at runtime via
+// story-generator's storyboard routes — and the deployed provider is the Rust
+// service on this machine. The TypeScript provider keeps its own 6660
+// listener (@agentic/provider/src/port.ts), while this consumer dials
+// LOCAL_AREA_NETWORK_PROVIDER_PORT (8800). 'localhost' stays correct (and
+// netns/firewall-friendliest). Browser→API traffic is the only cross-host
+// caller and it resolves its host at runtime via
 // resolveStoryboardApiHostName (distribution/story-generator/src/config.ts).
-// The port constant comes from this distribution's own src/config.ts — the
+// The port comes from this distribution's own src/config.ts — the
 // standalone replacement for the monorepo's @config/environment package.
 const STANDARD_CLIENT = simpleClient({
     model: 'telnyx/glm-5.3-flash',

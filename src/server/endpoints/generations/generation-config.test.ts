@@ -72,7 +72,8 @@ import {
     resolveClient
 } from './generation-config';
 // The distribution's own standalone replacement for @config/environment —
-// the value baked into the local standard copy's localhost endpoint.
+// the deployed Rust provider port baked into the local standard copy's
+// localhost endpoint.
 import { LOCAL_AREA_NETWORK_PROVIDER_PORT } from '../../../config';
 
 describe('generation sampling defaults', () => {
@@ -274,9 +275,9 @@ describe('local STANDARD_CLIENT copy', () => {
         expect(mocks.simpleClient).toHaveBeenCalledTimes(1);
         expect(mocks.simpleConfig).toHaveBeenCalledTimes(1);
         // Endpoint mirrors runtime/secret/private/telnyx.ts: machine-local
-        // localhost + the provider port from the distribution's own
-        // src/config.ts (standalone replacement for @config/environment;
-        // both pin port 6660).
+        // localhost + the deployed Rust provider port from the distribution's
+        // own src/config.ts (standalone replacement for @config/environment;
+        // the TypeScript provider's 6660 listener lives in @agentic/provider).
         expect(mocks.simpleConfig.mock.calls[0][0]).toEqual({
             endpoints: {
                 Standard: `http://localhost:${LOCAL_AREA_NETWORK_PROVIDER_PORT}/providers/private/v1`
