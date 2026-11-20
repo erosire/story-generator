@@ -291,7 +291,7 @@ export const CLIENTS = {
     MAKORA: STANDARD_CLIENT.clone({ model: 'makora/glm5-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
     KIMI: STANDARD_CLIENT.clone({ model: 'sail/kimi3', sampling: DEFAULT_SAMPLING_PARAMS }),
     DS4: STANDARD_CLIENT.clone({ model: 'sail/ds4-flash', sampling: DEFAULT_SAMPLING_PARAMS }),
-    FLASH: STANDARD_CLIENT.clone({ model: 'sail/glm5-flash', sampling: DEFAULT_SAMPLING_PARAMS })
+    FLASH: STANDARD_CLIENT.clone({ model: 'vultr/glm-5.3-flash', sampling: DEFAULT_SAMPLING_PARAMS })
 };
 
 /**
